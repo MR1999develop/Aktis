@@ -53,15 +53,16 @@ impl ModelSpec {
 
 /// Google SigLIP 2, ViT-B/16 at 224 px (Apache-2.0). Multilingual: keywords
 /// can be written in Italian. Export: `onnx-community/siglip2-base-patch16-224-ONNX`.
-/// Logit scale and bias are read from the original checkpoint
-/// (`google/siglip2-base-patch16-224`) by the CI job `tagging-model`.
+/// Logit scale and bias as stored in the original checkpoint
+/// (`google/siglip2-base-patch16-224`, `exp(4.724453)` and `-16.7717`);
+/// the CI job `tagging-model` prints them with `.github/scripts/siglip_head.py`.
 pub const SIGLIP2_BASE_224: ModelSpec = ModelSpec {
     name: "siglip2-base-patch16-224",
     layout: PixelLayout::SIGLIP_224,
     max_tokens: 64,
     lowercase: true,
-    logit_scale: 112.5,
-    logit_bias: -16.5,
+    logit_scale: 112.668_9,
+    logit_bias: -16.771_7,
 };
 
 /// Every model this build knows.

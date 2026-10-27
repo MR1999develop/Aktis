@@ -105,6 +105,6 @@ the output on the branch `ci-results/tagging-model`.
   another), batch review grid "photos suggested for keyword X", "find
   similar", free-text search box.
 - Write applied keywords to XMP (`dc:subject`, `lr:hierarchicalSubject`).
-- First-run model download with the user's consent (about 400 MB, or
-  about 100 MB quantised), checksum-verified.
+- First-run model download with the user's consent (vision 372 MB +
+  text 1.1 GB + tokenizer 34 MB; quantised 95 MB + 283 MB), checksum-verified.
 - Later, separate from this: faces and people (more sensitive, opt-in).

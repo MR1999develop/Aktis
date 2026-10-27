@@ -89,10 +89,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
-      - name: Resolve new dependencies (publishes Cargo.lock)
-        run: mkdir -p ci-out && cargo update --workspace 2>&1 | tee ci-out/log.txt && cp Cargo.lock ci-out/
       - name: Model
         run: |
+          mkdir -p ci-out
           {
             python3 .github/scripts/siglip_head.py google/siglip2-base-patch16-224
             curl -fsSL https://huggingface.co/api/models/onnx-community/siglip2-base-patch16-224-ONNX \
@@ -108,12 +107,15 @@ jobs:
         run: |
           mkdir -p testdata/tag
           for f in fruits baboon butterfly building castle HappyFish aero3 orange; do
-            curl -fsSL -o "testdata/tag/$f.jpg" "https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/$f.jpg"
+            curl -fsSL --retry 3 -o "testdata/tag/$f.jpg" "https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/$f.jpg" \
+              || { echo "missing sample $f"; rm -f "testdata/tag/$f.jpg"; }
           done
-          curl -fsSL -o testdata/tag/nikon-d3s.NEF https://raw.githubusercontent.com/letmaik/rawpy/main/test/iss030e122639.NEF
+          curl -fsSL --retry 3 -o testdata/tag/nikon-d3s.NEF https://raw.githubusercontent.com/letmaik/rawpy/main/test/iss030e122639.NEF \
+            || echo "missing sample NEF"
+          ls -l testdata/tag | tee -a ci-out/log.txt
       - name: rne tag
         run: |
-          cargo build -q --release -p cli 2>&1 | tee -a ci-out/log.txt
+          cargo build -q --release --locked -p cli 2>&1 | tee -a ci-out/log.txt
           rne=target/release/rne
           kw=crates/tagging/testdata/keywords-it.txt
           {
