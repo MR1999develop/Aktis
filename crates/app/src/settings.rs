@@ -53,6 +53,7 @@ impl Settings {
     }
 
     /// Removes a file from the recent list (it could not be opened).
+    #[cfg_attr(not(test), allow(dead_code, reason = "used once opening errors are handled"))]
     pub fn forget(&mut self, path: &Path) {
         self.recent.retain(|p| p != path);
     }

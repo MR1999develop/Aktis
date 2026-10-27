@@ -169,6 +169,7 @@ pub fn install(ctx: &egui::Context) {
 
 /// WCAG contrast ratio of two colours (1 to 21).
 #[must_use]
+#[cfg_attr(not(test), allow(dead_code, reason = "checked by the theme tests"))]
 pub fn contrast(a: Color32, b: Color32) -> f32 {
     fn channel(c: u8) -> f32 {
         let c = f32::from(c) / 255.0;
