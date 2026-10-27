@@ -248,3 +248,76 @@ jobs:
         run: bash .github/scripts/publish-results.sh macOS ${{ job.status }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # AI selection end to end with the real models on the CPU build of ONNX
+  # Runtime: subject, people, a click, a box and a detected class, on a RAW
+  # file and on public test photos. The previews (selection in red) are
+  # published with the log so the masks can be looked at.
+  ai-masks:
+    needs: lockfile
+    runs-on: ubuntu-latest
+    env:
+      ORT_VERSION: 1.24.1
+      RNE_MODELS_DIR: ${{ github.workspace }}/models
+      RNE_DATA_DIR: ${{ github.workspace }}/rne-data
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.lockfile.outputs.sha }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Model cache
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: ai-models-v1
+      - name: ONNX Runtime (CPU)
+        run: |
+          mkdir -p ci-out ort
+          curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/onnxruntime-linux-x64-$ORT_VERSION.tgz" \
+            | tar -xz -C ort --strip-components=1
+          echo "ORT_DYLIB_PATH=$PWD/ort/lib/libonnxruntime.so" >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo build -q --release --locked -p cli 2>&1 | tee ci-out/log.txt
+      - name: Models (download what the catalog lists, then verify the checksums)
+        run: |
+          mkdir -p models
+          for url in $(target/release/rne models | grep -o 'https://[^ ]*\.onnx'); do
+            curl -fsSL -o "models/$(basename "$url")" "$url"
+          done
+          target/release/rne models --verify 2>&1 | tee -a ci-out/log.txt
+      - name: Test photos
+        # Public test images of OpenCV, Segment Anything and YOLOX (not committed).
+        run: |
+          { sudo apt-get update -q && sudo apt-get install -y -q netpbm; } > /dev/null 2>> ci-out/log.txt
+          curl -fsSL -o testdata/nikon-d3s.NEF https://raw.githubusercontent.com/letmaik/rawpy/main/test/iss030e122639.NEF
+          get() {
+            curl -fsSL -o "testdata/$1.jpg" "$2" || { echo "download failed: $2" | tee -a ci-out/log.txt; exit 1; }
+            jpegtopnm "testdata/$1.jpg" > "testdata/$1.ppm" 2>> ci-out/log.txt
+          }
+          get people https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/messi5.jpg
+          get truck https://raw.githubusercontent.com/facebookresearch/segment-anything/main/notebooks/images/truck.jpg
+          get dog https://raw.githubusercontent.com/Megvii-BaseDetection/YOLOX/main/assets/dog.jpg
+          ls -l testdata | tee -a ci-out/log.txt
+      - name: rne mask / develop with a selection
+        run: |
+          rne() {
+            echo "\$ rne $*"
+            if ! target/release/rne "$@"; then echo "FAILED: rne $*"; touch ci-out/FAILED; fi
+            echo
+          }
+          {
+            rne mask testdata/people.ppm --people -o ci-out/people-people.jpg
+            rne mask testdata/people.ppm --subject -o ci-out/people-subject.jpg --mask-out ci-out/people-subject-mask.jpg
+            rne mask testdata/truck.ppm --point 0.278,0.3125 -o ci-out/truck-click.jpg
+            rne mask testdata/truck.ppm --box 0.236,0.5,0.389,0.729 -o ci-out/truck-box.jpg
+            rne mask testdata/truck.ppm --subject --invert --feather 1 -o ci-out/truck-background.jpg
+            rne mask testdata/dog.ppm --detect dog --detect bicycle -o ci-out/dog-detect.jpg
+            rne mask testdata/nikon-d3s.NEF --subject -o ci-out/nef-subject.jpg
+            rne develop testdata/nikon-d3s.NEF --exposure 1.5 --subject -o ci-out/nef-subject-plus-1.5.jpg
+          } 2>&1 | tee -a ci-out/log.txt
+          test ! -e ci-out/FAILED
+      - name: Publish results
+        if: always()
+        run: bash .github/scripts/publish-results.sh ai-masks ${{ job.status }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

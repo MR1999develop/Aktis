@@ -64,7 +64,8 @@ pub(crate) fn process_env(key: &str) -> Option<OsString> {
 /// 1. [`MODELS_ENV`] (a folder, or a model file whose folder is used);
 /// 2. a `models` folder next to the executable or up to three folders above
 ///    it (handy during development: `target/release/../../models`);
-/// 3. the editor's data folder, `…/RawNodeEditor/models`;
+/// 3. the editor's data folder, `…/raw-node-editor/models` (shared with
+///    the AI selection models);
 /// 4. an earlier denoiser's data folder, `…/Denoiser/models`, so the models
 ///    already installed for it are shared.
 #[must_use]
@@ -80,10 +81,11 @@ pub fn search_dirs(os: Os, exe: Option<&Path>, env: impl Fn(&str) -> Option<OsSt
     if let Some(exe) = exe {
         dirs.extend(exe.ancestors().skip(1).take(4).map(|d| d.join("models")));
     }
-    for app in ["RawNodeEditor", "Denoiser"] {
-        if let Some(d) = platform::data_dir(os, app, &env) {
-            dirs.push(d.join("models"));
-        }
+    if let Some(d) = platform::data_dir(os, platform::APP_DIR, &env) {
+        dirs.push(d.join("models"));
+    }
+    if let Some(d) = platform::roaming_data_dir(os, "Denoiser", &env) {
+        dirs.push(d.join("models"));
     }
     dirs
 }
@@ -144,7 +146,7 @@ mod tests {
             "/w/target/models",
             "/w/models",
             "/models",
-            "/home/u/.local/share/RawNodeEditor/models",
+            "/home/u/.local/share/raw-node-editor/models",
             "/home/u/.local/share/Denoiser/models",
         ]
         .iter()

@@ -173,6 +173,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-segment"
+version = "0.1.0"
+dependencies = [
+ "core-color",
+ "core-model",
+ "masks",
+ "ort 2.0.0-rc.15",
+]
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -295,7 +305,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -744,15 +754,20 @@ dependencies = [
 name = "cli"
 version = "0.1.0"
 dependencies = [
+ "ai-segment",
  "commands",
  "core-color",
  "core-model",
  "develop",
  "engine",
+ "export",
  "gpu",
  "jpeg-decoder",
  "lens-db",
+ "masks",
+ "platform",
  "raw-io",
+ "render-cpu",
  "tagging",
  "tagging-onnx",
  "tool-api",
@@ -1096,7 +1111,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1333,6 +1348,7 @@ dependencies = [
  "export",
  "gpu",
  "lens-db",
+ "masks",
  "platform",
  "render-cpu",
  "tool-api",
@@ -1782,7 +1798,7 @@ dependencies = [
  "glutin_egl_sys",
  "glutin_glx_sys",
  "glutin_wgl_sys",
- "libloading",
+ "libloading 0.8.9",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -1842,6 +1858,7 @@ dependencies = [
  "bytemuck",
  "commands",
  "core-model",
+ "masks",
  "pollster 0.4.0",
  "render-cpu",
  "tool-api",
@@ -2438,7 +2455,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "pkg-config",
 ]
 
@@ -2515,6 +2532,16 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
 dependencies = [
  "cfg-if",
  "windows-link",
@@ -2604,6 +2631,14 @@ name = "macro_rules_attribute-proc_macro"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc04a4c58212d57930a24bf47d3fa87485264a3a054e9c10e042eb373573ad3c"
+
+[[package]]
+name = "masks"
+version = "0.1.0"
+dependencies = [
+ "core-color",
+ "core-model",
+]
 
 [[package]]
 name = "matrixmultiply"
@@ -3413,6 +3448,7 @@ version = "2.0.0-rc.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37c87aa7a90b7ff3e0fe36cccd475df8d67f15f07f4d6c370c4b38464232813c"
 dependencies = [
+ "libloading 0.9.0",
  "ndarray",
  "ort-sys 2.0.0-rc.15",
  "smallvec",
@@ -4014,6 +4050,7 @@ dependencies = [
  "core-color",
  "core-model",
  "develop",
+ "masks",
  "tool-api",
  "tool-exposure",
 ]
@@ -5450,7 +5487,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "log",
  "naga",
  "naga-types",
@@ -5840,7 +5877,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "once_cell",
  "rustix 1.1.6",
  "x11rb-protocol",

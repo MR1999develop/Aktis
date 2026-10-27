@@ -127,15 +127,18 @@ pub fn lensfun_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) ->
     config_dir(os, app, env).map(|d| d.join("lensfun"))
 }
 
-/// Folder for data files the user may add, such as neural-network models:
-/// `%APPDATA%\<app>` on Windows, `$XDG_DATA_HOME/<app>` or
-/// `~/.local/share/<app>` on Linux, `~/Library/Application Support/<app>` on
-/// macOS. `env` as in [`config_dir`].
+/// Folder for large data that can be downloaded again (AI models, caches),
+/// following each system's convention: `%LOCALAPPDATA%\<app>` on Windows (not
+/// roamed between machines), `$XDG_DATA_HOME/<app>` or `~/.local/share/<app>`
+/// on Linux, `~/Library/Application Support/<app>` on macOS.
+///
+/// `env` looks up environment variables, as in [`config_dir`]. Returns `None`
+/// when the variables a system needs are missing or relative.
 #[must_use]
 pub fn data_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     let absolute = |v: OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
     let base = match os {
-        Os::Windows => env("APPDATA").and_then(absolute)?,
+        Os::Windows => env("LOCALAPPDATA").and_then(absolute)?,
         Os::Linux => env("XDG_DATA_HOME")
             .and_then(absolute)
             .or_else(|| env("HOME").and_then(absolute).map(|h| h.join(".local").join("share")))?,
@@ -159,6 +162,20 @@ pub fn cache_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> O
         Os::MacOs => env("HOME").and_then(absolute)?.join("Library").join("Caches"),
     };
     Some(base.join(app))
+}
+
+/// Like [`data_dir`], but in the roaming `%APPDATA%\<app>` on Windows (the
+/// same folder elsewhere). Only for finding data that other programs, such as
+/// an earlier denoiser, keep there.
+#[must_use]
+pub fn roaming_data_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    match os {
+        Os::Windows => {
+            let absolute = |v: OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
+            Some(env("APPDATA").and_then(absolute)?.join(app))
+        }
+        Os::Linux | Os::MacOs => data_dir(os, app, env),
+    }
 }
 
 #[cfg(test)]
@@ -266,10 +283,14 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn data_dir_is_roaming_and_cache_dir_is_local_on_windows() {
+    fn data_and_cache_dirs_are_local_and_only_the_roaming_one_roams_on_windows() {
         let vars = [("APPDATA", r"C:\Users\m\AppData\Roaming"), ("LOCALAPPDATA", r"C:\Users\m\AppData\Local")];
-        assert_eq!(data_dir(Os::Windows, "rne", env(&vars)), Some(PathBuf::from(r"C:\Users\m\AppData\Roaming\rne")));
+        assert_eq!(data_dir(Os::Windows, "rne", env(&vars)), Some(PathBuf::from(r"C:\Users\m\AppData\Local\rne")));
         assert_eq!(cache_dir(Os::Windows, "rne", env(&vars)), Some(PathBuf::from(r"C:\Users\m\AppData\Local\rne")));
+        assert_eq!(
+            roaming_data_dir(Os::Windows, "rne", env(&vars)),
+            Some(PathBuf::from(r"C:\Users\m\AppData\Roaming\rne"))
+        );
     }
 
     #[test]
@@ -277,6 +298,7 @@ mod tests {
         for os in [Os::Windows, Os::Linux, Os::MacOs] {
             assert_eq!(data_dir(os, "rne", env(&[])), None);
             assert_eq!(cache_dir(os, "rne", env(&[])), None);
+            assert_eq!(roaming_data_dir(os, "rne", env(&[])), None);
         }
     }
 }

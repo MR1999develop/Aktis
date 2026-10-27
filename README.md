@@ -14,6 +14,11 @@ tests and a release build, and writes `target\check.log` and a summary in
 `target\check-summary.txt`. `scripts\run.bat` starts the editor (drop a RAW
 file on it to open that file).
 
+AI selection: `scripts\get-ai.bat` downloads ONNX Runtime with DirectML and the
+models once (about 2 GB, into `%LOCALAPPDATA%\rne\models`); then drop a RAW
+file on `scripts\ai-check.bat` to see subject, people, person parts, subtract
+and brush selections in `target\ai-check\`.
+
 By hand:
 
 ```sh
@@ -42,6 +47,8 @@ cargo fmt --all --check
 | `crates/editor` | The editor without the window: documents and undo, background jobs (open, preview, export), viewer zoom and pan. |
 | `crates/app` | The desktop window (egui): menu, viewer, inspector, status bar. |
 | `crates/lens-db` | Lensfun database reader, camera/lens lookup, distortion/TCA/vignetting maths. |
+| `crates/masks` | Mask nodes → mask images: AI rasters refined by colour, brush strokes, add/subtract/intersect, feather, raster cache. |
+| `crates/ai-segment` | AI selection (subject, objects, people, hair/skin/clothes/face features) with ONNX Runtime loaded at run time; model catalog. |
 | `crates/cli` | `rne` command: develop a RAW file to JPEG without the window. |
 | `crates/tagging` | AI tagging logic: keyword list, embeddings, zero-shot scores, learning from decisions, suggestions. |
 | `crates/tagging-onnx` | SigLIP 2 image/text encoders on ONNX Runtime (local, offline). |
@@ -115,9 +122,14 @@ cargo run --release -p cli -- lenses sony 24-70
 cargo run --release -p cli -- profiles path/to/photo.ARW
 cargo run --release -p cli -- gpu
 cargo run --release -p cli -- tag photo.ARW --model path/to/siglip2 --keywords keywords.txt
+cargo run --release -p cli -- models
+cargo run --release -p cli -- mask path/to/photo.ARW --people
+cargo run --release -p cli -- mask path/to/photo.ARW --people --subtract --parts face-skin
+cargo run --release -p cli -- develop path/to/photo.ARW --exposure 1 --subject
 ```
 
 AI tagging (semi-automatic keywords): see `docs/ai-tagging.md`.
+AI selection needs ONNX Runtime and the models: see `docs/ai-masks.md`.
 
 Use `--release`: the CPU development stage is slow in debug builds.
 

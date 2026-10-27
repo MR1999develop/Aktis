@@ -1,0 +1,34 @@
+[package]
+name = "ai-segment"
+description = "AI selection: subject, objects from clicks and boxes, people. Runs ONNX models on any GPU vendor or the CPU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["onnx"]
+# Inference with ONNX Runtime, loaded at run time (nothing is linked or
+# downloaded at build time). Without it the crate still builds masks'
+# prompts and pipelines, and reports that AI is not available.
+onnx = ["dep:ort"]
+
+[dependencies]
+core-model.workspace = true
+core-color.workspace = true
+masks.workspace = true
+# Pre-release, pinned exactly; upgraded deliberately. API 22 = ONNX Runtime 1.22 or later.
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = [
+    "std",
+    "load-dynamic",
+    "api-22",
+    "cuda",
+    "directml",
+    "migraphx",
+    "rocm",
+    "openvino",
+    "coreml",
+] }
+
+[lints]
+workspace = true

@@ -24,6 +24,11 @@ core-color.workspace = true
 tagging.workspace = true
 tagging-onnx.workspace = true
 jpeg-decoder = { version = "0.3", default-features = false }
+masks.workspace = true
+platform.workspace = true
+ai-segment.workspace = true
+render-cpu.workspace = true
+export.workspace = true
 
 [lints]
 workspace = true

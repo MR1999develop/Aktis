@@ -437,7 +437,7 @@ fn session(path: &Path, threads: usize, gpu: Option<Gpu>) -> Result<Session, Str
 /// it compiles on the first run, so later runs start faster.
 #[must_use]
 pub fn rtx_cache_dir() -> PathBuf {
-    platform::cache_dir(platform::Os::current(), "RawNodeEditor", crate::models::process_env)
+    platform::cache_dir(platform::Os::current(), platform::APP_DIR, crate::models::process_env)
         .unwrap_or_else(|| std::env::temp_dir().join("RawNodeEditor"))
         .join("tensorrt-rtx-cache")
 }

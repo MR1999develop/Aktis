@@ -94,6 +94,13 @@ string_id!(
     ParamId
 );
 
+string_id!(
+    /// Stable identifier of an AI model and its weights (`"sam2.1_small"`).
+    /// A recipe records which model produced each AI mask, so a mask can be
+    /// recomputed with the same model, or flagged when it is not installed.
+    ModelId
+);
+
 /// Identifier of a node inside one graph. Never reused within that graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub(crate) u32);

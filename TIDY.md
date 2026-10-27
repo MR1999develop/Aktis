@@ -40,3 +40,15 @@
   and no cancel. Port an earlier denoiser's `JobControl` and progressive tiles
   (starting from the visible area) into `editor::worker` when the node
   becomes a common one.
+- Masks are evaluated on the CPU at full resolution for every render and
+  uploaded to the GPU; move refinement and feather to WGSL and cache per node
+  once the viewer renders previews interactively.
+- `ai-segment` decoder inputs clone the Segment Anything embedding (16 MB)
+  per click; pass views once profiling shows it matters.
+- Person parts sample the class maps pixel by pixel over the whole raster;
+  restrict to the person's box when large photos show it is slow.
+- CPU sessions use basic graph optimisations to avoid an ONNX Runtime 1.24
+  bug (see docs/ai-masks.md); re-test the extended level with newer releases.
+- The SAM 2.1 and MediaPipe ONNX files come from third-party GitHub
+  releases; export them from the official weights and host them in the
+  project's own release.

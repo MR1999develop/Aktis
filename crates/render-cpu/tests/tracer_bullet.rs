@@ -82,3 +82,49 @@ fn a_bypassed_node_passes_the_image_through() {
     let rendered = render_cpu::render(&session.recipe().graph, &registry, &developed).expect("renders");
     assert_eq!(rendered.image, developed);
 }
+
+#[test]
+fn a_masked_exposure_brightens_only_inside_the_mask_and_reports_missing_rasters() {
+    use core_model::{AiTarget, MaskComponent, MaskDef, MaskImage, MaskOp, MaskSource, ModelId, RasterKey};
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Exposure::shared()).expect("exposure registers");
+    let mut session = EditSession::new(Recipe::default());
+    let source = session.recipe().graph.source();
+    session
+        .apply(&registry, Edit::InsertSerial { after: source, tool: ToolId::new("exposure").expect("id") })
+        .expect("insert");
+    let node = session.recipe().graph.input_link(session.recipe().graph.output(), 0).expect("fed").from;
+    let param = ParamId::new("exposure").expect("id");
+    session.apply(&registry, Edit::SetParam { node, param, value: ParamValue::Float(1.0) }).expect("+1 stop");
+
+    // The model "selected" the left half of the frame.
+    let key = RasterKey::from_bytes([7; 16]);
+    let rasters = masks::MemoryRasters::new();
+    rasters.insert(key, MaskImage::from_values(2, 1, vec![1.0, 0.0]).expect("2×1 raster"));
+    let mut component =
+        MaskComponent::ai("Left", MaskOp::Add, AiTarget::Subject, ModelId::new("test_model").expect("id"));
+    if let MaskSource::Ai(ai) = &mut component.source {
+        ai.raster = Some(key);
+    }
+    let def = MaskDef { components: vec![component], refine_edges: false, ..MaskDef::default() };
+    session.apply(&registry, Edit::AddMask { to: node, def }).expect("add mask");
+
+    let developed =
+        develop::develop(&grey_sensor(0.09), &session.recipe().develop, WorkingSpace::LinearRec2020).expect("develops");
+    let rendered =
+        render_cpu::render_with_masks(&session.recipe().graph, &registry, &developed, &rasters).expect("renders");
+    assert!(rendered.missing_masks.is_empty());
+    let (w, h) = (developed.width(), developed.height());
+    let left = rendered.image.get(0, h / 2).expect("left pixel");
+    let right = rendered.image.get(w - 1, h / 2).expect("right pixel");
+    let base = developed.get(w - 1, h / 2).expect("source pixel");
+    assert!((left[1] - 2.0 * base[1]).abs() < 1e-5, "left doubled: {left:?} vs {base:?}");
+    assert!((right[1] - base[1]).abs() < 1e-6, "right untouched: {right:?} vs {base:?}");
+
+    // Without the raster the mask is empty: no effect anywhere, and it is reported.
+    let rendered = render_cpu::render(&session.recipe().graph, &registry, &developed).expect("renders");
+    assert_eq!(rendered.image, developed);
+    let mask_node = session.recipe().graph.input_link(node, 1).expect("key fed").from;
+    assert_eq!(rendered.missing_masks, vec![(mask_node, 0)]);
+}

@@ -164,6 +164,9 @@ pub struct Rendered {
     pub image: ImageF32,
     /// Tools used by the recipe but missing from this build (passed through).
     pub missing_tools: Vec<ToolId>,
+    /// AI mask components whose raster is not computed: (mask node,
+    /// component index). They selected nothing; the UI offers to compute them.
+    pub missing_masks: Vec<(core_model::NodeId, usize)>,
     /// Where it ran.
     pub backend: Backend,
     /// Why the GPU was skipped for this render, if it failed and the CPU took over.
@@ -222,13 +225,27 @@ impl Engine {
     /// # Errors
     /// [`EngineError::Render`] when the graph itself cannot be evaluated.
     pub fn render(&self, graph: &NodeGraph, source: &ImageF32) -> Result<Rendered, EngineError> {
+        self.render_with_masks(graph, source, &masks::NoRasters)
+    }
+
+    /// Like [`Self::render`], taking the rasters of AI masks from `rasters`.
+    ///
+    /// # Errors
+    /// [`EngineError::Render`] when the graph itself cannot be evaluated.
+    pub fn render_with_masks(
+        &self,
+        graph: &NodeGraph,
+        source: &ImageF32,
+        rasters: &dyn masks::RasterSource,
+    ) -> Result<Rendered, EngineError> {
         let mut gpu_failure = None;
         if let Some(g) = &self.gpu {
-            match g.render(graph, &self.registry, source) {
+            match g.render_with_masks(graph, &self.registry, source, rasters) {
                 Ok(r) => {
                     return Ok(Rendered {
                         image: r.image,
                         missing_tools: r.missing_tools,
+                        missing_masks: r.missing_masks,
                         backend: Backend::Gpu(g.context().adapter_name()),
                         gpu_failure: None,
                         tool_errors: r.tool_errors,
@@ -237,10 +254,11 @@ impl Engine {
                 Err(e) => gpu_failure = Some(e.to_string()),
             }
         }
-        let r = render_cpu::render(graph, &self.registry, source).map_err(EngineError::Render)?;
+        let r = render_cpu::render_with_masks(graph, &self.registry, source, rasters).map_err(EngineError::Render)?;
         Ok(Rendered {
             image: r.image,
             missing_tools: r.missing_tools,
+            missing_masks: r.missing_masks,
             backend: Backend::Cpu,
             gpu_failure,
             tool_errors: r.tool_errors,

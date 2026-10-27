@@ -11,6 +11,7 @@ core-color.workspace = true
 core-model.workspace = true
 tool-api.workspace = true
 render-cpu.workspace = true
+masks.workspace = true
 gpu.workspace = true
 export.workspace = true
 lens-db.workspace = true

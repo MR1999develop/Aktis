@@ -14,6 +14,8 @@ members = [
     "crates/engine",
     "crates/editor",
     "crates/lens-db",
+    "crates/masks",
+    "crates/ai-segment",
     "crates/cli",
     "crates/app",
     "crates/tagging",
@@ -45,6 +47,8 @@ editor = { path = "crates/editor" }
 lens-db = { path = "crates/lens-db" }
 tagging = { path = "crates/tagging" }
 tagging-onnx = { path = "crates/tagging-onnx" }
+masks = { path = "crates/masks" }
+ai-segment = { path = "crates/ai-segment" }
 tool-exposure = { path = "tools/exposure" }
 tool-denoise-ai = { path = "tools/denoise-ai" }
 

@@ -58,7 +58,7 @@ impl fmt::Display for ImageError {
 impl std::error::Error for ImageError {}
 
 /// Checks dimensions and returns the pixel count.
-fn pixel_count(width: u32, height: u32) -> Result<usize, ImageError> {
+pub(crate) fn pixel_count(width: u32, height: u32) -> Result<usize, ImageError> {
     if width == 0 || height == 0 {
         return Err(ImageError::Empty);
     }

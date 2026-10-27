@@ -1,6 +1,7 @@
 //! Image orientation as recorded by the camera (EXIF tag 0x0112).
 
 use crate::image::{ImageError, ImageF32};
+use crate::mask::{MaskImage, NormPoint};
 
 /// How an image must be turned to be viewed upright. Values follow EXIF 1–8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -31,6 +32,35 @@ impl Orientation {
         matches!(self, Self::Transpose | Self::Rotate90 | Self::Transverse | Self::Rotate270)
     }
 
+    /// The orientation that undoes this one.
+    #[must_use]
+    pub fn inverse(self) -> Self {
+        match self {
+            Self::Rotate90 => Self::Rotate270,
+            Self::Rotate270 => Self::Rotate90,
+            other => other,
+        }
+    }
+
+    /// Where a point of the stored (sensor-oriented) image lands in the
+    /// upright image, in normalised coordinates.
+    #[must_use]
+    pub fn to_upright(self, p: NormPoint) -> NormPoint {
+        let (x, y) = (p.x(), p.y());
+        let (u, v) = match self {
+            Self::Normal => (x, y),
+            Self::FlipHorizontal => (1.0 - x, y),
+            Self::Rotate180 => (1.0 - x, 1.0 - y),
+            Self::FlipVertical => (x, 1.0 - y),
+            Self::Transpose => (y, x),
+            Self::Rotate90 => (1.0 - y, x),
+            Self::Transverse => (1.0 - y, 1.0 - x),
+            Self::Rotate270 => (y, 1.0 - x),
+        };
+        // Inputs are in [0, 1], so are the results.
+        NormPoint::new(u, v).unwrap_or(p)
+    }
+
     /// Source coordinates of output pixel `(x, y)` in an input of `w × h`.
     fn source(self, x: usize, y: usize, w: usize, h: usize) -> (usize, usize) {
         match self {
@@ -55,19 +85,38 @@ impl ImageF32 {
         if o == Orientation::Normal {
             return Ok(self.clone());
         }
-        let (w, h) = (self.width() as usize, self.height() as usize);
-        let (ow, oh) = if o.swaps_axes() { (h, w) } else { (w, h) };
-        let src = self.pixels();
-        let mut out = Vec::with_capacity(src.len());
-        for y in 0..oh {
-            for x in 0..ow {
-                let (sx, sy) = o.source(x, y, w, h);
-                out.push(src[sy * w + sx]);
-            }
-        }
+        let out = reorient(self.pixels(), self.width() as usize, self.height() as usize, o);
         let (ow, oh) = if o.swaps_axes() { (self.height(), self.width()) } else { (self.width(), self.height()) };
         Self::from_pixels(ow, oh, self.space(), out)
     }
+}
+
+impl MaskImage {
+    /// The mask turned by `o`, exactly like [`ImageF32::oriented`].
+    ///
+    /// # Errors
+    /// Never in practice; the result has the same value count as `self`.
+    pub fn oriented(&self, o: Orientation) -> Result<Self, ImageError> {
+        if o == Orientation::Normal {
+            return Ok(self.clone());
+        }
+        let out = reorient(self.values(), self.width() as usize, self.height() as usize, o);
+        let (ow, oh) = if o.swaps_axes() { (self.height(), self.width()) } else { (self.width(), self.height()) };
+        Self::from_values(ow, oh, out)
+    }
+}
+
+/// Moves the `w × h` values of `src` as orientation `o` says.
+fn reorient<T: Copy>(src: &[T], w: usize, h: usize, o: Orientation) -> Vec<T> {
+    let (ow, oh) = if o.swaps_axes() { (h, w) } else { (w, h) };
+    let mut out = Vec::with_capacity(src.len());
+    for y in 0..oh {
+        for x in 0..ow {
+            let (sx, sy) = o.source(x, y, w, h);
+            out.push(src[sy * w + sx]);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -103,6 +152,45 @@ mod tests {
         for (o, w, h, want) in cases {
             let got = numbered().oriented(o).expect("oriented");
             assert_eq!(reds(&got), (w, h, want), "{o:?}");
+        }
+    }
+
+    const ALL: [Orientation; 8] = [
+        Orientation::Normal,
+        Orientation::FlipHorizontal,
+        Orientation::Rotate180,
+        Orientation::FlipVertical,
+        Orientation::Transpose,
+        Orientation::Rotate90,
+        Orientation::Transverse,
+        Orientation::Rotate270,
+    ];
+
+    #[test]
+    fn points_follow_the_pixels_they_sit_on() {
+        let img = numbered();
+        for o in ALL {
+            let up = img.oriented(o).expect("oriented");
+            for (i, value) in (1..=6).enumerate() {
+                let (sx, sy) = (i % 3, i / 3);
+                let p = NormPoint::new((sx as f32 + 0.5) / 3.0, (sy as f32 + 0.5) / 2.0).expect("finite");
+                let q = o.to_upright(p);
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // small positive coordinates
+                let (ux, uy) = ((q.x() * up.width() as f32) as u32, (q.y() * up.height() as f32) as u32);
+                assert_eq!(up.get(ux, uy).map(|px| px[0]), Some(value as f32), "{o:?} pixel {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_inverse_undoes_every_orientation_for_images_and_masks() {
+        let img = numbered();
+        let mask = MaskImage::from_values(3, 2, (1..=6).map(|v| v as f32).collect()).expect("3×2 mask");
+        for o in ALL {
+            let back = img.oriented(o).and_then(|r| r.oriented(o.inverse()));
+            assert_eq!(back, Ok(img.clone()), "{o:?}");
+            let back = mask.oriented(o).and_then(|m| m.oriented(o.inverse()));
+            assert_eq!(back, Ok(mask.clone()), "{o:?}");
         }
     }
 
