@@ -120,7 +120,7 @@ fn parse_tag(mut it: impl Iterator<Item = String>) -> Result<TagArgs, String> {
         model: PathBuf::new(),
         keywords: None,
         template: "{}".to_owned(),
-        min_probability: 0.05,
+        min_probability: 0.005,
         top: 10,
         search: None,
         quantized: false,

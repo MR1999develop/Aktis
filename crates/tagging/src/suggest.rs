@@ -93,7 +93,10 @@ impl ImageTags {
 /// How many keywords to propose and when to apply them without asking.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SuggestPolicy {
-    /// Keywords below this probability are not proposed.
+    /// Keywords below this probability are not proposed. SigLIP's zero-shot
+    /// probabilities are conservative (a correct keyword often scores 0.5 to
+    /// 5 %, a wrong one far below 0.1 %), hence the low default; keywords the
+    /// user confirms climb well above it once learned.
     pub min_probability: f32,
     /// At most this many proposals per image, most likely first.
     pub max_suggestions: usize,
@@ -107,7 +110,7 @@ pub struct SuggestPolicy {
 
 impl Default for SuggestPolicy {
     fn default() -> Self {
-        Self { min_probability: 0.05, max_suggestions: 12, auto_apply_above: None, auto_apply_min_examples: 10 }
+        Self { min_probability: 0.005, max_suggestions: 12, auto_apply_above: None, auto_apply_min_examples: 10 }
     }
 }
 

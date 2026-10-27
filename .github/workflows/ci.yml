@@ -120,7 +120,7 @@ jobs:
           kw=crates/tagging/testdata/keywords-it.txt
           {
             echo "== template {} =="
-            $rne tag testdata/tag/* --model models/siglip2 --keywords $kw
+            $rne tag testdata/tag/* --model models/siglip2 --keywords $kw | tee tags.txt
             echo "== template 'una foto di {}' =="
             $rne tag testdata/tag/* --model models/siglip2 --keywords $kw --template "una foto di {}"
             echo "== quantized, template 'una foto di {}' =="
@@ -129,6 +129,25 @@ jobs:
             $rne tag testdata/tag/*.jpg --model models/siglip2 --search "un animale con il muso colorato"
             $rne tag testdata/tag/* --model models/siglip2 --search "la Terra fotografata dallo spazio"
           } 2>&1 | tee -a ci-out/log.txt
+      - name: Expected keywords
+        # The first suggestion of each sample must name what it shows.
+        run: |
+          python3 - <<'PY' 2>&1 | tee -a ci-out/log.txt
+          import sys
+          expected = {"HappyFish": "Pesce", "baboon": "Scimmia", "building": "Edificio", "butterfly": "Farfalla",
+                      "fruits": "Frutta", "orange": "Arancia"}
+          lines = open("tags.txt").read().splitlines()
+          bad = []
+          for i, line in enumerate(lines):
+              for name, kw in expected.items():
+                  if line.endswith(f"/{name}.jpg"):
+                      first = lines[i + 1] if i + 1 < len(lines) else ""
+                      ok = kw in first
+                      print(f"{'ok  ' if ok else 'FAIL'} {name}: {first.strip()}")
+                      if not ok:
+                          bad.append(name)
+          sys.exit(1 if bad else 0)
+          PY
       - name: Publish results
         if: always()
         run: bash .github/scripts/publish-results.sh tagging-model ${{ job.status }}

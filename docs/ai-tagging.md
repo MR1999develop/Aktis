@@ -94,6 +94,21 @@ cargo run --release -p cli -- tag *.jpg --model path/to/siglip2 --search "barca 
 The CI job `tagging-model` does exactly this on sample photos and publishes
 the output on the branch `ci-results/tagging-model`.
 
+## Measured (CI, full-precision model, no training)
+
+On eight sample photos (OpenCV test images and the NASA NEF from the ISS)
+with the Italian list in `crates/tagging/testdata/keywords-it.txt` and no
+prompt template, the most likely keyword is right on every photo: Pesce,
+Scimmia, Edificio, Farfalla, Frutta, Arancia, Spazio. Zero-shot
+probabilities are low in absolute terms (0.6 % to 48 %) while wrong keywords
+stay below 0.1 %, which is why the default threshold is 0.5 %. Italian
+free-text search ranks the right photo first. Encoding takes about 0.18 s
+per photo on a CI CPU (about 30 minutes for 10 000 photos, in background).
+
+The 8-bit quantised graphs are faster (0.12 s) but clearly worse (they miss
+the mandrill), so the full-precision graphs are the default; `--quantized`
+stays available. A template such as `"una foto di {}"` did not help.
+
 ## Next steps (with the catalogue)
 
 - Store per photo: embedding + model id, and the decisions; store prompt
