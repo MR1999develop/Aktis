@@ -52,3 +52,9 @@
 - The SAM 2.1 and MediaPipe ONNX files come from third-party GitHub
   releases; export them from the official weights and host them in the
   project's own release.
+- One ONNX Runtime for denoise, selection and tagging (`onnx-env`, loaded at
+  run time). `get-ai.bat` installs the DirectML build (1.24): the TensorRT for
+  RTX provider of the denoiser needs a build that has it; offer it as an
+  option of `get-ai.bat`. The `ai-denoise` and `tagging-model` CI jobs still
+  expect a runtime downloaded at build time: give them the ORT download step
+  of the `ai-masks` job.

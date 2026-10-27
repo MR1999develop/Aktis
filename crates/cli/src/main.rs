@@ -33,9 +33,9 @@ use core_model::{
 use develop::prepare;
 use engine::{Engine, EngineChoice};
 use lens_db::{Applied, Lens, LensDatabase};
+use masks::RasterSource;
 use tagging::{ImageEncoder, ImageTags, SuggestPolicy, TextEncoder};
 use tool_api::ToolRegistry;
-use masks::RasterSource;
 
 type BoxError = Box<dyn std::error::Error>;
 

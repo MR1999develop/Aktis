@@ -14,10 +14,12 @@ tests and a release build, and writes `target\check.log` and a summary in
 `target\check-summary.txt`. `scripts\run.bat` starts the editor (drop a RAW
 file on it to open that file).
 
-AI selection: `scripts\get-ai.bat` downloads ONNX Runtime with DirectML and the
-models once (about 2 GB, into `%LOCALAPPDATA%\rne\models`); then drop a RAW
-file on `scripts\ai-check.bat` to see subject, people, person parts, subtract
-and brush selections in `target\ai-check\`.
+AI (denoise, selection, tagging): `scripts\get-ai.bat` downloads ONNX Runtime
+with DirectML and the selection models once (about 2 GB, into
+`%LOCALAPPDATA%\raw-node-editor\models`); the three AI modules share that one
+runtime library (crate `onnx-env`). Then drop a RAW file on
+`scripts\ai-check.bat` to see subject, people, person parts, subtract and
+brush selections in `target\ai-check\`.
 
 By hand:
 
@@ -97,8 +99,9 @@ final brightness.
 - **Models** are not in the repository: make them with `scripts/scunet`
   (see its README) or reuse an earlier denoiser's. They are looked for in
   `RNE_DENOISE_MODELS`, a `models` folder next to the program (or up to
-  three folders above it), then the `RawNodeEditor/models` and
-  `Denoiser/models` data folders. Without a model the node passes the
+  three folders above it), then the editor's models folder
+  (`%LOCALAPPDATA%\raw-node-editor\models`) and an earlier denoiser's
+  (`%APPDATA%\Denoiser\models`). Without a model the node passes the
   image through and says why.
 - **GPU**: on Windows TensorRT for RTX (RTX 30xx and later, with
   `tensorrt_rtx_1_4.dll` and `tensorrt_onnxparser_rtx_1_4.dll` next to `rne`;
@@ -106,9 +109,10 @@ final brightness.
   CPU, which is slow (about 17 s per megapixel on 12 threads).
   `RNE_DENOISE_DEVICE=cpu|directml|rtx` forces a device. With several tile
   sizes installed, the fastest for the GPU is measured once per run.
-- The first build downloads ONNX Runtime (Internet access needed). Without
-  the `ai-denoise` feature (`--no-default-features` on `cli`) the tool and
-  ONNX Runtime are left out.
+- ONNX Runtime is loaded at run time, shared with AI selection and tagging
+  (see above; `ORT_DYLIB_PATH` points to another build, for example one with
+  TensorRT for RTX). Without the `ai-denoise` feature (`--no-default-features`
+  on `cli`) the tool is left out.
 
 ## Try it
 

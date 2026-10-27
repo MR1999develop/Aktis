@@ -379,7 +379,8 @@ impl GpuRenderer {
                             }
                             GpuKernel::Host => {
                                 let from = input()?;
-                                let mut image = self.finish_segment(&segment_input, &steps, buffers, from, &mask_images)?;
+                                let mut image =
+                                    self.finish_segment(&segment_input, &steps, buffers, from, &mask_images)?;
                                 let before = mask.map(|_| image.clone());
                                 match tool.apply(&mut image, &params) {
                                     Err(e) => tool_errors.push((id, e)),

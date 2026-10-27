@@ -13,7 +13,6 @@
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::Instant;
 
 use ort::environment::Environment;
@@ -410,11 +409,10 @@ fn text<E: fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
-/// The ONNX Runtime environment, created once: `ort` allows a single one per
-/// process, and it must outlive every session.
+/// The process's ONNX Runtime environment, shared with the other AI modules
+/// (`ort` allows a single one per process).
 fn environment() -> Result<&'static Environment, String> {
-    static ENV: OnceLock<Result<Environment, String>> = OnceLock::new();
-    ENV.get_or_init(|| ort::init().with_name("raw-node-editor").build().map_err(text)).as_ref().map_err(Clone::clone)
+    onnx_env::runtime().map(|r| &r.env)
 }
 
 fn session(path: &Path, threads: usize, gpu: Option<Gpu>) -> Result<Session, String> {

@@ -15,9 +15,11 @@ cuda = ["ort/cuda"]
 [dependencies]
 core-model.workspace = true
 tagging.workspace = true
+onnx-env.workspace = true
 # ort is still a release candidate: pinned exactly, upgraded deliberately.
-# download-binaries fetches a prebuilt ONNX Runtime at build time.
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "copy-dylibs", "tls-native", "api-27"] }
+# The runtime library is loaded at run time through `onnx-env`, shared with
+# the other AI modules.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-22"] }
 # Only what is needed to read a tokenizer.json; no training, no downloads.
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 

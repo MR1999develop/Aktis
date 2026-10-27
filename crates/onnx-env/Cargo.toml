@@ -1,0 +1,16 @@
+[package]
+name = "onnx-env"
+description = "The one ONNX Runtime of the process, loaded at run time and shared by every AI module (denoise, selection, tagging)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+platform.workspace = true
+# The single declaration of ONNX Runtime's loading mode. Pre-release, pinned
+# exactly; upgraded deliberately. API 22 = ONNX Runtime 1.22 or later.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-22"] }
+
+[lints]
+workspace = true

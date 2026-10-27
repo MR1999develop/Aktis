@@ -11,12 +11,13 @@ default = ["onnx"]
 # Inference with ONNX Runtime, loaded at run time (nothing is linked or
 # downloaded at build time). Without it the crate still builds masks'
 # prompts and pipelines, and reports that AI is not available.
-onnx = ["dep:ort"]
+onnx = ["dep:ort", "dep:onnx-env"]
 
 [dependencies]
 core-model.workspace = true
 core-color.workspace = true
 masks.workspace = true
+onnx-env = { workspace = true, optional = true }
 # Pre-release, pinned exactly; upgraded deliberately. API 22 = ONNX Runtime 1.22 or later.
 ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = [
     "std",

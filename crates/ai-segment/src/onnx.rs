@@ -9,7 +9,7 @@
 //! the library offers that accepts it, else on the CPU.
 
 use std::borrow::Cow;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ort::environment::Environment;
 use ort::ep::{self, ExecutionProvider, ExecutionProviderDispatch};
@@ -19,28 +19,13 @@ use ort::value::Tensor as OrtTensor;
 
 use crate::inference::{AiError, Inference, Model, Tensor};
 
-/// The runtime library's file name on this system.
-#[must_use]
-pub fn library_name() -> String {
-    format!("{}onnxruntime{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX)
-}
+pub use onnx_env::{find_library, library_name};
 
-/// Where to look for the runtime library, in order: the `ORT_DYLIB_PATH`
-/// environment variable, next to the program, then each of `extra_dirs`.
-#[must_use]
-pub fn find_library(extra_dirs: &[PathBuf]) -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("ORT_DYLIB_PATH").map(PathBuf::from).filter(|p| p.is_file()) {
-        return Some(p);
-    }
-    let name = library_name();
-    let beside_exe = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(&name)));
-    beside_exe.into_iter().chain(extra_dirs.iter().map(|d| d.join(&name))).find(|p| p.is_file())
-}
-
-/// ONNX Runtime with its execution providers.
+/// ONNX Runtime with its execution providers: the process's one runtime
+/// (from `onnx-env`, shared with the other AI modules).
 pub struct OnnxRuntime {
-    env: Environment,
-    library: PathBuf,
+    env: &'static Environment,
+    library: &'static Path,
 }
 
 impl std::fmt::Debug for OnnxRuntime {
@@ -51,26 +36,19 @@ impl std::fmt::Debug for OnnxRuntime {
 
 impl OnnxRuntime {
     /// Loads the runtime library at `library`. Only one library can be loaded
-    /// per process; later calls reuse the first.
+    /// per process; later calls (here or in another AI module) reuse the first.
     ///
     /// # Errors
     /// [`AiError::Runtime`] when the library cannot be loaded or is too old.
     pub fn load(library: &Path) -> Result<Self, AiError> {
-        // The DirectML build needs a recent DirectML.dll; Windows' own copy in
-        // System32 is often too old. One next to the runtime is loaded first.
-        if let Some(dml) = library.parent().map(|d| d.join("DirectML.dll")).filter(|p| p.is_file()) {
-            ort::util::preload_dylib(dml.as_path())
-                .map_err(|e| AiError::Runtime(format!("cannot load {}: {e}", dml.display())))?;
-        }
-        let builder = ort::init_from(library).map_err(|e| AiError::Runtime(e.to_string()))?;
-        let env = builder.with_name("rne").build().map_err(|e| AiError::Runtime(e.to_string()))?;
-        Ok(Self { env, library: library.to_path_buf() })
+        let rt = onnx_env::load(library).map_err(AiError::Runtime)?;
+        Ok(Self { env: &rt.env, library: &rt.library })
     }
 
     /// The library in use.
     #[must_use]
     pub fn library(&self) -> &Path {
-        &self.library
+        self.library
     }
 
     /// GPU execution providers the loaded library offers, fastest first.
@@ -136,12 +114,12 @@ impl Inference for OnnxRuntime {
     fn load(&self, path: &Path) -> Result<Box<dyn Model>, AiError> {
         let mut problems = Vec::new();
         for (name, ep) in Self::gpu_providers() {
-            match session(&self.env, path, Some((name, ep))) {
+            match session(self.env, path, Some((name, ep))) {
                 Ok(s) => return Ok(Box::new(OnnxModel { session: s, device: name.to_owned() })),
                 Err(e) => problems.push(format!("{name}: {e}")),
             }
         }
-        match session(&self.env, path, None) {
+        match session(self.env, path, None) {
             Ok(s) => Ok(Box::new(OnnxModel { session: s, device: "CPU".to_owned() })),
             Err(e) => {
                 problems.push(format!("CPU: {e}"));

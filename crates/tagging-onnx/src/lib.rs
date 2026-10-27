@@ -134,7 +134,8 @@ fn graph_names(base: &str, prefer_quantized: bool) -> Vec<String> {
 }
 
 fn session(path: &Path, opts: &LoadOptions) -> Result<Session, OnnxError> {
-    let mut builder = Session::builder().map_err(runtime)?;
+    let env = &onnx_env::runtime().map_err(OnnxError::Runtime)?.env;
+    let mut builder = Session::builder(env).map_err(runtime)?;
     if let Some(n) = opts.threads {
         builder = builder.with_intra_threads(n.max(1)).map_err(runtime)?;
     }
