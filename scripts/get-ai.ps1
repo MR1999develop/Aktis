@@ -14,7 +14,9 @@
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot)
 
-$what = if ($args.Count -gt 0) { $args } else { @('all') }
+# @(...) keeps a list even with one name (PowerShell would unwrap it into a
+# string, and splatting a string passes it one letter at a time).
+$what = @(if ($args.Count -gt 0) { $args } else { 'all' })
 
 Write-Host 'Building rne...'
 cargo build --release -q -p cli
