@@ -406,8 +406,7 @@ mod tests {
         let reg = registry();
         let doc = Document::new(opened("x.NEF", Orientation::Normal), &reg, 1).unwrap();
         let rows = doc.node_rows(&ToolRegistry::new());
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].name, "Missing tool");
-        assert!(rows[0].params.is_empty());
+        assert_eq!(rows.len(), doc.node_rows(&reg).len(), "one row per starting node");
+        assert!(rows.iter().all(|r| r.name == "Missing tool" && r.params.is_empty()));
     }
 }
