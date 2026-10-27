@@ -9,7 +9,8 @@
 use std::fmt;
 
 use core_model::{
-    GraphError, Link, NodeGraph, NodeId, NodeKind, ParamId, ParamValue, Params, Recipe, ToolId, WhiteBalance,
+    GraphError, LensSettings, Link, NodeGraph, NodeId, NodeKind, ParamId, ParamValue, Params, ProfileChoice, Recipe,
+    ToolId, WhiteBalance,
 };
 use tool_api::ToolRegistry;
 
@@ -65,6 +66,10 @@ pub enum Edit {
     },
     /// Changes the white balance of the development stage.
     SetWhiteBalance(WhiteBalance),
+    /// Chooses the camera profile of the development stage.
+    SetCameraProfile(ProfileChoice),
+    /// Changes the lens corrections of the development stage.
+    SetLensCorrection(LensSettings),
 }
 
 impl Edit {
@@ -81,6 +86,8 @@ impl Edit {
             Self::SetEnabled { enabled: true, .. } => "Enable node".to_owned(),
             Self::SetEnabled { enabled: false, .. } => "Bypass node".to_owned(),
             Self::SetWhiteBalance(_) => "Change white balance".to_owned(),
+            Self::SetCameraProfile(_) => "Change camera profile".to_owned(),
+            Self::SetLensCorrection(_) => "Change lens corrections".to_owned(),
         }
     }
 }
@@ -98,6 +105,10 @@ pub enum EditError {
     UnknownParam(ToolId, ParamId),
     /// A white-balance multiplier is not finite and positive.
     InvalidWhiteBalance,
+    /// A named camera profile has an empty name.
+    InvalidProfileName,
+    /// The lens correction zoom is outside 0.25–4, or a chosen lens name is empty.
+    InvalidLensSettings,
 }
 
 impl fmt::Display for EditError {
@@ -108,6 +119,10 @@ impl fmt::Display for EditError {
             Self::UnknownTool(id) => write!(f, "tool '{id}' is not available in this build"),
             Self::UnknownParam(tool, p) => write!(f, "tool '{tool}' has no parameter '{p}'"),
             Self::InvalidWhiteBalance => write!(f, "white balance multipliers must be positive numbers"),
+            Self::InvalidProfileName => write!(f, "a camera profile needs a name"),
+            Self::InvalidLensSettings => {
+                write!(f, "lens zoom must be between 0.25 and 4, and a chosen lens needs a name")
+            }
         }
     }
 }
@@ -146,6 +161,8 @@ enum Undo {
         previous: bool,
     },
     WhiteBalance(WhiteBalance),
+    Profile(ProfileChoice),
+    Lens(LensSettings),
     /// Structural edits keep the whole previous graph: graphs are small and
     /// this restores ids and links exactly.
     Graph(Box<NodeGraph>),
@@ -243,6 +260,8 @@ impl EditSession {
                 }
             }
             Undo::WhiteBalance(wb) => self.recipe.develop.white_balance = *wb,
+            Undo::Profile(p) => self.recipe.develop.profile = p.clone(),
+            Undo::Lens(l) => self.recipe.develop.lens = l.clone(),
             Undo::Graph(g) => self.recipe.graph = (**g).clone(),
         }
         self.undone.push(step);
@@ -306,6 +325,26 @@ impl EditSession {
             Edit::SetWhiteBalance(WhiteBalance::Multipliers(m)) if !m.iter().all(|v| v.is_finite() && *v > 0.0) => {
                 Err(EditError::InvalidWhiteBalance)
             }
+            Edit::SetCameraProfile(ProfileChoice::Named(name)) => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err(EditError::InvalidProfileName);
+                }
+                Ok(Edit::SetCameraProfile(ProfileChoice::Named(name.to_owned())))
+            }
+            Edit::SetLensCorrection(mut lens) => {
+                if lens.zoom.is_some_and(|z| !(z.is_finite() && (0.25..=4.0).contains(&z))) {
+                    return Err(EditError::InvalidLensSettings);
+                }
+                if let Some(name) = &lens.lens {
+                    let name = name.trim();
+                    if name.is_empty() {
+                        return Err(EditError::InvalidLensSettings);
+                    }
+                    lens.lens = Some(name.to_owned());
+                }
+                Ok(Edit::SetLensCorrection(lens))
+            }
             other => Ok(other),
         }
     }
@@ -340,6 +379,14 @@ impl EditSession {
             Edit::SetWhiteBalance(wb) => {
                 let previous = std::mem::replace(&mut self.recipe.develop.white_balance, *wb);
                 Ok(Undo::WhiteBalance(previous))
+            }
+            Edit::SetCameraProfile(p) => {
+                let previous = std::mem::replace(&mut self.recipe.develop.profile, p.clone());
+                Ok(Undo::Profile(previous))
+            }
+            Edit::SetLensCorrection(l) => {
+                let previous = std::mem::replace(&mut self.recipe.develop.lens, l.clone());
+                Ok(Undo::Lens(previous))
             }
             Edit::InsertSerial { .. } | Edit::RemoveNode { .. } | Edit::Connect(_) | Edit::Disconnect { .. } => {
                 // Work on a copy and publish it only on success: the strong guarantee.

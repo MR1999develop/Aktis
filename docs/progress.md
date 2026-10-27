@@ -55,6 +55,24 @@ Done:
   "Show in folder" toast; status bar with camera, size, zoom, GPU; theme
   System/Light/Dark (dark by default); settings and recent files remembered.
 
+## Camera profiles and lens corrections: done
+
+- Camera profiles (`core-color`): dual-illuminant matrices weighted by the
+  white balance's colour temperature (DNG SDK method: neutral → xy by fixed
+  point, Robertson CCT, inverse-temperature mix, Bradford to D50/D65); DCP
+  reader (matrices, forward matrices, HueSatMap, LookTable; checked against
+  all 161 RawTherapee profiles) and a search of installed profiles (own
+  folder, Adobe, RawTherapee) by `UniqueCameraModel`. Recipe: `ProfileChoice`.
+- Lens corrections (`lens-db`, `develop`): lensfun XML read directly (own
+  small XML reader), built-in data for the major brands, newer files from the
+  user's `lensfun` folder; lensfun's camera/lens lookup (strict word match,
+  mount and sensor-size checks, maker aliases), spline/IDW interpolation and
+  coordinate rescaling; vignetting gain, then distortion + TCA resampling per
+  channel (Catmull-Rom, multithreaded) with automatic zoom against empty
+  borders. Recipe: `LensSettings`; edits `SetCameraProfile`,
+  `SetLensCorrection` with undo. `rne info | lenses | profiles`, `develop
+  --profile --lens --lens-zoom --no-lens`.
+
 ## Tests and CI
 
 GitHub Actions (`.github/workflows/ci.yml`) on every push:

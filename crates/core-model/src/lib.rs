@@ -7,6 +7,7 @@
 //! Pixel data inside the editor is always linear, scene-referred and in
 //! `f32`; quantisation happens only when a result leaves the editor.
 
+mod capture;
 mod graph;
 mod ids;
 mod image;
@@ -16,11 +17,12 @@ mod params;
 mod recipe;
 mod sensor;
 
+pub use capture::{CalibratedMatrix, CaptureInfo, Illuminant};
 pub use graph::{GraphError, Link, Node, NodeGraph, NodeKind, NodeMut, PortKind};
 pub use ids::{IdError, NodeId, ParamId, ToolId};
 pub use image::{ImageError, ImageF32, MAX_PIXELS, Rgba, WorkingSpace};
 pub use math::Matrix3;
 pub use orientation::Orientation;
 pub use params::{ParamValue, Params};
-pub use recipe::{DevelopSettings, Recipe, WhiteBalance};
+pub use recipe::{DevelopSettings, LensSettings, ProfileChoice, Recipe, WhiteBalance};
 pub use sensor::{BayerPattern, CfaPattern, SensorError, SensorImage};

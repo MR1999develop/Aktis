@@ -284,12 +284,36 @@ fn display_name(path: &std::path::Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-/// Decodes, develops and makes the preview copy. Errors are user messages.
+/// Decodes, develops (camera profile and lens corrections included) and
+/// makes the preview copy. Errors are user messages.
 fn open_file(path: &std::path::Path) -> Result<Opened, String> {
     let name = display_name(path);
     let raw = raw_io::read_raw(path).map_err(|e| format!("{name} could not be opened: {e}"))?;
-    let developed = develop::develop(&raw.sensor, &core_model::DevelopSettings::default(), WorkingSpace::LinearRec2020)
-        .map_err(|e| format!("{name} could not be developed: {e}"))?;
+    let (lens_db, mut develop_notes) = engine::lens_database();
+    let library = engine::profile_library();
+    let result = develop::prepare::develop_capture(
+        &raw.sensor,
+        &raw.capture,
+        &core_model::DevelopSettings::default(),
+        WorkingSpace::LinearRec2020,
+        &lens_db,
+        Some(&library),
+    )
+    .map_err(|e| format!("{name} could not be developed: {e}"))?;
+    let lens = result.lens.correction.as_ref().and(result.lens.lens.clone());
+    if let Some(lens_name) = &lens {
+        let a = result.lens.applied;
+        let what: Vec<&str> =
+            [(a.distortion, "distortion"), (a.tca, "chromatic aberration"), (a.vignetting, "vignetting")]
+                .iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, n)| *n)
+                .collect();
+        develop_notes.insert(0, format!("{lens_name}: {} corrected", what.join(", ")));
+    }
+    develop_notes.extend(result.lens.note.clone());
+    develop_notes.extend(result.profile.note.clone());
+    let developed = result.image;
     let preview = engine::downscale(&developed, PREVIEW_SIDE).map_err(|e| format!("{name}: {e}"))?;
     let developed = Arc::new(developed);
     let preview = if preview.width() == developed.width() { Arc::clone(&developed) } else { Arc::new(preview) };
@@ -300,6 +324,8 @@ fn open_file(path: &std::path::Path) -> Result<Opened, String> {
         developed,
         preview,
         has_camera_white_balance: raw.has_camera_white_balance,
+        lens,
+        develop_notes,
     })
 }
 

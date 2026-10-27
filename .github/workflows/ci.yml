@@ -105,8 +105,10 @@ jobs:
           {
             cargo run -q --release --locked -p cli -- gpu
             cargo run -q --release --locked -p cli -- info testdata/nikon-d3s.NEF
+            cargo run -q --release --locked -p cli -- lenses nikkor 24-70
             cargo run -q --release --locked -p cli -- develop testdata/nikon-d3s.NEF --exposure 0.5 -o ci-out/nikon-d3s.jpg
             cargo run -q --release --locked -p cli -- develop testdata/nikon-d3s.NEF --cpu -o ci-out/nikon-d3s-cpu.jpg
+            cargo run -q --release --locked -p cli -- develop testdata/nikon-d3s.NEF --no-lens -o ci-out/nikon-d3s-no-lens.jpg
           } 2>&1 | tee -a ci-out/log.txt
       - name: Screenshot of the window with the sample open
         run: cargo test -p app --release --locked --test screenshot -- --ignored --nocapture 2>&1 | tee -a ci-out/log.txt

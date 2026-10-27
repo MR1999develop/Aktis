@@ -29,23 +29,43 @@ cargo fmt --all --check
 | Crate | Responsibility |
 | --- | --- |
 | `crates/core-model` | Domain types: images, sensor data, parameters, node graph, recipe. No I/O. |
-| `crates/core-color` | Transfer curves, primaries, camera → working-space matrices. |
+| `crates/core-color` | Transfer curves, primaries, camera profiles (dual-illuminant matrices, DCP files). |
 | `crates/tool-api` | The `Tool` contract, parameter descriptors, the tool registry. |
 | `crates/commands` | Edits with validation and undo/redo: the only way UI and MCP change a recipe. |
-| `crates/develop` | Fixed development stage on the CPU (white balance, demosaic, camera matrix). |
+| `crates/develop` | Fixed development stage on the CPU (white balance, demosaic, lens corrections, camera profile). |
 | `crates/render-cpu` | Reference renderer: evaluates the graph with each tool's CPU code. |
 | `crates/platform` | The single place where Windows, Ubuntu and macOS differ. |
-| `crates/raw-io` | RAW/DNG → sensor data with rawler; levels, valid area, CFA, colour matrix. |
+| `crates/raw-io` | RAW/DNG → sensor data with rawler; levels, valid area, CFA, colour matrices, lens and shooting data. |
 | `crates/gpu` | GPU engine on wgpu (Vulkan, DirectX 12, Metal); must match `render-cpu`. |
 | `crates/export` | JPEG with an embedded sRGB profile, atomic writes, non-destructive names. |
 | `crates/engine` | Shared by window and command line: built-in tools, GPU render with CPU fallback, preview copy, display pixels, JPEG export. |
 | `crates/editor` | The editor without the window: documents and undo, background jobs (open, preview, export), viewer zoom and pan. |
 | `crates/app` | The desktop window (egui): menu, viewer, inspector, status bar. |
+| `crates/lens-db` | Lensfun database reader, camera/lens lookup, distortion/TCA/vignetting maths. |
 | `crates/cli` | `rne` command: develop a RAW file to JPEG without the window. |
 | `tools/exposure` | First tool: exposure in stops, CPU reference + WGSL kernel. |
 
 Pixel data inside the editor are linear, scene-referred `f32` in Rec.2020;
 quantisation happens only on output.
+
+## Camera profiles and lens corrections
+
+- **Profiles.** By default each camera uses its own calibration matrices
+  (illuminant A and D65 for about 740 cameras, from rawler's camera data),
+  mixed according to the white balance as the DNG specification describes.
+  DCP profiles can be chosen by name: the editor looks in its own `profiles`
+  folder and in those of Adobe Camera Raw / DNG Converter and RawTherapee when
+  they are installed (`rne profiles photo.ARW` lists them). Matrices, forward
+  matrices, hue/saturation maps and look tables are applied; profile tone
+  curves wait for tone mapping (phase 4).
+- **Lens corrections.** `data/lensfun/` holds the lensfun database for the
+  major camera and lens makers (CC BY-SA 3.0, see its README). Camera and
+  lens are recognised from the EXIF data; distortion, lateral chromatic
+  aberration and vignetting are corrected in camera RGB between demosaicing
+  and the profile, with lensfun's own interpolation and maths. Newer lensfun
+  XML files dropped in the editor's `lensfun` folder override the built-in
+  data. `rne info` shows what would be corrected; `rne lenses <words>` searches
+  the database.
 
 ## Adding a tool
 
@@ -59,7 +79,10 @@ quantisation happens only on output.
 ```sh
 cargo run --release -p app -- path/to/photo.ARW     # the window
 cargo run --release -p cli -- develop path/to/photo.ARW --exposure 0.5
+cargo run --release -p cli -- develop path/to/photo.ARW --profile "Adobe Standard" --no-lens
 cargo run --release -p cli -- info path/to/photo.ARW
+cargo run --release -p cli -- lenses sony 24-70
+cargo run --release -p cli -- profiles path/to/photo.ARW
 cargo run --release -p cli -- gpu
 ```
 

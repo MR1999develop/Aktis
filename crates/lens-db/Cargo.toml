@@ -1,0 +1,10 @@
+[package]
+name = "lens-db"
+description = "Lens database (lensfun format): cameras, lenses, calibration data and the correction maths."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

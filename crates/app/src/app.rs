@@ -489,6 +489,18 @@ impl EditorApp {
                     ui.separator();
                     ui.label(RichText::new("No white balance in file").color(t.warning));
                 }
+                let notes = doc.develop_notes().join("\n");
+                match doc.lens() {
+                    Some(lens) => {
+                        ui.separator();
+                        ui.label(lens).on_hover_text(notes);
+                    }
+                    None if !notes.is_empty() => {
+                        ui.separator();
+                        ui.weak("No lens corrections").on_hover_text(notes);
+                    }
+                    None => {}
+                }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 match (&self.backend, &self.gpu_problem) {

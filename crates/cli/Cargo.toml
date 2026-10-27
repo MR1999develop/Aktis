@@ -17,6 +17,7 @@ develop.workspace = true
 raw-io.workspace = true
 gpu.workspace = true
 engine.workspace = true
+lens-db.workspace = true
 tool-exposure.workspace = true
 
 [lints]

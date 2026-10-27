@@ -7,6 +7,10 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+/// Name of the editor's folder for profiles and lens data inside
+/// [`config_dir`]; the same as the window's application id (`app::APP_ID`).
+pub const APP_DIR: &str = "raw-node-editor";
+
 /// Operating systems the editor knows about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
@@ -108,6 +112,59 @@ pub fn command_key_name(os: Os) -> &'static str {
     }
 }
 
+/// Folders searched for DCP camera profiles, in order: the editor's own
+/// (`<config_dir>/profiles`), then those of Adobe Camera Raw / DNG Converter
+/// and of RawTherapee where they install profiles on `os`. Folders that do
+/// not exist on this computer are simply empty when searched.
+#[must_use]
+pub fn camera_profile_dirs(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    let absolute = |v: OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
+    let mut dirs: Vec<PathBuf> = config_dir(os, app, &env).map(|d| d.join("profiles")).into_iter().collect();
+    match os {
+        Os::Windows => {
+            if let Some(data) = env("PROGRAMDATA").and_then(absolute) {
+                dirs.push(data.join("Adobe").join("CameraRaw").join("CameraProfiles"));
+            }
+            if let Some(appdata) = env("APPDATA").and_then(absolute) {
+                dirs.push(appdata.join("Adobe").join("CameraRaw").join("CameraProfiles"));
+            }
+            // RawTherapee installs to "Program Files\RawTherapee\<version>\dcpprofiles".
+            for var in ["PROGRAMFILES", "PROGRAMW6432"] {
+                if let Some(pf) = env(var).and_then(absolute) {
+                    let rt = pf.join("RawTherapee");
+                    if !dirs.contains(&rt) {
+                        dirs.push(rt);
+                    }
+                }
+            }
+        }
+        Os::Linux => {
+            dirs.push(PathBuf::from("/usr/share/rawtherapee/dcpprofiles"));
+            dirs.push(PathBuf::from("/usr/local/share/rawtherapee/dcpprofiles"));
+            if let Some(home) = env("HOME").and_then(absolute) {
+                // Flatpak installation of RawTherapee.
+                dirs.push(home.join(".local/share/flatpak/app/com.rawtherapee.RawTherapee"));
+            }
+            dirs.push(PathBuf::from("/var/lib/flatpak/app/com.rawtherapee.RawTherapee"));
+        }
+        Os::MacOs => {
+            dirs.push(PathBuf::from("/Library/Application Support/Adobe/CameraRaw/CameraProfiles"));
+            if let Some(home) = env("HOME").and_then(absolute) {
+                dirs.push(home.join("Library/Application Support/Adobe/CameraRaw/CameraProfiles"));
+            }
+            dirs.push(PathBuf::from("/Applications/RawTherapee.app/Contents/Resources/dcpprofiles"));
+        }
+    }
+    dirs
+}
+
+/// Folder for newer lensfun database files that override the built-in ones
+/// (`<config_dir>/lensfun`).
+#[must_use]
+pub fn lensfun_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    config_dir(os, app, env).map(|d| d.join("lensfun"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +205,37 @@ mod tests {
             Some(PathBuf::from(r"C:\Users\m\AppData\Roaming\rne"))
         );
         assert_eq!(config_dir(Os::Windows, "rne", env(&[("APPDATA", "Roaming")])), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn profile_folders_start_with_our_own_and_include_other_programs() {
+        let linux = camera_profile_dirs(Os::Linux, "rne", env(&[("HOME", "/home/m")]));
+        assert_eq!(linux.first(), Some(&PathBuf::from("/home/m/.config/rne/profiles")));
+        assert!(linux.contains(&PathBuf::from("/usr/share/rawtherapee/dcpprofiles")));
+        let mac = camera_profile_dirs(Os::MacOs, "rne", env(&[("HOME", "/Users/m")]));
+        assert!(mac.contains(&PathBuf::from("/Library/Application Support/Adobe/CameraRaw/CameraProfiles")));
+        assert_eq!(
+            lensfun_dir(Os::Linux, "rne", env(&[("HOME", "/home/m")])),
+            Some(PathBuf::from("/home/m/.config/rne/lensfun"))
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn profile_folders_on_windows_include_adobe_and_rawtherapee() {
+        let dirs = camera_profile_dirs(
+            Os::Windows,
+            "rne",
+            env(&[
+                (r"APPDATA", r"C:\Users\m\AppData\Roaming"),
+                ("PROGRAMDATA", r"C:\ProgramData"),
+                ("PROGRAMFILES", r"C:\Program Files"),
+            ]),
+        );
+        assert_eq!(dirs.first(), Some(&PathBuf::from(r"C:\Users\m\AppData\Roaming\rne\profiles")));
+        assert!(dirs.contains(&PathBuf::from(r"C:\ProgramData\Adobe\CameraRaw\CameraProfiles")));
+        assert!(dirs.contains(&PathBuf::from(r"C:\Program Files\RawTherapee")));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "develop"
-description = "Fixed development stage on the CPU: white balance, demosaic, camera matrix → linear working space."
+description = "Fixed development stage on the CPU: white balance, demosaic, lens corrections, camera profile → linear working space."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 core-model.workspace = true
 core-color.workspace = true
+lens-db.workspace = true
 
 [lints]
 workspace = true

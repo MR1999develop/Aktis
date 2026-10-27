@@ -1,18 +1,25 @@
-//! Reads camera RAW and DNG files into [`SensorImage`].
+//! Reads camera RAW and DNG files into [`SensorImage`] and [`CaptureInfo`].
 //!
 //! The decoder (`rawler`) stays behind this crate: nothing else in the
 //! workspace sees its types. Black and white levels are applied here, keeping
 //! values below black (noise) instead of clipping them, and the image is cut
-//! to the area the camera declares as valid.
+//! to the area the camera declares as valid. Shooting data (lens, focal
+//! length, aperture) and the camera's colour matrices for every calibration
+//! illuminant are read too, for lens corrections and camera profiles.
 
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
-use core_model::{BayerPattern, CfaPattern, Matrix3, Orientation, SensorError, SensorImage};
+use core_model::{
+    BayerPattern, CalibratedMatrix, CaptureInfo, CfaPattern, Illuminant as LightSource, Matrix3, Orientation,
+    SensorError, SensorImage,
+};
 use rawler::RawImageData;
+use rawler::decoders::{Decoder, RawDecodeParams, RawMetadata};
 use rawler::imgop::xyz::Illuminant;
 use rawler::rawimage::RawPhotometricInterpretation;
+use rawler::rawsource::RawSource;
 
 /// Largest file accepted, checked before reading (1 GiB; real RAW files are far smaller).
 pub const MAX_FILE_BYTES: u64 = 1 << 30;
@@ -98,6 +105,8 @@ pub struct RawFile {
     pub orientation: Orientation,
     /// `false` when the file had no white balance and neutral multipliers were used.
     pub has_camera_white_balance: bool,
+    /// Camera, lens, shooting settings and colour calibration.
+    pub capture: CaptureInfo,
 }
 
 /// Reads and decodes a RAW or DNG file.
@@ -109,15 +118,24 @@ pub fn read_raw(path: &Path) -> Result<RawFile, RawIoError> {
     if bytes > MAX_FILE_BYTES {
         return Err(RawIoError::TooLarge { bytes });
     }
+    let source = RawSource::new(path).map_err(RawIoError::Io)?;
+    let params = RawDecodeParams::default();
     // The decoder has unfinished branches that panic on rare files; a bad file
     // must fail on its own, never take the application down.
-    let raw = catch_unwind(AssertUnwindSafe(|| rawler::decode_file(path)))
+    let raw = catch_unwind(AssertUnwindSafe(|| rawler::decode(&source, &params)))
         .map_err(|_| RawIoError::DecoderCrashed)?
         .map_err(|e| RawIoError::Decode(e.to_string()))?;
-    convert(&raw)
+    // Shooting data is optional: a file whose metadata cannot be read still develops.
+    let metadata = catch_unwind(AssertUnwindSafe(|| {
+        let decoder = rawler::get_decoder(&source).ok()?;
+        Decoder::raw_metadata(&*decoder, &source, &params).ok()
+    }))
+    .ok()
+    .flatten();
+    convert(&raw, metadata.as_ref())
 }
 
-fn convert(raw: &rawler::RawImage) -> Result<RawFile, RawIoError> {
+fn convert(raw: &rawler::RawImage, metadata: Option<&RawMetadata>) -> Result<RawFile, RawIoError> {
     let area = valid_area(raw.width, raw.height, rect(raw.crop_area), rect(raw.active_area));
     let (cfa, cpp) = match &raw.photometric {
         RawPhotometricInterpretation::BlackIsZero => return Err(RawIoError::Monochrome),
@@ -151,13 +169,63 @@ fn convert(raw: &rawler::RawImage) -> Result<RawFile, RawIoError> {
     )
     .map_err(RawIoError::Sensor)?;
 
+    let capture = capture_info(raw, metadata);
     Ok(RawFile {
         sensor,
         make: raw.clean_make.clone(),
         model: raw.clean_model.clone(),
         orientation: orientation(raw.orientation),
         has_camera_white_balance: has_wb,
+        capture,
     })
+}
+
+/// Shooting data and colour calibration of the file.
+#[allow(clippy::cast_possible_truncation)] // illuminant codes are below 256
+fn capture_info(raw: &rawler::RawImage, metadata: Option<&RawMetadata>) -> CaptureInfo {
+    let exif = metadata.map(|m| &m.exif);
+    let text = |s: Option<&String>| s.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+    let aperture = exif.and_then(|e| e.fnumber.and_then(|r| ratio(r.n, r.d))).or_else(|| {
+        // APEX aperture value: f-number = 2^(Av / 2).
+        exif.and_then(|e| e.aperture_value.and_then(|r| ratio(r.n, r.d))).map(|av| 2_f32.powf(av / 2.0))
+    });
+    // EXIF stores "infinity" as 0xFFFFFFFF/1 and "unknown" as 0.
+    let focus_distance = exif
+        .and_then(|e| e.subject_distance)
+        .and_then(|r| if r.n == u32::MAX { Some(1000.0) } else { ratio(r.n, r.d) });
+    let mut color_matrices: Vec<CalibratedMatrix> = raw
+        .color_matrix
+        .iter()
+        .filter_map(|(illuminant, flat)| {
+            Some(CalibratedMatrix {
+                illuminant: LightSource::from_code(*illuminant as u16),
+                xyz_to_camera: matrix_from_flat(flat)?,
+            })
+        })
+        .collect();
+    // HashMap order is arbitrary: sort for reproducible results.
+    color_matrices.sort_by(|a, b| {
+        let t = |m: &CalibratedMatrix| m.illuminant.temperature().unwrap_or(f32::MAX);
+        t(a).total_cmp(&t(b))
+    });
+    CaptureInfo {
+        camera_make: raw.make.trim().to_owned(),
+        camera_model: raw.model.trim().to_owned(),
+        clean_make: raw.clean_make.clone(),
+        clean_model: raw.clean_model.clone(),
+        lens_make: text(exif.and_then(|e| e.lens_make.as_ref())),
+        lens_model: text(exif.and_then(|e| e.lens_model.as_ref())),
+        focal_length: exif.and_then(|e| e.focal_length.and_then(|r| ratio(r.n, r.d))),
+        aperture,
+        focus_distance,
+        color_matrices,
+    }
+}
+
+/// `n / d` when both are positive and the result is finite.
+#[allow(clippy::cast_precision_loss)] // EXIF rationals are small numbers
+fn ratio(n: u32, d: u32) -> Option<f32> {
+    (n > 0 && d > 0).then(|| n as f32 / d as f32).filter(|v| v.is_finite())
 }
 
 /// A rectangle in sensor coordinates.
@@ -375,6 +443,13 @@ mod tests {
         assert!(matrix_from_flat(&[1.0; 8]).is_none());
         assert!(matrix_from_flat(&[0.0; 9]).is_none());
         assert!(matrix_from_flat(&[f32::NAN; 9]).is_none());
+    }
+
+    #[test]
+    fn exif_rationals_become_numbers_only_when_meaningful() {
+        assert_eq!(ratio(28, 10), Some(2.8));
+        assert_eq!(ratio(0, 1), None);
+        assert_eq!(ratio(5, 0), None);
     }
 
     #[test]

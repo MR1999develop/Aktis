@@ -30,6 +30,10 @@ pub struct Opened {
     pub preview: Arc<ImageF32>,
     /// `false` when the file had no white balance.
     pub has_camera_white_balance: bool,
+    /// Lens whose corrections were applied ("Sony FE 24-70mm f/2.8 GM"), if any.
+    pub lens: Option<String>,
+    /// What the development stage corrected, or why not, for a tooltip.
+    pub develop_notes: Vec<String>,
 }
 
 /// One parameter of a node, ready to draw.
@@ -135,6 +139,18 @@ impl Document {
     #[must_use]
     pub fn has_camera_white_balance(&self) -> bool {
         self.opened.has_camera_white_balance
+    }
+
+    /// Lens whose corrections were applied, if any.
+    #[must_use]
+    pub fn lens(&self) -> Option<&str> {
+        self.opened.lens.as_deref()
+    }
+
+    /// Profile and lens-correction details of the development stage.
+    #[must_use]
+    pub fn develop_notes(&self) -> &[String] {
+        &self.opened.develop_notes
     }
 
     /// The current recipe.
@@ -291,6 +307,8 @@ mod tests {
             developed: Arc::clone(&img),
             preview: img,
             has_camera_white_balance: true,
+            lens: None,
+            develop_notes: Vec::new(),
         }
     }
 

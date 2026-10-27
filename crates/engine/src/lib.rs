@@ -7,12 +7,19 @@
 //! - [`to_display`]: upright 8-bit sRGB pixels for the screen.
 //! - [`export_jpeg`]: upright JPEG with an sRGB profile, written atomically
 //!   under a name that never overwrites an existing file.
+//! - [`lens_database`] and [`profile_library`]: the lens data and the camera
+//!   profiles the development stage can use on this computer.
 //!
 //! The first-version output render (clip to sRGB) lives in `render-cpu`;
 //! this crate only decides where and in which order things run.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+use core_color::ProfileLibrary;
+use lens_db::LensDatabase;
+use platform::{APP_DIR, Os};
 
 use core_model::{ImageError, ImageF32, NodeGraph, Orientation, Rgba, ToolId};
 use tool_api::{RegistryError, ToolRegistry};
@@ -25,6 +32,32 @@ pub fn builtin_tools() -> Result<ToolRegistry, RegistryError> {
     let mut r = ToolRegistry::new();
     r.register(tool_exposure::Exposure::shared())?;
     Ok(r)
+}
+
+/// The built-in lens database, extended with newer lensfun files from the
+/// user's `lensfun` folder when there are any. Files there that cannot be
+/// read are returned as problems, so the caller can show them.
+pub fn lens_database() -> (Cow<'static, LensDatabase>, Vec<String>) {
+    let builtin = LensDatabase::builtin();
+    let Some(dir) = platform::lensfun_dir(Os::current(), APP_DIR, |k| std::env::var_os(k)) else {
+        return (Cow::Borrowed(builtin), Vec::new());
+    };
+    let has_xml = std::fs::read_dir(&dir).is_ok_and(|mut entries| {
+        entries.any(|e| e.is_ok_and(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("xml"))))
+    });
+    if !has_xml {
+        return (Cow::Borrowed(builtin), Vec::new());
+    }
+    let mut db = builtin.clone();
+    let problems = db.add_dir(&dir);
+    (Cow::Owned(db), problems)
+}
+
+/// Camera profiles (DCP) in the editor's `profiles` folder and in those of
+/// Adobe Camera Raw / DNG Converter and RawTherapee when installed.
+#[must_use]
+pub fn profile_library() -> ProfileLibrary {
+    ProfileLibrary::new(platform::camera_profile_dirs(Os::current(), APP_DIR, |k| std::env::var_os(k)))
 }
 
 /// Where a render may run.

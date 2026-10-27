@@ -1,7 +1,9 @@
 //! Behaviour of an edit session: validation, undo and redo.
 
 use commands::{Edit, EditError, EditSession};
-use core_model::{GraphError, Link, NodeId, ParamId, ParamValue, Recipe, ToolId, WhiteBalance};
+use core_model::{
+    GraphError, LensSettings, Link, NodeId, ParamId, ParamValue, ProfileChoice, Recipe, ToolId, WhiteBalance,
+};
 use tool_api::ToolRegistry;
 use tool_exposure::Exposure;
 
@@ -141,6 +143,36 @@ fn refused_edits_change_neither_recipe_nor_history() {
 
     assert_eq!(s.recipe(), &before);
     assert_eq!(s.undo_label(), undo_before);
+}
+
+#[test]
+fn camera_profile_and_lens_corrections_are_undoable_edits() {
+    let reg = registry();
+    let mut s = EditSession::new(Recipe::default());
+    s.apply(&reg, Edit::SetCameraProfile(ProfileChoice::Named("  Adobe Standard ".to_owned()))).expect("profile");
+    assert_eq!(s.recipe().develop.profile, ProfileChoice::Named("Adobe Standard".to_owned()));
+    s.apply(
+        &reg,
+        Edit::SetLensCorrection(LensSettings { vignetting: false, zoom: Some(1.1), ..LensSettings::default() }),
+    )
+    .expect("lens");
+    assert!(!s.recipe().develop.lens.vignetting);
+    assert_eq!(s.undo().as_deref(), Some("Change lens corrections"));
+    assert_eq!(s.recipe().develop.lens, LensSettings::default());
+    assert_eq!(s.undo().as_deref(), Some("Change camera profile"));
+    assert_eq!(s.recipe().develop.profile, ProfileChoice::Builtin);
+    assert_eq!(s.redo().as_deref(), Some("Change camera profile"));
+
+    let before = s.recipe().clone();
+    assert_eq!(
+        s.apply(&reg, Edit::SetCameraProfile(ProfileChoice::Named(" ".to_owned()))),
+        Err(EditError::InvalidProfileName)
+    );
+    let bad_zoom = LensSettings { zoom: Some(f32::NAN), ..LensSettings::default() };
+    assert_eq!(s.apply(&reg, Edit::SetLensCorrection(bad_zoom)), Err(EditError::InvalidLensSettings));
+    let empty_lens = LensSettings { lens: Some(String::new()), ..LensSettings::default() };
+    assert_eq!(s.apply(&reg, Edit::SetLensCorrection(empty_lens)), Err(EditError::InvalidLensSettings));
+    assert_eq!(s.recipe(), &before);
 }
 
 #[test]

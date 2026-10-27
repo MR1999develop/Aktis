@@ -13,6 +13,7 @@ members = [
     "crates/export",
     "crates/engine",
     "crates/editor",
+    "crates/lens-db",
     "crates/cli",
     "crates/app",
     "tools/exposure",
@@ -38,6 +39,7 @@ gpu = { path = "crates/gpu" }
 export = { path = "crates/export" }
 engine = { path = "crates/engine" }
 editor = { path = "crates/editor" }
+lens-db = { path = "crates/lens-db" }
 tool-exposure = { path = "tools/exposure" }
 
 [workspace.lints.rust]

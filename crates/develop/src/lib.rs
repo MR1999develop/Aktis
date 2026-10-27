@@ -1,13 +1,23 @@
 //! The fixed development stage, on the CPU: sensor data → linear working space.
 //!
-//! Order (fixed by the sensor's physics): white balance on the raw mosaic,
-//! demosaic, camera matrix into the working space. This is the reference
-//! implementation for the tracer bullet; quality demosaicing (and X-Trans)
-//! moves to the GPU engine in phase 3, tested against this one.
+//! Order (fixed by the sensor's physics and the optics): white balance on the
+//! raw mosaic, demosaic, lens corrections in camera RGB (vignetting, then
+//! distortion and lateral chromatic aberration, which move each colour
+//! channel differently), camera profile into the working space. This is the
+//! reference implementation; quality demosaicing (and X-Trans) moves to the
+//! GPU engine in phase 3, tested against this one.
+//!
+//! [`prepare`] chooses the profile and the lens correction for an image from
+//! its shooting data; [`develop_with`] applies them.
+
+mod lens;
+pub mod prepare;
 
 use std::fmt;
 
+use core_color::{ColorProfile, ProfileError};
 use core_model::{CfaPattern, DevelopSettings, ImageError, ImageF32, Rgba, SensorImage, WhiteBalance, WorkingSpace};
+use lens_db::LensCorrection;
 
 /// Why the development stage could not run.
 #[derive(Debug, Clone, PartialEq)]
@@ -16,6 +26,10 @@ pub enum DevelopError {
     UnsupportedCfa,
     /// The camera colour matrix cannot be inverted.
     DegenerateCameraMatrix,
+    /// The camera profile cannot be used.
+    Profile(ProfileError),
+    /// The lens correction was prepared for another image size.
+    LensSizeMismatch,
     /// The output image could not be created.
     Image(ImageError),
 }
@@ -25,6 +39,8 @@ impl fmt::Display for DevelopError {
         match self {
             Self::UnsupportedCfa => write!(f, "this sensor layout (X-Trans) is not supported yet"),
             Self::DegenerateCameraMatrix => write!(f, "the camera colour matrix in the file is not usable"),
+            Self::Profile(e) => write!(f, "camera profile: {e}"),
+            Self::LensSizeMismatch => write!(f, "the lens correction was prepared for another image size"),
             Self::Image(e) => e.fmt(f),
         }
     }
@@ -34,12 +50,23 @@ impl std::error::Error for DevelopError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Image(e) => Some(e),
+            Self::Profile(e) => Some(e),
             _ => None,
         }
     }
 }
 
-/// Develops sensor data into a linear image in `space`.
+/// What the development stage uses besides the sensor data and the settings.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DevelopInputs<'a> {
+    /// Camera profile; `None` uses the colour matrix stored with the sensor data.
+    pub profile: Option<&'a ColorProfile>,
+    /// Lens correction prepared for the sensor's size; `None` corrects nothing.
+    pub lens: Option<&'a LensCorrection>,
+}
+
+/// Develops sensor data into a linear image in `space`, with the sensor's
+/// own colour matrix and no lens correction.
 ///
 /// # Errors
 /// [`DevelopError`] for X-Trans sensors (not yet supported) or an unusable colour matrix.
@@ -48,38 +75,83 @@ pub fn develop(
     settings: &DevelopSettings,
     space: WorkingSpace,
 ) -> Result<ImageF32, DevelopError> {
-    let to_working =
-        core_color::camera_to_working(sensor.xyz_to_camera(), space).ok_or(DevelopError::DegenerateCameraMatrix)?;
+    develop_with(sensor, settings, space, &DevelopInputs::default())
+}
+
+/// Develops sensor data into a linear image in `space`, with a camera
+/// profile and lens corrections.
+///
+/// # Errors
+/// [`DevelopError`] for X-Trans sensors (not yet supported), an unusable
+/// colour matrix or profile, or a lens correction for another image size.
+pub fn develop_with(
+    sensor: &SensorImage,
+    settings: &DevelopSettings,
+    space: WorkingSpace,
+    inputs: &DevelopInputs<'_>,
+) -> Result<ImageF32, DevelopError> {
     let wb = match settings.white_balance {
         WhiteBalance::AsShot => sensor.as_shot_wb(),
         WhiteBalance::Multipliers(m) => m,
     };
-
     let w = sensor.width() as usize;
     let h = sensor.height() as usize;
-    let data = sensor.data();
-    let mut pixels: Vec<Rgba> = Vec::with_capacity(w * h);
+    if let Some(c) = inputs.lens
+        && (c.width() != sensor.width() || c.height() != sensor.height())
+    {
+        return Err(DevelopError::LensSizeMismatch);
+    }
 
-    match sensor.cfa() {
+    // Camera RGB, white-balanced.
+    let data = sensor.data();
+    let mut camera: Vec<[f32; 3]> = match sensor.cfa() {
         CfaPattern::Bayer(pattern) => {
             // White balance on the mosaic, before interpolation mixes the channels.
             let balanced: Vec<f32> =
                 data.iter().enumerate().map(|(i, v)| v * wb[pattern.channel_at(i % w, i / w)]).collect();
-            for y in 0..h {
-                for x in 0..w {
-                    let cam = demosaic_bilinear_at(&balanced, w, h, x, y, |xx, yy| pattern.channel_at(xx, yy));
-                    let rgb = to_working.apply(cam);
-                    pixels.push([rgb[0], rgb[1], rgb[2], 1.0]);
+            let mut out = vec![[0.0_f32; 3]; w * h];
+            lens::parallel_rows(&mut out, w, |first, rows| {
+                for (i, px) in rows.iter_mut().enumerate() {
+                    let (x, y) = (i % w, first + i / w);
+                    *px = demosaic_bilinear_at(&balanced, w, h, x, y, |xx, yy| pattern.channel_at(xx, yy));
                 }
-            }
+            });
+            out
         }
-        CfaPattern::LinearRgb => {
-            for cam in data.chunks_exact(3) {
-                let rgb = to_working.apply([cam[0] * wb[0], cam[1] * wb[1], cam[2] * wb[2]]);
-                pixels.push([rgb[0], rgb[1], rgb[2], 1.0]);
-            }
-        }
+        CfaPattern::LinearRgb => data.chunks_exact(3).map(|c| [c[0] * wb[0], c[1] * wb[1], c[2] * wb[2]]).collect(),
         CfaPattern::XTrans(_) => return Err(DevelopError::UnsupportedCfa),
+    };
+
+    // Lens corrections, in camera RGB where each channel is still one colour.
+    if let Some(c) = inputs.lens {
+        if c.applied().vignetting {
+            lens::devignette(&mut camera, w, c);
+        }
+        if c.moves_pixels() {
+            camera = lens::resample(&camera, w, h, c);
+        }
+    }
+
+    // Camera RGB → working space.
+    let mut pixels: Vec<Rgba> = vec![[0.0, 0.0, 0.0, 1.0]; w * h];
+    match inputs.profile {
+        Some(profile) => {
+            let t = profile.transform(wb, space).map_err(DevelopError::Profile)?;
+            lens::parallel_rows(&mut pixels, w, |first, rows| {
+                for (i, px) in rows.iter_mut().enumerate() {
+                    let rgb = t.apply(camera[first * w + i]);
+                    *px = [rgb[0], rgb[1], rgb[2], 1.0];
+                }
+            });
+        }
+        None => {
+            let to_working = core_color::camera_to_working(sensor.xyz_to_camera(), space)
+                .ok_or(DevelopError::DegenerateCameraMatrix)?;
+            for (px, cam) in pixels.iter_mut().zip(&camera) {
+                let rgb = to_working.apply(*cam);
+                *px = [rgb[0], rgb[1], rgb[2], 1.0];
+            }
+        }
     }
     ImageF32::from_pixels(sensor.width(), sensor.height(), space, pixels).map_err(DevelopError::Image)
 }
@@ -187,7 +259,8 @@ mod tests {
     #[test]
     fn explicit_multipliers_replace_the_as_shot_ones() {
         let s = sensor(4, 4, BayerPattern::Rggb, [0.5, 0.5, 0.5], [2.0, 1.0, 0.5]);
-        let settings = DevelopSettings { white_balance: WhiteBalance::Multipliers([1.0, 1.0, 1.0]) };
+        let settings =
+            DevelopSettings { white_balance: WhiteBalance::Multipliers([1.0, 1.0, 1.0]), ..DevelopSettings::default() };
         let img = develop(&s, &settings, WorkingSpace::LinearRec2020).expect("develops");
         assert_all_close(&img, [0.5; 3], 1e-4);
     }
@@ -221,6 +294,69 @@ mod tests {
             develop(&s, &DevelopSettings::default(), WorkingSpace::LinearRec2020),
             Err(DevelopError::UnsupportedCfa)
         );
+    }
+
+    fn vignetting_lens() -> lens_db::LensDatabase {
+        lens_db::LensDatabase::from_xml(
+            r#"<lensdatabase><lens><maker>T</maker><model>T 50mm f/2</model><mount>M</mount><cropfactor>1</cropfactor>
+            <calibration><vignetting model="pa" focal="50" aperture="2" distance="10" k1="-0.5" k2="0" k3="0"/>
+            <distortion model="poly3" focal="50" k1="0"/></calibration></lens></lensdatabase>"#,
+        )
+        .expect("database")
+    }
+
+    fn request(w: u32, h: u32) -> lens_db::CorrectionRequest {
+        lens_db::CorrectionRequest {
+            crop_factor: 1.0,
+            focal: 50.0,
+            aperture: 2.0,
+            distance: 10.0,
+            width: w,
+            height: h,
+            distortion: true,
+            tca: true,
+            vignetting: true,
+        }
+    }
+
+    #[test]
+    fn vignetting_correction_brightens_the_corners_of_a_flat_field() {
+        let db = vignetting_lens();
+        let s = sensor(30, 20, BayerPattern::Rggb, [0.3, 0.3, 0.3], [1.0; 3]);
+        let c = lens_db::LensCorrection::new(&db.lenses()[0], &request(30, 20)).expect("correction");
+        let inputs = DevelopInputs { profile: None, lens: Some(&c) };
+        let img =
+            develop_with(&s, &DevelopSettings::default(), WorkingSpace::LinearRec2020, &inputs).expect("develops");
+        let centre = img.get(15, 10).expect("pixel")[1];
+        let corner = img.get(0, 0).expect("pixel")[1];
+        assert!((centre - 0.3).abs() < 0.01, "{centre}");
+        assert!(corner > centre * 1.3, "corner {corner}, centre {centre}");
+    }
+
+    #[test]
+    fn a_lens_correction_for_another_size_is_refused() {
+        let db = vignetting_lens();
+        let s = sensor(30, 20, BayerPattern::Rggb, [0.3, 0.3, 0.3], [1.0; 3]);
+        let c = lens_db::LensCorrection::new(&db.lenses()[0], &request(31, 20)).expect("correction");
+        let inputs = DevelopInputs { profile: None, lens: Some(&c) };
+        let r = develop_with(&s, &DevelopSettings::default(), WorkingSpace::LinearRec2020, &inputs);
+        assert_eq!(r.map(|_| ()), Err(DevelopError::LensSizeMismatch));
+    }
+
+    #[test]
+    fn a_profile_keeps_a_balanced_grey_grey() {
+        let m = Matrix3::from_rows([[0.82, -0.3, -0.07], [-0.43, 1.2, 0.25], [-0.04, 0.13, 0.58]]);
+        let profile = ColorProfile::from_matrices(
+            "Test",
+            &[core_model::CalibratedMatrix { illuminant: core_model::Illuminant::D65, xyz_to_camera: m }],
+        )
+        .expect("profile");
+        // The camera saw a grey card as R 0.25, G 0.5, B 1.0 and recorded multipliers 2, 1, 0.5.
+        let s = sensor(6, 6, BayerPattern::Rggb, [0.25, 0.5, 1.0], [2.0, 1.0, 0.5]);
+        let inputs = DevelopInputs { profile: Some(&profile), lens: None };
+        let img =
+            develop_with(&s, &DevelopSettings::default(), WorkingSpace::LinearRec2020, &inputs).expect("develops");
+        assert_all_close(&img, [0.5; 3], 1e-3);
     }
 
     #[test]

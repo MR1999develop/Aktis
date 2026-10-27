@@ -2,7 +2,10 @@
 //!
 //! ```text
 //! rne develop <file> [-o <out.jpg>] [--exposure <stops>] [--quality <1-100>] [--cpu]
+//!             [--profile <name>] [--lens <name>] [--lens-zoom <factor>] [--no-lens]
 //! rne info <file>
+//! rne lenses [<words>...]
+//! rne profiles <file>
 //! rne gpu
 //! ```
 //!
@@ -17,8 +20,10 @@ use std::time::Instant;
 
 use args::{Command, DevelopArgs};
 use commands::{Edit, EditSession};
-use core_model::{ParamId, ParamValue, Recipe, ToolId, WorkingSpace};
+use core_model::{LensSettings, ParamId, ParamValue, ProfileChoice, Recipe, ToolId, WorkingSpace};
+use develop::prepare;
 use engine::{Engine, EngineChoice};
+use lens_db::{Applied, Lens, LensDatabase};
 
 type BoxError = Box<dyn std::error::Error>;
 
@@ -37,6 +42,8 @@ fn main() -> ExitCode {
         }
         Command::Gpu => gpu_info(),
         Command::Info(path) => info(&path),
+        Command::Lenses(words) => lenses(&words),
+        Command::Profiles(path) => profiles(&path),
         Command::Develop(a) => develop(&a),
     };
     match result {
@@ -69,11 +76,51 @@ fn gpu_info() -> Result<(), BoxError> {
     Ok(())
 }
 
+/// The lens database, reporting user files that could not be read.
+fn lens_database() -> std::borrow::Cow<'static, LensDatabase> {
+    let (db, problems) = engine::lens_database();
+    for problem in problems {
+        eprintln!("rne: warning: lens database: {problem}");
+    }
+    db
+}
+
+/// "distortion, chromatic aberration, vignetting".
+fn describe(applied: Applied) -> String {
+    let parts: Vec<&str> =
+        [(applied.distortion, "distortion"), (applied.tca, "chromatic aberration"), (applied.vignetting, "vignetting")]
+            .iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, name)| *name)
+            .collect();
+    if parts.is_empty() { "nothing".to_owned() } else { parts.join(", ") }
+}
+
 fn info(path: &Path) -> Result<(), BoxError> {
     let raw = raw_io::read_raw(path)?;
     let s = &raw.sensor;
+    let c = &raw.capture;
     println!("{}", path.display());
     println!("  camera       {} {}", raw.make, raw.model);
+    println!(
+        "  lens         {}",
+        match (&c.lens_make, &c.lens_model) {
+            (Some(make), Some(model)) => format!("{make} {model}"),
+            (None, Some(model)) => model.clone(),
+            _ => "(not recorded)".to_owned(),
+        }
+    );
+    let mut shot = Vec::new();
+    if let Some(f) = c.focal_length {
+        shot.push(format!("{f} mm"));
+    }
+    if let Some(a) = c.aperture {
+        shot.push(format!("f/{a:.1}"));
+    }
+    if let Some(d) = c.focus_distance {
+        shot.push(if d >= 1000.0 { "focus at infinity".to_owned() } else { format!("focus {d} m") });
+    }
+    println!("  shot         {}", if shot.is_empty() { "(not recorded)".to_owned() } else { shot.join(" \u{b7} ") });
     println!("  size         {}\u{d7}{}", s.width(), s.height());
     println!("  layout       {:?}", s.cfa());
     println!(
@@ -82,6 +129,55 @@ fn info(path: &Path) -> Result<(), BoxError> {
         if raw.has_camera_white_balance { "" } else { " (none in file)" }
     );
     println!("  orientation  {:?}", raw.orientation);
+    let illuminants: Vec<String> = c.color_matrices.iter().map(|m| format!("{:?}", m.illuminant)).collect();
+    println!(
+        "  profile      built-in matrices ({})",
+        if illuminants.is_empty() { "from the file".to_owned() } else { illuminants.join(", ") }
+    );
+
+    let db = lens_database();
+    let lens = prepare::prepare_lens(&db, c, &LensSettings::default(), s.width(), s.height());
+    println!("  lens data    {}", lens.lens.as_deref().unwrap_or("(lens not found)"));
+    println!("  corrects     {}", describe(lens.applied));
+    if let Some(note) = &lens.note {
+        println!("               ({note})");
+    }
+    Ok(())
+}
+
+/// What a database lens can correct, for listings.
+fn lens_data(l: &Lens) -> String {
+    describe(Applied { distortion: l.has_distortion(), tca: l.has_tca(), vignetting: l.has_vignetting() })
+}
+
+fn lenses(words: &[String]) -> Result<(), BoxError> {
+    let db = lens_database();
+    let found = db.search_lenses(&words.join(" "));
+    for l in &found {
+        println!("{}  [{}]  {}", l.full_name(), l.mounts.join(", "), lens_data(l));
+    }
+    eprintln!("rne: {} of {} lenses", found.len(), db.lenses().len());
+    Ok(())
+}
+
+fn profiles(path: &Path) -> Result<(), BoxError> {
+    let raw = raw_io::read_raw(path)?;
+    let library = engine::profile_library();
+    let (found, problems) = library.for_camera(&prepare::camera_names(&raw.capture));
+    println!("{} {}", raw.make, raw.model);
+    println!("  Built-in  (the camera's own matrices; the default)");
+    for entry in &found {
+        println!("  {}  ({})", entry.name, entry.path.display());
+    }
+    for problem in problems {
+        eprintln!("rne: warning: {problem}");
+    }
+    if found.is_empty() {
+        eprintln!("rne: no DCP profiles installed for this camera; searched:");
+        for dir in library.dirs() {
+            eprintln!("rne:   {}", dir.display());
+        }
+    }
     Ok(())
 }
 
@@ -98,6 +194,17 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
 
     // Build the recipe through commands, exactly as the UI and MCP will.
     let mut session = EditSession::new(Recipe::default());
+    if let Some(name) = &a.profile {
+        session.apply(engine.registry(), Edit::SetCameraProfile(ProfileChoice::Named(name.clone())))?;
+    }
+    if a.no_lens || a.lens.is_some() || a.lens_zoom.is_some() {
+        let lens = if a.no_lens {
+            LensSettings::off()
+        } else {
+            LensSettings { lens: a.lens.clone(), zoom: a.lens_zoom, ..LensSettings::default() }
+        };
+        session.apply(engine.registry(), Edit::SetLensCorrection(lens))?;
+    }
     if let Some(stops) = a.exposure {
         let source = session.recipe().graph.source();
         session.apply(engine.registry(), Edit::InsertSerial { after: source, tool: ToolId::new("exposure")? })?;
@@ -108,10 +215,28 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
     }
     let recipe = session.recipe();
 
-    let developed = develop::develop(&raw.sensor, &recipe.develop, WorkingSpace::LinearRec2020)?;
+    // The development stage with the camera profile and lens data available here.
+    let db = lens_database();
+    let library = engine::profile_library();
+    let developed = prepare::develop_capture(
+        &raw.sensor,
+        &raw.capture,
+        &recipe.develop,
+        WorkingSpace::LinearRec2020,
+        &db,
+        Some(&library),
+    )?;
+    if let Some(note) = &developed.profile.note {
+        eprintln!("rne: warning: {note}");
+    }
+    if recipe.develop.lens.enabled
+        && let Some(note) = &developed.lens.note
+    {
+        eprintln!("rne: note: {note}");
+    }
     let developed_at = started.elapsed();
 
-    let rendered = engine.render(&recipe.graph, &developed)?;
+    let rendered = engine.render(&recipe.graph, &developed.image)?;
     if let Some(why) = &rendered.gpu_failure {
         eprintln!("rne: warning: the GPU failed ({why}); rendered on the CPU");
     }
@@ -128,6 +253,12 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
     } else {
         (rendered.image.width(), rendered.image.height())
     };
+    let profile_name = developed.profile.profile.as_ref().map_or("file matrix", |p| p.name.as_str());
+    let lens_summary = match (&developed.lens.lens, developed.lens.correction.is_some()) {
+        (Some(name), true) => format!("{name}: {}", describe(developed.lens.applied)),
+        _ => "no lens corrections".to_owned(),
+    };
+    eprintln!("rne: profile {profile_name} \u{b7} {lens_summary}");
     eprintln!(
         "rne: {} {} {w}\u{d7}{h} \u{b7} decode {:.2}s \u{b7} develop {:.2}s \u{b7} render {:.2}s ({}) \u{b7} total {:.2}s",
         raw.make,

@@ -17,3 +17,13 @@
   system, Ubuntu should ship Inter or Noto Sans (see the design guidelines).
 - File dialogs have no parent window yet (`rfd::FileDialog::set_parent`), so
   on Windows they are not modal to the editor.
+- Lens corrections and DCP tables run on the CPU in `develop`; move them to
+  the GPU with the demosaic (phase 3), keeping these as the reference.
+- DCP tone curves and `BaselineExposureOffset` are read but not applied:
+  wire them into tone mapping (phase 4).
+- Profiles embedded in DNG files (forward matrices, hue/sat maps) are not
+  read yet: rawler only exposes the colour matrices.
+- Lensfun fisheye lenses are corrected within their own projection; a
+  fisheye → rectilinear conversion is not offered.
+- In-camera crop modes (APS-C crop on a full-frame body) use the body's crop
+  factor; deriving it from the image size would be more robust.

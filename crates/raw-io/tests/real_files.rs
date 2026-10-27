@@ -32,6 +32,16 @@ fn every_sample_in_testdata_decodes_and_develops() {
             s.as_shot_wb(),
             raw.orientation
         );
+        let c = &raw.capture;
+        println!(
+            "    lens {:?} {:?}, {:?} mm, f/{:?}, distance {:?} m, matrices {:?}",
+            c.lens_make,
+            c.lens_model,
+            c.focal_length,
+            c.aperture,
+            c.focus_distance,
+            c.color_matrices.iter().map(|m| m.illuminant).collect::<Vec<_>>()
+        );
         let img = develop::develop(s, &DevelopSettings::default(), WorkingSpace::LinearRec2020)
             .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let mean_g = img.pixels().iter().map(|p| f64::from(p[1])).sum::<f64>() / img.pixels().len() as f64;

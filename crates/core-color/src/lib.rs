@@ -1,9 +1,23 @@
 //! Colour science for the editor.
 //!
 //! The working space is linear Rec.2020 (D65). Conversions to and from other
-//! RGB spaces go through CIE XYZ; the camera's own RGB enters through the
-//! matrix stored in the RAW file. ICC profiles for export are handled by a
-//! colour-management engine in the export crate, not here.
+//! RGB spaces go through CIE XYZ. The camera's own RGB enters through a
+//! camera profile ([`ColorProfile`]): the camera's calibration matrices
+//! (built in for about 740 cameras, or stored in the DNG), or a DCP file
+//! ([`read_dcp`], [`ProfileLibrary`]). ICC profiles for export are handled by
+//! a colour-management engine in the export crate, not here.
+
+mod dcp;
+mod library;
+mod profile;
+mod temperature;
+
+pub use dcp::{DcpError, MAX_DCP_BYTES, read_dcp, write_dcp};
+pub use library::{CameraNames, LoadError, ProfileEntry, ProfileLibrary, load_dcp};
+pub use profile::{
+    Calibration, ColorProfile, HsvTable, MAX_TABLE_ENTRIES, ProfileError, ProfileSource, ProfileTransform,
+};
+pub use temperature::{D50_XY, D50_XYZ, D65_XYZ, bradford, xy_to_temperature, xy_to_xyz, xyz_to_xy};
 
 use core_model::{Matrix3, WorkingSpace};
 

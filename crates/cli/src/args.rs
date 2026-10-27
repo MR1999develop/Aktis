@@ -5,13 +5,25 @@ use std::path::PathBuf;
 pub const USAGE: &str = "\
 Usage:
   rne develop <file> [-o <out.jpg>] [--exposure <stops>] [--quality <1-100>] [--cpu]
+              [--profile <name>] [--lens <name>] [--lens-zoom <factor>] [--no-lens]
   rne info <file>
+  rne lenses [<words>...]
+  rne profiles <file>
   rne gpu
   rne help
 
 develop   Develops a RAW file to an sRGB JPEG. Without -o the JPEG goes next to
           the RAW file; an existing file is never overwritten.
-info      Shows camera, size and sensor layout of a RAW file.
+          Lens corrections (lensfun) are applied when camera and lens are known.
+          --profile    camera profile by name (see `rne profiles`); default: the
+                       camera's built-in matrices
+          --lens       lens by its database name, when the file does not say it
+                       or says it wrongly (see `rne lenses`)
+          --lens-zoom  magnification after correction (default: no empty borders)
+          --no-lens    no lens corrections
+info      Shows camera, lens, shooting data and the corrections that would apply.
+lenses    Lists the lenses of the lens database whose name contains every word.
+profiles  Lists the camera profiles (DCP) installed for the camera of a RAW file.
 gpu       Shows the GPU that would be used.";
 
 /// What to do.
@@ -19,6 +31,8 @@ gpu       Shows the GPU that would be used.";
 pub enum Command {
     Develop(DevelopArgs),
     Info(PathBuf),
+    Lenses(Vec<String>),
+    Profiles(PathBuf),
     Gpu,
     Help,
 }
@@ -31,6 +45,12 @@ pub struct DevelopArgs {
     pub exposure: Option<f32>,
     pub quality: u8,
     pub cpu_only: bool,
+    /// Camera profile by name; `None` for the built-in matrices.
+    pub profile: Option<String>,
+    /// Lens chosen by name.
+    pub lens: Option<String>,
+    pub lens_zoom: Option<f32>,
+    pub no_lens: bool,
 }
 
 /// Default JPEG quality: high enough to keep full colour resolution.
@@ -49,6 +69,12 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             Ok(Command::Info(PathBuf::from(file)))
         }
         "develop" => parse_develop(it).map(Command::Develop),
+        "lenses" => Ok(Command::Lenses(it.collect())),
+        "profiles" => {
+            let file = it.next().ok_or("profiles needs a RAW file")?;
+            no_more(it)?;
+            Ok(Command::Profiles(PathBuf::from(file)))
+        }
         other => Err(format!("unknown command '{other}'")),
     }
 }
@@ -59,8 +85,17 @@ fn no_more(mut it: impl Iterator<Item = String>) -> Result<(), String> {
 
 fn parse_develop(mut it: impl Iterator<Item = String>) -> Result<DevelopArgs, String> {
     let mut input = None;
-    let mut a =
-        DevelopArgs { input: PathBuf::new(), output: None, exposure: None, quality: DEFAULT_QUALITY, cpu_only: false };
+    let mut a = DevelopArgs {
+        input: PathBuf::new(),
+        output: None,
+        exposure: None,
+        quality: DEFAULT_QUALITY,
+        cpu_only: false,
+        profile: None,
+        lens: None,
+        lens_zoom: None,
+        no_lens: false,
+    };
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
@@ -83,6 +118,22 @@ fn parse_develop(mut it: impl Iterator<Item = String>) -> Result<DevelopArgs, St
                     .ok_or_else(|| format!("quality must be 1-100, not '{v}'"))?;
             }
             "--cpu" => a.cpu_only = true,
+            "--profile" => {
+                let v = value("--profile")?;
+                a.profile = (!v.eq_ignore_ascii_case("builtin") && !v.eq_ignore_ascii_case("built-in")).then_some(v);
+            }
+            "--lens" => a.lens = Some(value("--lens")?),
+            "--lens-zoom" => {
+                let v = value("--lens-zoom")?;
+                a.lens_zoom = Some(
+                    v.replace(',', ".")
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|z| z.is_finite() && (0.25..=4.0).contains(z))
+                        .ok_or_else(|| format!("lens zoom must be 0.25-4, not '{v}'"))?,
+                );
+            }
+            "--no-lens" => a.no_lens = true,
             flag if flag.starts_with('-') && flag.len() > 1 => return Err(format!("unknown option '{flag}'")),
             file if input.is_none() => input = Some(PathBuf::from(file)),
             extra => return Err(format!("unexpected argument '{extra}'")),
@@ -111,8 +162,28 @@ mod tests {
                 exposure: Some(0.5),
                 quality: 80,
                 cpu_only: true,
+                profile: None,
+                lens: None,
+                lens_zoom: None,
+                no_lens: false,
             })
         );
+    }
+
+    #[test]
+    fn profile_and_lens_options() {
+        let args =
+            ["develop", "a.arw", "--profile", "Adobe Standard", "--lens", "Sony FE 50mm f/1.8", "--lens-zoom", "1,05"];
+        let Ok(Command::Develop(a)) = parse(args.map(str::to_owned)) else { panic!("expected develop") };
+        assert_eq!(a.profile.as_deref(), Some("Adobe Standard"));
+        assert_eq!(a.lens.as_deref(), Some("Sony FE 50mm f/1.8"));
+        assert_eq!(a.lens_zoom, Some(1.05));
+        let Ok(Command::Develop(a)) = parse_str("develop a.arw --profile builtin --no-lens") else { panic!("develop") };
+        assert_eq!((a.profile, a.no_lens), (None, true));
+        assert_eq!(parse_str("develop a.arw --lens-zoom 9"), Err("lens zoom must be 0.25-4, not '9'".to_owned()));
+        assert_eq!(parse_str("lenses sony 50mm"), Ok(Command::Lenses(vec!["sony".to_owned(), "50mm".to_owned()])));
+        assert_eq!(parse_str("profiles a.nef"), Ok(Command::Profiles(PathBuf::from("a.nef"))));
+        assert_eq!(parse_str("profiles"), Err("profiles needs a RAW file".to_owned()));
     }
 
     #[test]
