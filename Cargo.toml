@@ -16,6 +16,8 @@ members = [
     "crates/lens-db",
     "crates/cli",
     "crates/app",
+    "crates/tagging",
+    "crates/tagging-onnx",
     "tools/exposure",
 ]
 
@@ -40,6 +42,8 @@ export = { path = "crates/export" }
 engine = { path = "crates/engine" }
 editor = { path = "crates/editor" }
 lens-db = { path = "crates/lens-db" }
+tagging = { path = "crates/tagging" }
+tagging-onnx = { path = "crates/tagging-onnx" }
 tool-exposure = { path = "tools/exposure" }
 
 [workspace.lints.rust]

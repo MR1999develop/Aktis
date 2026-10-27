@@ -10,6 +10,8 @@ Usage:
   rne lenses [<words>...]
   rne profiles <file>
   rne gpu
+  rne tag <files...> --model <dir> --keywords <file> [--template <text>] [--min <0-1>]
+          [--top <n>] [--search <text>] [--quantized]
   rne help
 
 develop   Develops a RAW file to an sRGB JPEG. Without -o the JPEG goes next to
@@ -24,7 +26,12 @@ develop   Develops a RAW file to an sRGB JPEG. Without -o the JPEG goes next to
 info      Shows camera, lens, shooting data and the corrections that would apply.
 lenses    Lists the lenses of the lens database whose name contains every word.
 profiles  Lists the camera profiles (DCP) in the editor's profiles folder for a RAW file's camera.
-gpu       Shows the GPU that would be used.";
+gpu       Shows the GPU that would be used.
+tag       Suggests keywords for RAW or JPEG files with a local AI model. --model is
+          a SigLIP 2 ONNX folder, --keywords a keyword list in Lightroom's text
+          format (one per line, tabs for levels, {synonyms}). --template puts each
+          keyword in a sentence, e.g. \"una foto di {}\". --search ranks the files by
+          how well they match a description instead.";
 
 /// What to do.
 #[derive(Debug, Clone, PartialEq)]
@@ -34,7 +41,21 @@ pub enum Command {
     Lenses(Vec<String>),
     Profiles(PathBuf),
     Gpu,
+    Tag(TagArgs),
     Help,
+}
+
+/// Arguments of `tag`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TagArgs {
+    pub inputs: Vec<PathBuf>,
+    pub model: PathBuf,
+    pub keywords: Option<PathBuf>,
+    pub template: String,
+    pub min_probability: f32,
+    pub top: usize,
+    pub search: Option<String>,
+    pub quantized: bool,
 }
 
 /// Arguments of `develop`.
@@ -75,6 +96,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             no_more(it)?;
             Ok(Command::Profiles(PathBuf::from(file)))
         }
+        "tag" => parse_tag(it).map(Command::Tag),
         other => Err(format!("unknown command '{other}'")),
     }
 }
@@ -143,6 +165,62 @@ fn parse_develop(mut it: impl Iterator<Item = String>) -> Result<DevelopArgs, St
     Ok(a)
 }
 
+fn parse_tag(mut it: impl Iterator<Item = String>) -> Result<TagArgs, String> {
+    let mut a = TagArgs {
+        inputs: Vec::new(),
+        model: PathBuf::new(),
+        keywords: None,
+        template: "{}".to_owned(),
+        min_probability: 0.005,
+        top: 10,
+        search: None,
+        quantized: false,
+    };
+    let mut model = None;
+    while let Some(arg) = it.next() {
+        let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
+        match arg.as_str() {
+            "--model" => model = Some(PathBuf::from(value("--model")?)),
+            "--keywords" => a.keywords = Some(PathBuf::from(value("--keywords")?)),
+            "--template" => {
+                a.template = value("--template")?;
+                if !a.template.contains("{}") {
+                    return Err("--template must contain {} where the keyword goes".to_owned());
+                }
+            }
+            "--min" => {
+                let v = value("--min")?;
+                a.min_probability = v
+                    .replace(',', ".")
+                    .parse()
+                    .ok()
+                    .filter(|p: &f32| (0.0..=1.0).contains(p))
+                    .ok_or_else(|| format!("--min must be between 0 and 1, not '{v}'"))?;
+            }
+            "--top" => {
+                let v = value("--top")?;
+                a.top = v
+                    .parse()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| format!("--top must be a positive number, not '{v}'"))?;
+            }
+            "--search" => a.search = Some(value("--search")?),
+            "--quantized" => a.quantized = true,
+            flag if flag.starts_with('-') && flag.len() > 1 => return Err(format!("unknown option '{flag}'")),
+            file => a.inputs.push(PathBuf::from(file)),
+        }
+    }
+    a.model = model.ok_or("tag needs --model <folder>")?;
+    if a.inputs.is_empty() {
+        return Err("tag needs at least one image".to_owned());
+    }
+    if a.keywords.is_none() && a.search.is_none() {
+        return Err("tag needs --keywords <file> or --search <text>".to_owned());
+    }
+    Ok(a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,6 +286,34 @@ mod tests {
         assert_eq!(parse_str("develop a.dng --fast"), Err("unknown option '--fast'".to_owned()));
         assert_eq!(parse_str("frobnicate"), Err("unknown command 'frobnicate'".to_owned()));
         assert_eq!(parse_str("gpu now"), Err("unexpected argument 'now'".to_owned()));
+    }
+
+    #[test]
+    fn tag_with_options_and_several_files() {
+        let Ok(Command::Tag(a)) =
+            parse_str("tag a.nef b.jpg --model m --keywords k.txt --template x{}y --min 0,2 --top 3 --quantized")
+        else {
+            panic!("expected tag")
+        };
+        assert_eq!(a.inputs, vec![PathBuf::from("a.nef"), PathBuf::from("b.jpg")]);
+        assert_eq!((a.model, a.keywords), (PathBuf::from("m"), Some(PathBuf::from("k.txt"))));
+        assert_eq!((a.template.as_str(), a.top, a.quantized), ("x{}y", 3, true));
+        assert!((a.min_probability - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn tag_mistakes_are_explained() {
+        assert_eq!(parse_str("tag a.jpg --keywords k"), Err("tag needs --model <folder>".to_owned()));
+        assert_eq!(parse_str("tag --model m --keywords k"), Err("tag needs at least one image".to_owned()));
+        assert_eq!(parse_str("tag a.jpg --model m"), Err("tag needs --keywords <file> or --search <text>".to_owned()));
+        assert_eq!(
+            parse_str("tag a.jpg --model m --keywords k --template plain"),
+            Err("--template must contain {} where the keyword goes".to_owned())
+        );
+        assert_eq!(
+            parse_str("tag a.jpg --model m --keywords k --min 2"),
+            Err("--min must be between 0 and 1, not '2'".to_owned())
+        );
     }
 
     #[test]

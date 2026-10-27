@@ -19,6 +19,10 @@ gpu.workspace = true
 engine.workspace = true
 lens-db.workspace = true
 tool-exposure.workspace = true
+core-color.workspace = true
+tagging.workspace = true
+tagging-onnx.workspace = true
+jpeg-decoder = { version = "0.3", default-features = false }
 
 [lints]
 workspace = true

@@ -43,6 +43,8 @@ cargo fmt --all --check
 | `crates/app` | The desktop window (egui): menu, viewer, inspector, status bar. |
 | `crates/lens-db` | Lensfun database reader, camera/lens lookup, distortion/TCA/vignetting maths. |
 | `crates/cli` | `rne` command: develop a RAW file to JPEG without the window. |
+| `crates/tagging` | AI tagging logic: keyword list, embeddings, zero-shot scores, learning from decisions, suggestions. |
+| `crates/tagging-onnx` | SigLIP 2 image/text encoders on ONNX Runtime (local, offline). |
 | `tools/exposure` | First tool: exposure in stops, CPU reference + WGSL kernel. |
 
 Pixel data inside the editor are linear, scene-referred `f32` in Rec.2020;
@@ -84,7 +86,10 @@ cargo run --release -p cli -- info path/to/photo.ARW
 cargo run --release -p cli -- lenses sony 24-70
 cargo run --release -p cli -- profiles path/to/photo.ARW
 cargo run --release -p cli -- gpu
+cargo run --release -p cli -- tag photo.ARW --model path/to/siglip2 --keywords keywords.txt
 ```
+
+AI tagging (semi-automatic keywords): see `docs/ai-tagging.md`.
 
 Use `--release`: the CPU development stage is slow in debug builds.
 

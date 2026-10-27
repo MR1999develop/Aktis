@@ -1,0 +1,43 @@
+[Soggetti]
+	Animali
+		Scimmia
+			{babbuino}
+			{mandrillo}
+		Pesce
+		Farfalla
+		Uccello
+		Cane
+		Gatto
+	Cibo
+		Frutta
+			Mela
+			Arancia
+			Banana
+			Uva
+		Verdura
+	Persone
+		Ritratto
+	Veicoli
+		Aereo
+		Automobile
+		Barca
+[Luoghi]
+	Architettura
+		Edificio
+			{palazzo}
+		Castello
+		Chiesa
+	Natura
+		Fiore
+		Montagna
+		Mare
+		Foresta
+	Spazio
+		Terra vista dallo spazio
+		Stazione spaziale
+Momento
+	Tramonto
+	Notte
+Stile
+	Bianco e nero
+	Dipinto

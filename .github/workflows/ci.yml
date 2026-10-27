@@ -121,6 +121,78 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # AI tagging end to end with the real model: SigLIP 2 from Hugging Face,
+  # sample photos (OpenCV test images and the NASA NEF), Italian keywords.
+  tagging-model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - name: Model
+        run: |
+          mkdir -p ci-out
+          {
+            python3 .github/scripts/siglip_head.py google/siglip2-base-patch16-224
+            curl -fsSL https://huggingface.co/api/models/onnx-community/siglip2-base-patch16-224-ONNX \
+              | python3 -c "import json,sys; [print(s['rfilename']) for s in json.load(sys.stdin)['siblings']]"
+            mkdir -p models/siglip2
+            base=https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/main
+            for f in onnx/vision_model.onnx onnx/text_model.onnx onnx/vision_model_quantized.onnx onnx/text_model_quantized.onnx tokenizer.json; do
+              curl -fsSL -o "models/siglip2/$(basename "$f")" "$base/$f" || echo "missing $f"
+            done
+            ls -l models/siglip2
+          } 2>&1 | tee -a ci-out/log.txt
+      - name: Sample images
+        run: |
+          mkdir -p testdata/tag
+          for f in fruits baboon butterfly building castle HappyFish aero3 orange; do
+            curl -fsSL --retry 3 -o "testdata/tag/$f.jpg" "https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/$f.jpg" \
+              || { echo "missing sample $f"; rm -f "testdata/tag/$f.jpg"; }
+          done
+          curl -fsSL --retry 3 -o testdata/tag/nikon-d3s.NEF https://raw.githubusercontent.com/letmaik/rawpy/main/test/iss030e122639.NEF \
+            || echo "missing sample NEF"
+          ls -l testdata/tag | tee -a ci-out/log.txt
+      - name: rne tag
+        run: |
+          cargo build -q --release --locked -p cli 2>&1 | tee -a ci-out/log.txt
+          rne=target/release/rne
+          kw=crates/tagging/testdata/keywords-it.txt
+          {
+            echo "== template {} =="
+            $rne tag testdata/tag/* --model models/siglip2 --keywords $kw | tee tags.txt
+            echo "== template 'una foto di {}' =="
+            $rne tag testdata/tag/* --model models/siglip2 --keywords $kw --template "una foto di {}"
+            echo "== quantized, template 'una foto di {}' =="
+            $rne tag testdata/tag/* --model models/siglip2 --keywords $kw --template "una foto di {}" --quantized
+            echo "== search =="
+            $rne tag testdata/tag/*.jpg --model models/siglip2 --search "un animale con il muso colorato"
+            $rne tag testdata/tag/* --model models/siglip2 --search "la Terra fotografata dallo spazio"
+          } 2>&1 | tee -a ci-out/log.txt
+      - name: Expected keywords
+        # The first suggestion of each sample must name what it shows.
+        run: |
+          python3 - <<'PY' 2>&1 | tee -a ci-out/log.txt
+          import sys
+          expected = {"HappyFish": "Pesce", "baboon": "Scimmia", "building": "Edificio", "butterfly": "Farfalla",
+                      "fruits": "Frutta", "orange": "Arancia"}
+          lines = open("tags.txt").read().splitlines()
+          bad = []
+          for i, line in enumerate(lines):
+              for name, kw in expected.items():
+                  if line.endswith(f"/{name}.jpg"):
+                      first = lines[i + 1] if i + 1 < len(lines) else ""
+                      ok = kw in first
+                      print(f"{'ok  ' if ok else 'FAIL'} {name}: {first.strip()}")
+                      if not ok:
+                          bad.append(name)
+          sys.exit(1 if bad else 0)
+          PY
+      - name: Publish results
+        if: always()
+        run: bash .github/scripts/publish-results.sh tagging-model ${{ job.status }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # macOS is prepared but not shipped in version 1: keep it compiling.
   macos-check:
     needs: lockfile
