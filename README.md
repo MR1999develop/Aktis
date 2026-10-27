@@ -10,8 +10,11 @@ to build and where things live.
 ## Build and test
 
 On Windows, double-click `scripts\check.bat`: it runs format check, clippy,
-tests and a release build, and writes `target\check.log` and a summary in
-`target\check-summary.txt`. `scripts\run.bat` starts the editor (drop a RAW
+tests and a release build, showing everything on screen, and writes
+`target\check.log` (full output) and `target\check-summary.txt` (environment:
+git commit, Rust, GPU, ONNX Runtime and models; then status, time and the
+errors, warnings and failed tests of each step). `check.bat -Quick` skips the
+release build, `check.bat -Step test` runs one step. `scripts\run.bat` starts the editor (drop a RAW
 file on it to open that file).
 
 AI (denoise, selection, tagging): `scripts\get-ai.bat` downloads ONNX Runtime
