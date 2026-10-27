@@ -295,19 +295,16 @@ fn runtime_pack() -> Pack {
     }
 }
 
-/// The editor's data folder: `$RNE_DATA_DIR`, else [`platform::data_dir`].
+/// The editor's data folder ([`platform::editor_data_dir`], `.rne` if the system has none).
 #[must_use]
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("RNE_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| platform::data_dir(platform::Os::current(), platform::APP_DIR, |k| std::env::var_os(k)))
-        .unwrap_or_else(|| PathBuf::from(".rne"))
+    platform::editor_data_dir().unwrap_or_else(|| PathBuf::from(".rne"))
 }
 
-/// The models folder: `$RNE_MODELS_DIR`, else `models` in [`data_dir`].
+/// The models folder ([`platform::editor_models_dir`]).
 #[must_use]
 pub fn models_dir() -> PathBuf {
-    std::env::var_os("RNE_MODELS_DIR").map(PathBuf::from).unwrap_or_else(|| data_dir().join("models"))
+    platform::editor_models_dir().unwrap_or_else(|| data_dir().join("models"))
 }
 
 /// Where `file` is installed in `dir`.

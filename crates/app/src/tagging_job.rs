@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 
 use core_model::{ImageF32, Rgba, WorkingSpace};
@@ -63,6 +63,8 @@ pub struct TaggingJob {
     pub tagged: usize,
     /// The first photo that could not be read, and why.
     pub first_skip: Option<String>,
+    /// [`Progress::Finished`] was reported.
+    finished: bool,
 }
 
 impl TaggingJob {
@@ -83,12 +85,30 @@ impl TaggingJob {
             let _ = tx.send(Progress::Finished);
             notify();
         })?;
-        Ok(Self { rx, cancel, total, done: 0, tagged: 0, first_skip: None })
+        Ok(Self { rx, cancel, total, done: 0, tagged: 0, first_skip: None, finished: false })
     }
 
-    /// What happened since the last call.
+    /// What happened since the last call. A job whose thread ended without
+    /// saying so (it panicked) reports [`Progress::Failed`] and
+    /// [`Progress::Finished`], so the window never waits for it forever.
     pub fn poll(&mut self) -> Vec<Progress> {
-        let events: Vec<Progress> = self.rx.try_iter().collect();
+        let mut events = Vec::new();
+        loop {
+            match self.rx.try_recv() {
+                Ok(e) => events.push(e),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    if !self.finished {
+                        events.push(Progress::Failed("The keyword job stopped unexpectedly".to_owned()));
+                        events.push(Progress::Finished);
+                    }
+                    break;
+                }
+            }
+        }
+        if events.iter().any(|e| matches!(e, Progress::Finished)) {
+            self.finished = true;
+        }
         for e in &events {
             match e {
                 Progress::Tagged { .. } => {

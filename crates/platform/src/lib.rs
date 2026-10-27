@@ -200,6 +200,23 @@ pub fn data_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> Op
     Some(base.join(app))
 }
 
+/// The editor's data folder (catalog, keyword list, masks, models):
+/// `$RNE_DATA_DIR`, else [`data_dir`] of [`APP_DIR`] on this system.
+/// `None` only when the system says nothing about its folders.
+#[must_use]
+pub fn editor_data_dir() -> Option<PathBuf> {
+    std::env::var_os("RNE_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| data_dir(Os::current(), APP_DIR, |k| std::env::var_os(k)))
+}
+
+/// The folder of the downloaded AI models: `$RNE_MODELS_DIR`, else
+/// `models` inside [`editor_data_dir`].
+#[must_use]
+pub fn editor_models_dir() -> Option<PathBuf> {
+    std::env::var_os("RNE_MODELS_DIR").map(PathBuf::from).or_else(|| editor_data_dir().map(|d| d.join("models")))
+}
+
 /// Folder for caches that can be rebuilt (compiled GPU engines):
 /// `%LOCALAPPDATA%\<app>` on Windows, `$XDG_CACHE_HOME/<app>` or
 /// `~/.cache/<app>` on Linux, `~/Library/Caches/<app>` on macOS. `env` as in

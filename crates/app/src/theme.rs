@@ -122,6 +122,18 @@ impl Tokens {
 }
 
 /// Spacing scale in points.
+/// Red, green and blue of the histogram, translucent so overlaps mix; the
+/// histogram sits on `canvas`, the same in both themes.
+pub const HISTOGRAM: [Color32; 3] = [
+    Color32::from_rgba_premultiplied(81, 28, 25, 90),
+    Color32::from_rgba_premultiplied(32, 71, 32, 90),
+    Color32::from_rgba_premultiplied(28, 46, 85, 90),
+];
+
+/// Star and border of the rating badge drawn over a thumbnail (on the photo,
+/// the same in both themes).
+pub const BADGE_STAR: Color32 = Color32::from_rgb(0xff, 0xb9, 0x00);
+
 pub const SPACE: [f32; 8] = [4., 8., 12., 16., 24., 32., 48., 64.];
 /// Font sizes: caption, small, body, large, title, display.
 pub const FONT: [f32; 6] = [12., 13., 14., 16., 20., 24.];

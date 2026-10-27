@@ -15,9 +15,9 @@ use eframe::egui::{
     StrokeKind, TextEdit, TextureHandle, TextureOptions, pos2, vec2,
 };
 
+use crate::dialog::{Choice, dialog, dialog_buttons};
 use crate::icons;
-use crate::models_ui::dialog;
-use crate::theme::{FONT, SPACE, Tokens};
+use crate::theme::{BADGE_STAR, FONT, SPACE, Tokens};
 
 /// Thumbnails kept on the GPU (about 270 KB each).
 const THUMB_CACHE: usize = 300;
@@ -31,8 +31,6 @@ const THUMB_ASPECT: f32 = 1.5;
 const CARD_LINE: f32 = 16.0;
 /// Width of one star of a card.
 const STAR_CELL: f32 = 14.0;
-/// Border of the rating badge on a thumbnail.
-const BADGE_STAR: Color32 = Color32::from_rgb(0xff, 0xb9, 0x00);
 /// Keyword chips shown at most.
 const MAX_TAG_CHIPS: usize = 30;
 /// Indent per level of the folder tree.
@@ -700,27 +698,18 @@ impl Library {
                 if edit.changed() {
                     d.error = None;
                 }
-                if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                    confirm = true;
-                }
                 ui.label(extension.as_str());
             });
             if let Some(e) = &d.error {
                 ui.label(RichText::new(e.as_str()).color(t.error));
             }
             ui.add_space(SPACE[2]);
-            ui.horizontal(|ui| {
-                if ui.add(Button::new(RichText::new("Rename").color(t.on_accent)).fill(t.accent)).clicked() {
-                    confirm = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    cancel = true;
-                }
-            });
+            match dialog_buttons(ui, &t, Some("Rename"), "Cancel", |_| {}) {
+                Some(Choice::Action) => confirm = true,
+                Some(Choice::Cancel) => cancel = true,
+                None => {}
+            }
         });
-        if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            cancel = true;
-        }
         if cancel {
             self.rename = None;
         } else if confirm {

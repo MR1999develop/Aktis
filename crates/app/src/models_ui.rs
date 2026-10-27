@@ -12,12 +12,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ai_models::{Feature, Pack, Progress};
-use eframe::egui::{self, Align2, Button, Id, Margin, Order, RichText};
+use eframe::egui::{self, Button, RichText};
 
+use crate::dialog::{Choice, dialog, dialog_buttons};
 use crate::theme::{FONT, SPACE, Tokens};
-
-/// Width of the dialogs.
-const DIALOG_WIDTH: f32 = 460.0;
 
 /// What a download thread shares with the window.
 #[derive(Debug, Default)]
@@ -174,26 +172,25 @@ impl ModelsUi {
             ui.add_space(SPACE[2]);
             this.job_status(ui, &t);
             ui.add_space(SPACE[2]);
-            ui.horizontal(|ui| {
-                if this.job.is_some() {
-                    if ui.button("Stop").clicked() {
-                        stop = true;
-                    }
-                } else if missing.is_empty() {
-                    if ui.add(Button::new("Close").fill(t.accent)).clicked() {
-                        close = true;
-                    }
-                } else {
-                    let label = if matches!(this.outcome, Some(Err(_))) { "Try again" } else { "Download" };
-                    if ui.add(Button::new(RichText::new(label).color(t.on_accent)).fill(t.accent)).clicked() {
-                        download = true;
-                    }
-                    if ui.button("Not now").clicked() {
-                        decline = true;
-                        close = true;
-                    }
+            let busy = this.job.is_some();
+            let (action, cancel) = if busy {
+                (None, "Stop")
+            } else if missing.is_empty() {
+                (None, "Close")
+            } else if matches!(this.outcome, Some(Err(_))) {
+                (Some("Try again"), "Not now")
+            } else {
+                (Some("Download"), "Not now")
+            };
+            match dialog_buttons(ui, &t, action, cancel, |_| {}) {
+                Some(Choice::Action) => download = true,
+                Some(Choice::Cancel) if busy => stop = true,
+                Some(Choice::Cancel) => {
+                    decline = !missing.is_empty();
+                    close = true;
                 }
-            });
+                None => {}
+            }
         });
         if stop {
             self.cancel();
@@ -252,19 +249,10 @@ impl ModelsUi {
             ui.add_space(SPACE[2]);
             this.job_status(ui, &t);
             ui.add_space(SPACE[2]);
-            ui.horizontal(|ui| {
-                if busy {
-                    if ui.button("Stop").clicked() {
-                        stop = true;
-                    }
-                } else if !all_missing.is_empty()
-                    && ui
-                        .add(Button::new(RichText::new("Download everything needed").color(t.on_accent)).fill(t.accent))
-                        .on_hover_text("Every pack a tool needs; optional ones are left out")
-                        .clicked()
-                {
-                    start = Some(std::mem::take(&mut all_missing));
-                }
+            // Every pack a tool needs; optional ones are left out.
+            let action = (!busy && !all_missing.is_empty()).then_some("Download everything needed");
+            let cancel = if busy { "Stop" } else { "Close" };
+            let choice = dialog_buttons(ui, &t, action, cancel, |ui| {
                 if ui.button("Open folder").clicked() {
                     let _ = std::fs::create_dir_all(&this.dir);
                     let launch = platform::reveal_in_file_manager(platform::Os::current(), &this.dir);
@@ -272,10 +260,13 @@ impl ModelsUi {
                         folder_error = Some(format!("cannot open the folder: {e}"));
                     }
                 }
-                if ui.add_enabled(!busy, Button::new("Close")).clicked() {
-                    close = true;
-                }
             });
+            match choice {
+                Some(Choice::Action) => start = Some(std::mem::take(&mut all_missing)),
+                Some(Choice::Cancel) if busy => stop = true,
+                Some(Choice::Cancel) => close = true,
+                None => {}
+            }
         });
         if stop {
             self.cancel();
@@ -342,18 +333,4 @@ fn pack_line(ui: &mut egui::Ui, t: &Tokens, p: &Pack) {
         ui.label(RichText::new(p.name).strong().color(t.text_strong));
         ui.label(RichText::new(format!("{} \u{b7} {}{optional}", p.size_text(), p.license)).color(t.text_weak));
     });
-}
-
-/// A centred dialog above the window.
-pub(crate) fn dialog(ctx: &egui::Context, id: &str, add: impl FnOnce(&mut egui::Ui)) {
-    let t = Tokens::of(ctx.theme());
-    egui::Area::new(Id::unique(id)).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(
-        ctx,
-        |ui| {
-            egui::Frame::popup(ui.style()).fill(t.bg_raised).inner_margin(Margin::same(16)).show(ui, |ui| {
-                ui.set_width(DIALOG_WIDTH);
-                add(ui);
-            });
-        },
-    );
 }

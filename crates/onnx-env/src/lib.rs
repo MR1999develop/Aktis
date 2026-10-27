@@ -9,7 +9,7 @@
 //!
 //! The library is looked for in order: `ORT_DYLIB_PATH`, next to the
 //! program, the folders a caller passes, then the editor's models folder
-//! (`$RNE_MODELS_DIR`, else `models` in [`platform::data_dir`]) and the data
+//! ([`platform::editor_models_dir`]) and the data
 //! folder itself.
 
 use std::path::{Path, PathBuf};
@@ -37,20 +37,6 @@ pub fn library_name() -> String {
     format!("{}onnxruntime{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX)
 }
 
-/// The editor's models folder: `$RNE_MODELS_DIR`, else `models` in the data folder.
-#[must_use]
-pub fn models_dir() -> Option<PathBuf> {
-    std::env::var_os("RNE_MODELS_DIR").map(PathBuf::from).or_else(|| data_dir().map(|d| d.join("models")))
-}
-
-/// The editor's data folder: `$RNE_DATA_DIR`, else [`platform::data_dir`].
-#[must_use]
-pub fn data_dir() -> Option<PathBuf> {
-    std::env::var_os("RNE_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| platform::data_dir(platform::Os::current(), platform::APP_DIR, |k| std::env::var_os(k)))
-}
-
 /// Where the runtime library is: `ORT_DYLIB_PATH`, next to the program,
 /// each of `extra_dirs`, then the models and data folders.
 #[must_use]
@@ -63,7 +49,7 @@ pub fn find_library(extra_dirs: &[PathBuf]) -> Option<PathBuf> {
     beside_exe
         .into_iter()
         .chain(extra_dirs.iter().map(|d| d.join(&name)))
-        .chain(models_dir().into_iter().chain(data_dir()).map(|d| d.join(&name)))
+        .chain(platform::editor_models_dir().into_iter().chain(platform::editor_data_dir()).map(|d| d.join(&name)))
         .find(|p| p.is_file())
 }
 
@@ -111,7 +97,8 @@ fn init(library: &Path) -> Result<Runtime, String> {
 }
 
 fn not_found() -> String {
-    let place = models_dir().map_or_else(|| "the models folder".to_owned(), |d| d.display().to_string());
+    let place =
+        platform::editor_models_dir().map_or_else(|| "the models folder".to_owned(), |d| d.display().to_string());
     format!(
         "ONNX Runtime ({}) not found: set ORT_DYLIB_PATH, or put it next to the program or in {place}",
         library_name()

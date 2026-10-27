@@ -9,7 +9,7 @@ use eframe::egui::{
 };
 use tool_api::ToolRegistry;
 
-use crate::theme::{FONT, SPACE, Tokens};
+use crate::theme::{FONT, HISTOGRAM, SPACE, Tokens};
 
 /// Size of a node box.
 const NODE_W: f32 = 132.0;
@@ -219,11 +219,7 @@ pub fn histogram(ui: &mut egui::Ui, hist: Option<&Histogram>, height: f32) {
     let peak = h.peak().max(1) as f32;
     let inner = rect.shrink(2.0);
     let bin_w = inner.width() / 256.0;
-    let channels = [
-        (&h.red, Color32::from_rgba_unmultiplied(230, 80, 70, 90)),
-        (&h.green, Color32::from_rgba_unmultiplied(90, 200, 90, 90)),
-        (&h.blue, Color32::from_rgba_unmultiplied(80, 130, 240, 90)),
-    ];
+    let channels = [(&h.red, HISTOGRAM[0]), (&h.green, HISTOGRAM[1]), (&h.blue, HISTOGRAM[2])];
     for (counts, color) in channels {
         for (i, &c) in counts.iter().enumerate() {
             #[allow(clippy::cast_precision_loss)] // counts, for drawing

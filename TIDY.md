@@ -74,9 +74,20 @@
   disconnected network drive can make that slow. List drives in the worker.
 - Renaming a file does not rename side files yet (none exist; when recipes
   are saved next to the RAW, rename them together).
-- The Rename dialog is drawn as a centred area, not a modal: clicks behind
-  it still reach the window. Use `egui::Modal` once the other dialogs move too.
+- Dialogs (`app::dialog`: Rename, AI models) are drawn as a centred area,
+  not a modal: clicks behind them still reach the window. Move them all to
+  `egui::Modal` together, keeping `dialog_buttons` for the buttons.
 - AI tagging loads SigLIP 2 at each "AI-tag this folder"; keep the encoders
   loaded while the window is open when tagging becomes frequent.
 - Tool bar tools (crop, perspective, level, masks, AI select, heal, clone)
   are placeholders.
+- The catalog keys photos by the path as written: on Windows the same file
+  reached as `D:\Foto` and `d:\foto` gets two entries. Normalise the key
+  (canonical path, case folded on Windows) before the first public release,
+  with an upgrade of existing catalogs (`SCHEMA_VERSION`).
+- `Catalog::metas` runs two queries per photo on the window's thread when a
+  folder is shown; fine for hundreds of photos. Read the whole folder in one
+  query (or in the worker) once folders of thousands of photos are common.
+- The window's minimum size is 1100 × 640; the design guidelines ask for a
+  layout that works at 1024 × 600 (about 960 × 520 usable). Check the
+  Explorer, graph and inspector at that size and lower the minimum.

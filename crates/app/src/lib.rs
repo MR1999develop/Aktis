@@ -7,6 +7,7 @@
 
 mod actions;
 mod app;
+mod dialog;
 mod graph_ui;
 mod history_ui;
 mod icons;

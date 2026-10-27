@@ -1,0 +1,82 @@
+//! Dialogs: a centred box above the window and the buttons at its foot,
+//! in the order of the system the editor runs on.
+
+use eframe::egui::{self, Align, Align2, Button, Id, Key, Layout, Margin, Order, RichText};
+
+use crate::theme::{SPACE, Tokens};
+
+/// Width of the dialogs.
+const DIALOG_WIDTH: f32 = 460.0;
+
+/// The button the user chose, or the key that stands for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    /// The dialog's action (its own button, or Enter).
+    Action,
+    /// Cancel, Close, Not now, Stop (its own button, or Esc).
+    Cancel,
+}
+
+/// A centred dialog above the window.
+pub fn dialog(ctx: &egui::Context, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+    let t = Tokens::of(ctx.theme());
+    egui::Area::new(Id::unique(id)).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(
+        ctx,
+        |ui| {
+            egui::Frame::popup(ui.style()).fill(t.bg_raised).inner_margin(Margin::same(16)).show(ui, |ui| {
+                ui.set_width(DIALOG_WIDTH);
+                add(ui);
+            });
+        },
+    );
+}
+
+/// The buttons at the foot of a dialog, on the right, in the system's order
+/// (Windows `[Action] [Cancel]`, GNOME and macOS `[Cancel] [Action]`).
+/// `action` is the verb of the main button, `None` when there is nothing to
+/// do but cancel (a download running: `cancel` is then "Stop"). Enter runs
+/// the action, Esc cancels. `extra` adds buttons on the left, such as
+/// "Open folder".
+pub fn dialog_buttons(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    action: Option<&str>,
+    cancel: &str,
+    extra: impl FnOnce(&mut egui::Ui),
+) -> Option<Choice> {
+    let order = platform::button_order(platform::Os::current());
+    let (acted, cancelled) = ui
+        .horizontal(|ui| {
+            extra(ui);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = SPACE[1];
+                // Right to left: the first button added is the rightmost.
+                let act = |ui: &mut egui::Ui| {
+                    action.is_some_and(|label| {
+                        ui.add(Button::new(RichText::new(label).color(t.on_accent)).fill(t.accent)).clicked()
+                    })
+                };
+                let cancel_button = |ui: &mut egui::Ui| ui.button(cancel).clicked();
+                match order {
+                    platform::ButtonOrder::ActionFirst => {
+                        let c = cancel_button(ui);
+                        (act(ui), c)
+                    }
+                    platform::ButtonOrder::ActionLast => {
+                        let a = act(ui);
+                        (a, cancel_button(ui))
+                    }
+                }
+            })
+            .inner
+        })
+        .inner;
+    let (enter, esc) = ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
+    if cancelled || esc {
+        Some(Choice::Cancel)
+    } else if acted || (enter && action.is_some()) {
+        Some(Choice::Action)
+    } else {
+        None
+    }
+}
