@@ -43,13 +43,23 @@ Done:
 
 To do:
 
-- First build of `raw-io`, `gpu` and `cli` on the development machine
-  (crates.io is not reachable from the cloud workspace).
 - `app`: minimal egui window — open, viewer, exposure slider, export, undo.
 
-## Tests
+## Tests and CI
 
-Pure crates and export: 87 tests pass in the cloud workspace (with a type
-stub for rawler and the gpu API). GPU tests (`gpu_matches_cpu`) and the
-real-file test run only on a machine with the real dependencies; the GPU
-tests skip without a GPU unless `RNE_REQUIRE_GPU=1`.
+GitHub Actions (`.github/workflows/ci.yml`) on every push:
+
+- Windows and Ubuntu: fmt, clippy with warnings as errors, all tests.
+  On Ubuntu the GPU tests run on Mesa's software Vulkan driver (llvmpipe)
+  and must pass (`RNE_REQUIRE_GPU=1`); elsewhere they skip without a GPU.
+- macOS: `cargo check` only.
+- `real-raw`: downloads a public-domain Nikon D3S NEF (NASA, from the rawpy
+  test set), runs the ignored real-file test, then `rne info` and
+  `rne develop` on the GPU and on the CPU.
+
+Each job pushes its log and output files to the branch `ci-results/<job>`
+(Linux, Windows, macOS, real-raw), so results can be read with git:
+`git fetch origin "refs/heads/ci-results/*:refs/remotes/origin/ci-results/*"`.
+
+First green run: Nikon D3S 4256×2832 develops in about 2 s on llvmpipe;
+the GPU and CPU renders look the same.

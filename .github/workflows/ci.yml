@@ -35,12 +35,12 @@ jobs:
       - name: Format
         run: cargo fmt --all --check 2>&1 | tee -a ci-out/log.txt
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee -a ci-out/log.txt
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee -a ci-out/log.txt
       - name: Software Vulkan driver (Ubuntu), so the GPU tests run
         if: runner.os == 'Linux'
         run: sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers
       - name: Test
-        run: cargo test --workspace 2>&1 | tee -a ci-out/log.txt
+        run: cargo test --workspace --locked 2>&1 | tee -a ci-out/log.txt
         env:
           RNE_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
       - name: Publish results
@@ -67,14 +67,14 @@ jobs:
           curl -fsSL -o testdata/nikon-d3s.NEF https://raw.githubusercontent.com/letmaik/rawpy/main/test/iss030e122639.NEF
           ls -l testdata | tee ci-out/log.txt
       - name: Decode and develop every sample
-        run: cargo test -p raw-io --release -- --ignored --nocapture 2>&1 | tee -a ci-out/log.txt
+        run: cargo test -p raw-io --release --locked -- --ignored --nocapture 2>&1 | tee -a ci-out/log.txt
       - name: rne gpu / info / develop
         run: |
           {
-            cargo run -q --release -p cli -- gpu
-            cargo run -q --release -p cli -- info testdata/nikon-d3s.NEF
-            cargo run -q --release -p cli -- develop testdata/nikon-d3s.NEF --exposure 0.5 -o ci-out/nikon-d3s.jpg
-            cargo run -q --release -p cli -- develop testdata/nikon-d3s.NEF --cpu -o ci-out/nikon-d3s-cpu.jpg
+            cargo run -q --release --locked -p cli -- gpu
+            cargo run -q --release --locked -p cli -- info testdata/nikon-d3s.NEF
+            cargo run -q --release --locked -p cli -- develop testdata/nikon-d3s.NEF --exposure 0.5 -o ci-out/nikon-d3s.jpg
+            cargo run -q --release --locked -p cli -- develop testdata/nikon-d3s.NEF --cpu -o ci-out/nikon-d3s-cpu.jpg
           } 2>&1 | tee -a ci-out/log.txt
       - name: Publish results
         if: always()
@@ -89,7 +89,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
-      - run: mkdir -p ci-out && cargo check --workspace --all-targets 2>&1 | tee ci-out/log.txt
+      - run: mkdir -p ci-out && cargo check --workspace --all-targets --locked 2>&1 | tee ci-out/log.txt
       - name: Publish results
         if: always()
         run: bash .github/scripts/publish-results.sh macOS ${{ job.status }}
