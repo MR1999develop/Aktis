@@ -15,6 +15,10 @@
 //!
 //! Results go to stdout, diagnostics and errors to stderr. Exit codes:
 //! 0 success, 1 the operation failed, 2 wrong arguments.
+#![allow(
+    linker_messages,
+    reason = "a C dependency of the tokenizer exports functions, so the MSVC linker reports the .lib/.exp it writes next to rne.exe"
+)]
 
 mod ai;
 mod args;

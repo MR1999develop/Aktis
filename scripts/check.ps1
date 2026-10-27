@@ -100,7 +100,10 @@ function Run-Step([string]$name, [string[]]$cargoArgs) {
     $picked = [System.Collections.Generic.List[string]]::new()
     $warnings = 0
     & cargo @cargoArgs 2>&1 | ForEach-Object {
-        $text = "$_"
+        # cargo writes to stderr, which PowerShell wraps as error records; an
+        # empty stderr line would otherwise print as "...RemoteException".
+        $text = if ($_ -is [System.Management.Automation.ErrorRecord]) { "$($_.Exception.Message)" } else { "$_" }
+        if ($text -eq 'System.Management.Automation.RemoteException') { $text = '' }
         $color = if ($text -match '^error') { 'Red' } elseif ($text -match '^warning') { 'Yellow' } elseif ($text -match 'FAILED|panicked') { 'Red' } else { '' }
         Say $text $color
         if ($text -match '^warning(\[[A-Za-z0-9_]+\])?:' -and $text -notmatch 'generated \d+ warning') { $warnings++ }
