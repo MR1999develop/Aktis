@@ -1,9 +1,9 @@
 name: CI
 
+# Manual only for now: development is checked on the developer's PC with
+# scripts/check.bat, and GitHub Actions minutes are limited. Start a run from
+# the Actions tab (or `gh workflow run CI --ref <branch>`).
 on:
-  push:
-    branches-ignore: ['ci-results/**']
-  pull_request:
   workflow_dispatch:
 
 # Each job publishes its log (and any output files) to the branch

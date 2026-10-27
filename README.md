@@ -9,6 +9,13 @@ to build and where things live.
 
 ## Build and test
 
+On Windows, double-click `scripts\check.bat`: it runs format check, clippy,
+tests and a release build, and writes `target\check.log` and a summary in
+`target\check-summary.txt`. `scripts\run.bat` starts the editor (drop a RAW
+file on it to open that file).
+
+By hand:
+
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
