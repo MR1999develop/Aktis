@@ -58,3 +58,10 @@
   option of `get-ai.bat`. The `ai-denoise` and `tagging-model` CI jobs still
   expect a runtime downloaded at build time: give them the ORT download step
   of the `ai-masks` job.
+- `ai-models`: the SCUNet files are served from the release `models-v1` of
+  this repository; create it and upload `scunet_color_real_448.onnx` and
+  `scunet_color_real_960.onnx` (made by `scripts/scunet`, checksums in the
+  catalog). The NuGet ONNX Runtime packages and SigLIP 2 have no pinned size
+  or SHA-256 yet: pin them once downloaded.
+- Downloads use the system's `curl` and `tar` (Windows 10 and later have
+  both); an in-process HTTP client would avoid depending on them.

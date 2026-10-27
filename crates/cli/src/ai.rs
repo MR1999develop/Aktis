@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ai_segment::catalog::{CATALOG, ModelStatus, ModelStore};
+use ai_segment::catalog::ModelStore;
 use ai_segment::{OnnxRuntime, Segmenter};
 use core_model::{
     BrushMask, BrushStroke, ImageF32, MaskComponent, MaskDef, MaskOp, NormPoint, NormRect, Orientation, PromptPoint,
@@ -20,15 +20,12 @@ const MIN_SCORE: f32 = 0.35;
 
 /// Folder for models and caches: `$RNE_DATA_DIR`, else the system's data folder.
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("RNE_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| platform::data_dir(platform::Os::current(), platform::APP_DIR, |k| std::env::var_os(k)))
-        .unwrap_or_else(|| PathBuf::from(".rne"))
+    ai_models::data_dir()
 }
 
 /// Folder of the model files: `$RNE_MODELS_DIR`, else `models` in the data folder.
 pub fn models_dir() -> PathBuf {
-    std::env::var_os("RNE_MODELS_DIR").map(PathBuf::from).unwrap_or_else(|| data_dir().join("models"))
+    ai_models::models_dir()
 }
 
 /// The ONNX Runtime library, loaded.
@@ -43,41 +40,17 @@ fn runtime() -> Result<OnnxRuntime, BoxError> {
     Ok(OnnxRuntime::load(&library)?)
 }
 
-/// What `rne models` prints.
+/// What `rne models` prints: the runtime in use, then every pack.
 pub fn list_models(verify: bool) -> Result<(), BoxError> {
-    let store = ModelStore::new(models_dir());
-    println!("models folder  {}", store.dir().display());
-    match runtime() {
+    let runtime_line = match runtime() {
         Ok(rt) => {
             let gpus = rt.available_gpu_providers();
             let gpus = if gpus.is_empty() { "CPU only".to_owned() } else { gpus.join(", ") };
-            println!("ONNX Runtime   {} ({gpus})", rt.library().display());
+            format!("{} ({gpus})", rt.library().display())
         }
-        Err(e) => println!("ONNX Runtime   not available: {e}"),
-    }
-    let mut all_ready = true;
-    for spec in CATALOG {
-        let status = if verify { store.verify(spec) } else { store.status(spec) };
-        #[allow(clippy::cast_precision_loss)] // sizes for display
-        let mb = spec.bytes() as f64 / 1e6;
-        let state = match &status {
-            ModelStatus::Ready if verify => "ready, checksum verified",
-            ModelStatus::Ready => "ready",
-            ModelStatus::Missing(_) => "missing",
-            ModelStatus::Damaged(_) => "damaged (wrong size or checksum)",
-        };
-        println!("\n{}  {}  [{}, {mb:.0} MB]  {state}", spec.id, spec.name, spec.license);
-        if status != ModelStatus::Ready {
-            all_ready = false;
-            for f in spec.files {
-                println!("  {}\n    <- {}", store.path(f).display(), f.url);
-            }
-        }
-    }
-    if !all_ready {
-        println!("\nDownload the missing files into the models folder (names as shown).");
-    }
-    Ok(())
+        Err(e) => format!("not available: {e}"),
+    };
+    crate::models::list(verify, &runtime_line)
 }
 
 /// The engine and the raster cache.

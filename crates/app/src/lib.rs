@@ -6,6 +6,7 @@
 
 mod actions;
 mod app;
+mod models_ui;
 mod settings;
 mod theme;
 

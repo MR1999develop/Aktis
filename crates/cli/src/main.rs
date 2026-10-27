@@ -22,6 +22,7 @@
 
 mod ai;
 mod args;
+mod models;
 mod ppm;
 
 use std::path::{Path, PathBuf};
@@ -61,6 +62,7 @@ fn main() -> ExitCode {
         Command::Lenses(words) => lenses(&words),
         Command::Profiles(path) => profiles(&path),
         Command::Models { verify } => ai::list_models(verify),
+        Command::Download { what, yes } => models::download_cmd(&what, yes),
         Command::Develop(a) => develop(&a),
         Command::Tag(a) => tag(&a),
         Command::Mask(a) => mask(&a),
@@ -220,6 +222,12 @@ fn profiles(path: &Path) -> Result<(), BoxError> {
 }
 
 fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
+    // What the AI parts need is offered for download before any work starts.
+    let mut features = models::features_of(&a.selection);
+    if a.denoise.is_some() {
+        features.push(ai_models::Feature::Denoise);
+    }
+    models::ensure(&features)?;
     let started = Instant::now();
     let choice = if a.cpu_only { EngineChoice::CpuOnly } else { EngineChoice::Auto };
     let engine = Engine::new(engine::builtin_tools()?, choice);
@@ -352,7 +360,14 @@ fn tag(a: &TagArgs) -> Result<(), BoxError> {
     let started = Instant::now();
     let spec = &tagging_onnx::SIGLIP2_BASE_224;
     let opts = tagging_onnx::LoadOptions { prefer_quantized: a.quantized, threads: None };
-    let (mut images, mut texts) = tagging_onnx::load(&a.model, spec, &opts)?;
+    let model_dir = match &a.model {
+        Some(dir) => dir.clone(),
+        None => {
+            models::ensure(&[ai_models::Feature::Tagging])?;
+            ai_models::models_dir().join(ai_models::SIGLIP2_DIR)
+        }
+    };
+    let (mut images, mut texts) = tagging_onnx::load(&model_dir, spec, &opts)?;
     eprintln!("rne: model {} loaded in {:.2}s", spec.name, started.elapsed().as_secs_f32());
 
     let mut embeddings = Vec::new();
@@ -490,6 +505,7 @@ fn load(path: &Path) -> Result<Loaded, BoxError> {
 }
 
 fn mask(a: &MaskArgs) -> Result<(), BoxError> {
+    models::ensure(&models::features_of(&a.selection))?;
     let started = Instant::now();
     let loaded = load(&a.input)?;
     let ai = ai::Ai::open()?;

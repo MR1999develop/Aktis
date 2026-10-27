@@ -13,7 +13,7 @@
 //! folder itself.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use ort::environment::Environment;
 
@@ -67,27 +67,36 @@ pub fn find_library(extra_dirs: &[PathBuf]) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
+static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+/// Held while a library is being loaded, so two threads do not load two.
+static LOADING: Mutex<()> = Mutex::new(());
 
 /// The runtime, loaded on first use from [`find_library`] with no extra folders.
+/// A failure is not remembered: once the library has been installed (for
+/// example downloaded by the editor), the next call loads it.
 ///
 /// # Errors
 /// Why the library could not be found or loaded (text for the user).
 pub fn runtime() -> Result<&'static Runtime, String> {
     if let Some(r) = RUNTIME.get() {
-        return r.as_ref().map_err(Clone::clone);
+        return Ok(r);
     }
     let library = find_library(&[]).ok_or_else(not_found)?;
     load(&library)
 }
 
 /// Loads the runtime from `library`. Only one library can be loaded per
-/// process: once loaded (or failed), later calls return the first result.
+/// process: once one is loaded, later calls return it, whatever they ask for.
 ///
 /// # Errors
 /// Why the library could not be loaded or is too old (text for the user).
 pub fn load(library: &Path) -> Result<&'static Runtime, String> {
-    RUNTIME.get_or_init(|| init(library)).as_ref().map_err(Clone::clone)
+    let _guard = LOADING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(r) = RUNTIME.get() {
+        return Ok(r);
+    }
+    let rt = init(library)?;
+    Ok(RUNTIME.get_or_init(|| rt))
 }
 
 fn init(library: &Path) -> Result<Runtime, String> {

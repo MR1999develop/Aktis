@@ -12,8 +12,9 @@ Usage:
   rne lenses [<words>...]
   rne profiles <file>
   rne models [--verify]
+  rne models --download <what>... [--yes]
   rne gpu
-  rne tag <files...> --model <dir> --keywords <file> [--template <text>] [--min <0-1>]
+  rne tag <files...> [--model <dir>] --keywords <file> [--template <text>] [--min <0-1>]
           [--top <n>] [--search <text>] [--quantized]
   rne help
 
@@ -37,12 +38,16 @@ lenses    Lists the lenses of the lens database whose name contains every word.
 profiles  Lists the camera profiles (DCP) in the editor's profiles folder for a RAW file's camera.
 mask      Makes an AI selection and saves a preview of it (the selection in
           red over the photo), and with --mask-out the mask itself.
-models    Lists the AI models, where they go and whether they are installed;
-          --verify also checks their SHA-256.
+models    Lists what the AI tools download (ONNX Runtime and the models), where
+          it goes and whether it is installed; --verify also checks SHA-256.
+          --download installs what is missing: a tool (denoise, subject,
+          objects, people, parts, tagging), a pack id from the list, or all.
+          The AI commands also offer the download the first time they need it.
 gpu       Shows the GPU that would be used.
 tag       Suggests keywords for RAW or JPEG files with a local AI model. --model is
-          a SigLIP 2 ONNX folder, --keywords a keyword list in Lightroom's text
-          format (one per line, tabs for levels, {synonyms}). --template puts each
+          a SigLIP 2 ONNX folder (default: the one `rne models` installs),
+          --keywords a keyword list in Lightroom's text format (one per line,
+          tabs for levels, {synonyms}). --template puts each
           keyword in a sentence, e.g. \"una foto di {}\". --search ranks the files by
           how well they match a description instead.
 
@@ -82,7 +87,14 @@ pub enum Command {
     Info(PathBuf),
     Lenses(Vec<String>),
     Profiles(PathBuf),
-    Models { verify: bool },
+    Models {
+        verify: bool,
+    },
+    /// Install what the AI tools need: tool names, pack ids or `all`.
+    Download {
+        what: Vec<String>,
+        yes: bool,
+    },
     Gpu,
     Tag(TagArgs),
     Help,
@@ -92,7 +104,8 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TagArgs {
     pub inputs: Vec<PathBuf>,
-    pub model: PathBuf,
+    /// SigLIP 2 folder; `None` for the one in the models folder.
+    pub model: Option<PathBuf>,
     pub keywords: Option<PathBuf>,
     pub template: String,
     pub min_probability: f32,
@@ -215,6 +228,20 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
         "models" => match it.next().as_deref() {
             None => Ok(Command::Models { verify: false }),
             Some("--verify") => no_more(it).map(|()| Command::Models { verify: true }),
+            Some("--download") => {
+                let (mut what, mut yes) = (Vec::new(), false);
+                for arg in it {
+                    match arg.as_str() {
+                        "--yes" | "-y" => yes = true,
+                        flag if flag.starts_with('-') => return Err(format!("unknown option '{flag}'")),
+                        name => what.push(name.to_owned()),
+                    }
+                }
+                if what.is_empty() {
+                    return Err("--download needs what to install: a tool name, a pack id or all".to_owned());
+                }
+                Ok(Command::Download { what, yes })
+            }
             Some(other) => Err(format!("unknown option '{other}'")),
         },
         "develop" => parse_develop(it).map(Command::Develop),
@@ -390,7 +417,7 @@ fn parse_develop(mut it: impl Iterator<Item = String>) -> Result<DevelopArgs, St
 fn parse_tag(mut it: impl Iterator<Item = String>) -> Result<TagArgs, String> {
     let mut a = TagArgs {
         inputs: Vec::new(),
-        model: PathBuf::new(),
+        model: None,
         keywords: None,
         template: "{}".to_owned(),
         min_probability: 0.005,
@@ -398,11 +425,10 @@ fn parse_tag(mut it: impl Iterator<Item = String>) -> Result<TagArgs, String> {
         search: None,
         quantized: false,
     };
-    let mut model = None;
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
-            "--model" => model = Some(PathBuf::from(value("--model")?)),
+            "--model" => a.model = Some(PathBuf::from(value("--model")?)),
             "--keywords" => a.keywords = Some(PathBuf::from(value("--keywords")?)),
             "--template" => {
                 a.template = value("--template")?;
@@ -433,7 +459,6 @@ fn parse_tag(mut it: impl Iterator<Item = String>) -> Result<TagArgs, String> {
             file => a.inputs.push(PathBuf::from(file)),
         }
     }
-    a.model = model.ok_or("tag needs --model <folder>")?;
     if a.inputs.is_empty() {
         return Err("tag needs at least one image".to_owned());
     }
@@ -628,6 +653,11 @@ mod tests {
         assert_eq!(parse_str("models"), Ok(Command::Models { verify: false }));
         assert_eq!(parse_str("models --verify"), Ok(Command::Models { verify: true }));
         assert_eq!(parse_str("models --fast"), Err("unknown option '--fast'".to_owned()));
+        assert_eq!(
+            parse_str("models --download denoise tagging --yes"),
+            Ok(Command::Download { what: vec!["denoise".to_owned(), "tagging".to_owned()], yes: true })
+        );
+        assert!(parse_str("models --download").is_err());
     }
 
     #[test]
@@ -654,14 +684,15 @@ mod tests {
             panic!("expected tag")
         };
         assert_eq!(a.inputs, vec![PathBuf::from("a.nef"), PathBuf::from("b.jpg")]);
-        assert_eq!((a.model, a.keywords), (PathBuf::from("m"), Some(PathBuf::from("k.txt"))));
+        assert_eq!((a.model, a.keywords), (Some(PathBuf::from("m")), Some(PathBuf::from("k.txt"))));
         assert_eq!((a.template.as_str(), a.top, a.quantized), ("x{}y", 3, true));
         assert!((a.min_probability - 0.2).abs() < 1e-6);
     }
 
     #[test]
     fn tag_mistakes_are_explained() {
-        assert_eq!(parse_str("tag a.jpg --keywords k"), Err("tag needs --model <folder>".to_owned()));
+        let Ok(Command::Tag(a)) = parse_str("tag a.jpg --keywords k") else { panic!("expected tag") };
+        assert_eq!(a.model, None, "without --model the installed SigLIP 2 is used");
         assert_eq!(parse_str("tag --model m --keywords k"), Err("tag needs at least one image".to_owned()));
         assert_eq!(parse_str("tag a.jpg --model m"), Err("tag needs --keywords <file> or --search <text>".to_owned()));
         assert_eq!(

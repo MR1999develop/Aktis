@@ -27,6 +27,7 @@ jpeg-decoder = { version = "0.3", default-features = false }
 masks.workspace = true
 platform.workspace = true
 ai-segment.workspace = true
+ai-models.workspace = true
 render-cpu.workspace = true
 export.workspace = true
 

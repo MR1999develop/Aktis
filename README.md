@@ -17,12 +17,16 @@ errors, warnings and failed tests of each step). `check.bat -Quick` skips the
 release build, `check.bat -Step test` runs one step. `scripts\run.bat` starts the editor (drop a RAW
 file on it to open that file).
 
-AI (denoise, selection, tagging): `scripts\get-ai.bat` downloads ONNX Runtime
-with DirectML and the selection models once (about 2 GB, into
-`%LOCALAPPDATA%\raw-node-editor\models`); the three AI modules share that one
-runtime library (crate `onnx-env`). Then drop a RAW file on
-`scripts\ai-check.bat` to see subject, people, person parts, subtract and
-brush selections in `target\ai-check\`.
+AI (denoise, selection, tagging): the program ships without ONNX Runtime and
+the models. The first time a tool needs them, the editor shows what is needed
+(size, licence) and downloads it on request; *Tools → AI models* lists every
+pack. On the command line the AI commands ask the same way, and
+`rne models --download <tool|all>` installs ahead of time;
+`scripts\get-ai.bat` does that for everything. All of it goes into
+`%LOCALAPPDATA%\raw-node-editor\models` (crate `ai-models` keeps the list,
+with sizes and SHA-256; `onnx-env` loads the one runtime the three AI modules
+share). Then drop a RAW file on `scripts\ai-check.bat` to see subject, people,
+person parts, subtract and brush selections in `target\ai-check\`.
 
 By hand:
 
@@ -99,8 +103,10 @@ blotches*, only decide how much of its correction is applied, so moving them
 is instant. Place it after the exposure: the network judges the noise at the
 final brightness.
 
-- **Models** are not in the repository: make them with `scripts/scunet`
-  (see its README) or reuse an earlier denoiser's. They are looked for in
+- **Models** are not in the repository: the editor downloads
+  `scunet_color_real_448.onnx` (and on request the faster 960 px one) from
+  the project's `models-v1` release, made with `scripts/scunet` (see its
+  README); an earlier denoiser's are used too. They are looked for in
   `RNE_DENOISE_MODELS`, a `models` folder next to the program (or up to
   three folders above it), then the editor's models folder
   (`%LOCALAPPDATA%\raw-node-editor\models`) and an earlier denoiser's

@@ -1,0 +1,15 @@
+[package]
+name = "ai-models"
+description = "Everything the AI tools download on first use (ONNX Runtime, denoise, selection and tagging models): catalog, status and a verified download."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+platform.workspace = true
+# Only the selection catalog and SHA-256; no ONNX Runtime.
+ai-segment = { path = "../ai-segment", default-features = false }
+
+[lints]
+workspace = true

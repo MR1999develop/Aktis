@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use commands::GestureId;
-use core_model::{DevelopSettings, LensSettings, NodeId, ParamId, ParamValue};
+use core_model::{DevelopSettings, LensSettings, NodeId, NodeKind, ParamId, ParamValue};
 use editor::{Document, Event, Quality, RenderPlan, RenderRequest, ViewState, Viewport, Worker, Zoom};
 use eframe::egui::{
     self, Align, Align2, Button, Color32, CursorIcon, Id, Layout, Margin, Order, RichText, Sense, TextureOptions,
@@ -19,6 +19,7 @@ use engine::{Backend, EngineChoice};
 use tool_api::{ParamKind, ToolRegistry, Unit};
 
 use crate::actions::Command;
+use crate::models_ui::ModelsUi;
 use crate::settings::{STORAGE_KEY, Settings, ThemeChoice};
 use crate::theme::{
     self, FONT, INSPECTOR_WIDTH, SPACE, SPINNER_DELAY_SECONDS, TOAST_ERROR_SECONDS, TOAST_SECONDS, Tokens,
@@ -119,6 +120,8 @@ pub struct EditorApp {
     toast: Option<Toast>,
     /// The last "node skipped" message shown, so it is not repeated at every render.
     node_problem: Option<String>,
+    /// Downloads of the AI models: the dialog and the "AI models" window.
+    models: ModelsUi,
     title: String,
 }
 
@@ -175,6 +178,7 @@ impl EditorApp {
             gpu_problem: None,
             toast,
             node_problem: None,
+            models: ModelsUi::new(),
             title: String::new(),
         };
         if let Some(path) = open {
@@ -329,8 +333,11 @@ impl EditorApp {
                     if let Some(why) = gpu_failure {
                         self.toast = Some(error_toast(format!("The GPU failed, the CPU took over: {why}")));
                     }
+                    // A tool short of its models offers the download instead of an error.
+                    let offering = !node_problems.is_empty() && self.offer_missing_models();
                     // Told once per message, not at every render.
                     if let Some(problem) = node_problems.into_iter().next()
+                        && !offering
                         && self.node_problem.as_ref() != Some(&problem)
                     {
                         self.toast = Some(error_toast(problem.clone()));
@@ -401,13 +408,46 @@ impl EditorApp {
                     doc.set_param(&self.registry, node, param, value, gesture)
                 }
                 UiEdit::Reset { node, param } => doc.reset_param(&self.registry, node, param),
-                UiEdit::Enabled { node, on } => doc.set_enabled(&self.registry, node, on),
+                UiEdit::Enabled { node, on } => {
+                    let result = doc.set_enabled(&self.registry, node, on);
+                    // Turning on a tool that needs AI models offers to download them.
+                    if on
+                        && result.is_ok()
+                        && let Some(NodeKind::Tool(tool)) = doc.recipe().graph.node(node).map(|n| &n.kind)
+                        && let Some(feature) = ai_models::feature_for_tool(tool.as_str())
+                    {
+                        self.models.require(feature);
+                    }
+                    result
+                }
                 UiEdit::Lens(lens) => doc.set_lens_correction(&self.registry, lens),
             };
             if let Err(e) = result {
                 self.toast = Some(error_toast(format!("That change was refused: {e}")));
             }
         }
+    }
+
+    /// Offers the download for the first enabled node whose tool lacks its
+    /// AI models; `true` when the dialog is up.
+    fn offer_missing_models(&mut self) -> bool {
+        let Some(doc) = &self.doc else { return false };
+        let features: Vec<ai_models::Feature> = doc
+            .recipe()
+            .graph
+            .nodes()
+            .filter(|n| n.enabled)
+            .filter_map(|n| match &n.kind {
+                NodeKind::Tool(tool) => ai_models::feature_for_tool(tool.as_str()),
+                _ => None,
+            })
+            .collect();
+        for feature in features {
+            if !self.models.require(feature) {
+                return self.models.is_prompting();
+            }
+        }
+        false
     }
 
     /// Develops the image again when its development settings changed (lens
@@ -465,6 +505,7 @@ impl EditorApp {
         let exporting = self.exporting.is_some();
         let mut open_recent = None;
         let mut theme_choice = self.settings.theme;
+        let mut open_models = false;
 
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -510,12 +551,21 @@ impl EditorApp {
                     }
                 });
             });
+            ui.menu_button("Tools", |ui| {
+                if ui.button("AI models\u{2026}").on_hover_text("Download or check the AI models").clicked() {
+                    open_models = true;
+                    ui.close();
+                }
+            });
             ui.menu_button("Help", |ui| {
                 ui.label(format!("{APP_NAME} {VERSION}"));
                 ui.weak("Non-destructive RAW editor with nodes");
             });
         });
 
+        if open_models {
+            self.models.open_manager();
+        }
         if theme_choice != self.settings.theme {
             self.settings.theme = theme_choice;
             ui.ctx().set_theme(theme_preference(theme_choice));
@@ -846,6 +896,13 @@ impl eframe::App for EditorApp {
             self.run(command, &ctx);
         }
         self.show_toast(&ctx);
+        if self.models.show(&ctx) {
+            // A tool got its models: render again, and say it if it still fails.
+            if let Some(doc) = &self.doc {
+                self.plan.reset(doc.generation());
+            }
+            self.node_problem = None;
+        }
         self.request_develop();
         self.request_render(&ctx);
         self.update_title(&ctx);
