@@ -2,11 +2,21 @@ name: CI
 
 on:
   push:
+    branches-ignore: ['ci-results/**']
   pull_request:
   workflow_dispatch:
 
+# Each job publishes its log (and any output files) to the branch
+# ci-results/<job>, so results can be read with git alone.
+permissions:
+  contents: write
+
 env:
-  CARGO_TERM_COLOR: always
+  CARGO_TERM_COLOR: never
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   check:
@@ -17,63 +27,71 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # rust-toolchain.toml pins the compiler; rustup installs it on first use.
       - name: Toolchain
-        run: rustup show active-toolchain
+        run: mkdir -p ci-out && rustup show active-toolchain 2>&1 | tee ci-out/log.txt
       - uses: Swatinem/rust-cache@v2
       - name: Format
-        run: cargo fmt --all --check
+        run: cargo fmt --all --check 2>&1 | tee -a ci-out/log.txt
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee -a ci-out/log.txt
       - name: Software Vulkan driver (Ubuntu), so the GPU tests run
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+        run: sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace 2>&1 | tee -a ci-out/log.txt
         env:
           RNE_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
-      - name: Upload the resolved Cargo.lock
-        if: runner.os == 'Linux' && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cargo-lock
-          path: Cargo.lock
+      - name: Publish results
+        if: always()
+        run: |
+          cp Cargo.lock ci-out/
+          bash .github/scripts/publish-results.sh ${{ runner.os }} ${{ job.status }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # A real RAW file end to end: decode, develop, render on the (software) GPU,
-  # export. The JPEG is uploaded so it can be looked at.
+  # export. The JPEGs are published with the log so they can be looked at.
   real-raw:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
       - name: Software Vulkan driver
-        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+        run: sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers
       - name: Sample RAW files
         # Nikon D3S frame from the ISS (NASA, public domain), from the rawpy test set.
         run: |
+          mkdir -p ci-out
           curl -fsSL -o testdata/nikon-d3s.NEF https://raw.githubusercontent.com/letmaik/rawpy/main/test/iss030e122639.NEF
-          ls -l testdata
+          ls -l testdata | tee ci-out/log.txt
       - name: Decode and develop every sample
-        run: cargo test -p raw-io --release -- --ignored --nocapture
-      - name: rne info / gpu / develop
+        run: cargo test -p raw-io --release -- --ignored --nocapture 2>&1 | tee -a ci-out/log.txt
+      - name: rne gpu / info / develop
         run: |
-          mkdir -p out
-          cargo run --release -p cli -- gpu
-          cargo run --release -p cli -- info testdata/nikon-d3s.NEF
-          cargo run --release -p cli -- develop testdata/nikon-d3s.NEF --exposure 0.5 -o out/nikon-d3s.jpg
-          cargo run --release -p cli -- develop testdata/nikon-d3s.NEF --cpu -o out/nikon-d3s-cpu.jpg
-      - uses: actions/upload-artifact@v4
+          {
+            cargo run -q --release -p cli -- gpu
+            cargo run -q --release -p cli -- info testdata/nikon-d3s.NEF
+            cargo run -q --release -p cli -- develop testdata/nikon-d3s.NEF --exposure 0.5 -o ci-out/nikon-d3s.jpg
+            cargo run -q --release -p cli -- develop testdata/nikon-d3s.NEF --cpu -o ci-out/nikon-d3s-cpu.jpg
+          } 2>&1 | tee -a ci-out/log.txt
+      - name: Publish results
         if: always()
-        with:
-          name: developed-jpeg
-          path: out/
+        run: bash .github/scripts/publish-results.sh real-raw ${{ job.status }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # macOS is prepared but not shipped in version 1: keep it compiling.
   macos-check:
     runs-on: macos-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-targets
+      - run: mkdir -p ci-out && cargo check --workspace --all-targets 2>&1 | tee ci-out/log.txt
+      - name: Publish results
+        if: always()
+        run: bash .github/scripts/publish-results.sh macOS ${{ job.status }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
