@@ -12,13 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 core-model.workspace = true
-tool-api.workspace = true
 commands.workspace = true
 develop.workspace = true
-render-cpu.workspace = true
 raw-io.workspace = true
 gpu.workspace = true
-export.workspace = true
+engine.workspace = true
 tool-exposure.workspace = true
 
 [lints]

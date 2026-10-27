@@ -40,10 +40,20 @@ Done:
   code (checked against LittleCMS's own sRGB: identical output), atomic write,
   `photo (2).jpg` instead of overwriting.
 - `cli`: `rne develop | info | gpu`, GPU with CPU fallback.
-
-To do:
-
-- `app`: minimal egui window — open, viewer, exposure slider, export, undo.
+- `engine`: what the window and the CLI share (tools, GPU-or-CPU render,
+  preview copy, display pixels, JPEG export).
+- `editor`: documents with undo/redo (slider drag = one step), background
+  worker (open, previews where only the newest request is kept, export),
+  render plan (fast preview while editing, one full-size render when idle,
+  late results discarded), viewer geometry (fit, 100 % on HiDPI, zoom at
+  the cursor, pan clamped to the image).
+- `app` (egui 0.37, wgpu 30): open by dialog, drag and drop, command line
+  or recent files; viewer with wheel/pinch zoom, double-click 100 %/fit,
+  drag to pan; inspector generated from tool descriptors (slider, reset
+  from the context menu, bypass); Edit ▸ Undo/Redo with labels; Export
+  (Ctrl+E, next to the RAW or to a chosen folder, never overwriting) with a
+  "Show in folder" toast; status bar with camera, size, zoom, GPU; theme
+  System/Light/Dark (dark by default); settings and recent files remembered.
 
 ## Tests and CI
 
@@ -54,8 +64,11 @@ GitHub Actions (`.github/workflows/ci.yml`) on every push:
   and must pass (`RNE_REQUIRE_GPU=1`); elsewhere they skip without a GPU.
 - macOS: `cargo check` only.
 - `real-raw`: downloads a public-domain Nikon D3S NEF (NASA, from the rawpy
-  test set), runs the ignored real-file test, then `rne info` and
-  `rne develop` on the GPU and on the CPU.
+  test set), runs the ignored real-file test, `rne info` and `rne develop`
+  on the GPU and on the CPU, then opens the file in the window headless
+  (egui_kittest on wgpu) and saves a screenshot (`window.png`).
+- `lockfile`: when a `Cargo.toml` adds dependencies, it resolves them,
+  commits `Cargo.lock` and the other jobs build that commit.
 
 Each job pushes its log and output files to the branch `ci-results/<job>`
 (Linux, Windows, macOS, real-raw), so results can be read with git:

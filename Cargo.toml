@@ -11,7 +11,10 @@ members = [
     "crates/raw-io",
     "crates/gpu",
     "crates/export",
+    "crates/engine",
+    "crates/editor",
     "crates/cli",
+    "crates/app",
     "tools/exposure",
 ]
 
@@ -33,6 +36,8 @@ platform = { path = "crates/platform" }
 raw-io = { path = "crates/raw-io" }
 gpu = { path = "crates/gpu" }
 export = { path = "crates/export" }
+engine = { path = "crates/engine" }
+editor = { path = "crates/editor" }
 tool-exposure = { path = "tools/exposure" }
 
 [workspace.lints.rust]

@@ -13,13 +13,12 @@ mod args;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::time::Instant;
 
 use args::{Command, DevelopArgs};
 use commands::{Edit, EditSession};
 use core_model::{ParamId, ParamValue, Recipe, ToolId, WorkingSpace};
-use tool_api::ToolRegistry;
+use engine::{Engine, EngineChoice};
 
 type BoxError = Box<dyn std::error::Error>;
 
@@ -64,13 +63,6 @@ fn chain(e: &dyn std::error::Error) -> String {
     s
 }
 
-/// The composition root: every tool of this build, registered once.
-fn registry() -> Result<ToolRegistry, BoxError> {
-    let mut r = ToolRegistry::new();
-    r.register(tool_exposure::Exposure::shared())?;
-    Ok(r)
-}
-
 fn gpu_info() -> Result<(), BoxError> {
     let ctx = gpu::GpuContext::new()?;
     println!("{}", ctx.adapter_name());
@@ -95,7 +87,11 @@ fn info(path: &Path) -> Result<(), BoxError> {
 
 fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
     let started = Instant::now();
-    let registry = registry()?;
+    let choice = if a.cpu_only { EngineChoice::CpuOnly } else { EngineChoice::Auto };
+    let engine = Engine::new(engine::builtin_tools()?, choice);
+    if let Some(why) = engine.gpu_problem() {
+        eprintln!("rne: {why}; rendering on the CPU");
+    }
 
     let raw = raw_io::read_raw(&a.input)?;
     let decoded = started.elapsed();
@@ -104,64 +100,45 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
     let mut session = EditSession::new(Recipe::default());
     if let Some(stops) = a.exposure {
         let source = session.recipe().graph.source();
-        session.apply(&registry, Edit::InsertSerial { after: source, tool: ToolId::new("exposure")? })?;
+        session.apply(engine.registry(), Edit::InsertSerial { after: source, tool: ToolId::new("exposure")? })?;
         let output = session.recipe().graph.output();
         let node = session.recipe().graph.input_link(output, 0).ok_or("exposure node not connected")?.from;
         let param = ParamId::new(tool_exposure::EXPOSURE)?;
-        session.apply(&registry, Edit::SetParam { node, param, value: ParamValue::Float(stops) })?;
+        session.apply(engine.registry(), Edit::SetParam { node, param, value: ParamValue::Float(stops) })?;
     }
     let recipe = session.recipe();
 
     let developed = develop::develop(&raw.sensor, &recipe.develop, WorkingSpace::LinearRec2020)?;
     let developed_at = started.elapsed();
 
-    let (rendered, engine) = render(&recipe.graph, &registry, &developed, a.cpu_only)?;
-    for t in &rendered.1 {
+    let rendered = engine.render(&recipe.graph, &developed)?;
+    if let Some(why) = &rendered.gpu_failure {
+        eprintln!("rne: warning: the GPU failed ({why}); rendered on the CPU");
+    }
+    for t in &rendered.missing_tools {
         eprintln!("rne: warning: tool '{t}' is not in this build; its node was skipped");
     }
     let rendered_at = started.elapsed();
 
-    let upright = rendered.0.oriented(raw.orientation)?;
-    let rgb = render_cpu::to_srgb8(&upright);
-    let jpeg = export::encode_jpeg(&rgb, upright.width(), upright.height(), a.quality)?;
-    let target = export::non_destructive_path(&output_path(a));
-    export::write_atomic(&target, &jpeg)?;
+    let target = engine::export_jpeg(&rendered.image, raw.orientation, a.quality, &output_path(a))?;
 
     println!("{}", target.display());
+    let (w, h) = if raw.orientation.swaps_axes() {
+        (rendered.image.height(), rendered.image.width())
+    } else {
+        (rendered.image.width(), rendered.image.height())
+    };
     eprintln!(
-        "rne: {} {} {}\u{d7}{} · decode {:.2}s · develop {:.2}s · render {:.2}s ({engine}) · total {:.2}s",
+        "rne: {} {} {w}\u{d7}{h} \u{b7} decode {:.2}s \u{b7} develop {:.2}s \u{b7} render {:.2}s ({}) \u{b7} total {:.2}s",
         raw.make,
         raw.model,
-        upright.width(),
-        upright.height(),
         decoded.as_secs_f32(),
         (developed_at - decoded).as_secs_f32(),
         (rendered_at - developed_at).as_secs_f32(),
+        rendered.backend,
         started.elapsed().as_secs_f32(),
     );
     Ok(())
-}
-
-/// Renders on the GPU when possible, else on the CPU; returns the image,
-/// missing tools and the name of the engine used.
-fn render(
-    graph: &core_model::NodeGraph,
-    registry: &ToolRegistry,
-    source: &core_model::ImageF32,
-    cpu_only: bool,
-) -> Result<((core_model::ImageF32, Vec<ToolId>), String), BoxError> {
-    if !cpu_only {
-        match gpu::GpuContext::new() {
-            Ok(ctx) => {
-                let name = ctx.adapter_name();
-                let r = gpu::GpuRenderer::new(Arc::new(ctx)).render(graph, registry, source)?;
-                return Ok(((r.image, r.missing_tools), name));
-            }
-            Err(e) => eprintln!("rne: {e}; rendering on the CPU"),
-        }
-    }
-    let r = render_cpu::render(graph, registry, source)?;
-    Ok(((r.image, r.missing_tools), "CPU".to_owned()))
 }
 
 /// `-o` if given, else the input's name with `.jpg`, in the same folder.

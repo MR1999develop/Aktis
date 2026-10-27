@@ -31,6 +31,9 @@ cargo fmt --all --check
 | `crates/raw-io` | RAW/DNG → sensor data with rawler; levels, valid area, CFA, colour matrix. |
 | `crates/gpu` | GPU engine on wgpu (Vulkan, DirectX 12, Metal); must match `render-cpu`. |
 | `crates/export` | JPEG with an embedded sRGB profile, atomic writes, non-destructive names. |
+| `crates/engine` | Shared by window and command line: built-in tools, GPU render with CPU fallback, preview copy, display pixels, JPEG export. |
+| `crates/editor` | The editor without the window: documents and undo, background jobs (open, preview, export), viewer zoom and pan. |
+| `crates/app` | The desktop window (egui): menu, viewer, inspector, status bar. |
 | `crates/cli` | `rne` command: develop a RAW file to JPEG without the window. |
 | `tools/exposure` | First tool: exposure in stops, CPU reference + WGSL kernel. |
 
@@ -47,6 +50,7 @@ quantisation happens only on output.
 ## Try it
 
 ```sh
+cargo run --release -p app -- path/to/photo.ARW     # the window
 cargo run --release -p cli -- develop path/to/photo.ARW --exposure 0.5
 cargo run --release -p cli -- info path/to/photo.ARW
 cargo run --release -p cli -- gpu
@@ -59,5 +63,5 @@ RAW samples for the ignored real-file test go in `testdata/` (not committed):
 
 ## Status
 
-Phase 0 (foundations) is done; phase 1 (tracer bullet) has everything but
-the window. Next: a minimal egui window. See `docs/progress.md`.
+Phase 0 (foundations) is done; phase 1 (tracer bullet) is complete with the
+first window. See `docs/progress.md`.

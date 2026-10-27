@@ -17,6 +17,20 @@ use rawler::rawimage::RawPhotometricInterpretation;
 /// Largest file accepted, checked before reading (1 GiB; real RAW files are far smaller).
 pub const MAX_FILE_BYTES: u64 = 1 << 30;
 
+/// File extensions of the RAW formats offered in open dialogs, lower case.
+/// Only a convenience for the dialog filter: [`read_raw`] recognises a file
+/// by its content, whatever its name.
+pub const RAW_EXTENSIONS: &[&str] = &[
+    "3fr", "arw", "cr2", "cr3", "crw", "dcr", "dng", "erf", "iiq", "kdc", "mef", "mos", "mrw", "nef", "nrw", "orf",
+    "pef", "raf", "rw2", "rwl", "sr2", "srf", "srw",
+];
+
+/// Whether `path` has one of the [`RAW_EXTENSIONS`] (any case).
+#[must_use]
+pub fn has_raw_extension(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| RAW_EXTENSIONS.iter().any(|r| r.eq_ignore_ascii_case(e)))
+}
+
 /// Why a RAW file could not be read.
 #[derive(Debug)]
 pub enum RawIoError {
@@ -367,5 +381,16 @@ mod tests {
     fn a_missing_file_is_an_io_error() {
         let r = read_raw(Path::new("this/file/does/not/exist.dng"));
         assert!(matches!(r, Err(RawIoError::Io(_))), "{r:?}");
+    }
+
+    #[test]
+    fn raw_extensions_match_in_any_case_and_nothing_else() {
+        assert!(has_raw_extension(Path::new("a/b/DSC_0001.NEF")));
+        assert!(has_raw_extension(Path::new("photo.arw")));
+        assert!(has_raw_extension(Path::new("with space/IMG 1.Cr3")));
+        assert!(!has_raw_extension(Path::new("photo.jpg")));
+        assert!(!has_raw_extension(Path::new("nef")));
+        assert!(!has_raw_extension(Path::new("")));
+        assert!(RAW_EXTENSIONS.iter().all(|e| e.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())));
     }
 }
