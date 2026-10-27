@@ -25,8 +25,9 @@ come from an earlier denoiser and need only Python 3 and NumPy (no PyTorch, no
 
 Where the editor looks for them, in order: the folder (or file) in
 `RNE_DENOISE_MODELS`; a `models` folder next to the program or up to three
-folders above it; `RawNodeEditor/models` and then `Denoiser/models` in the
-user's data folder (`%APPDATA%` on Windows, `~/.local/share` on Linux). The
+folders above it; the editor's `raw-node-editor/models` (in `%LOCALAPPDATA%`
+on Windows, `~/.local/share` on Linux), shared with the AI selection models;
+then an earlier denoiser's `Denoiser/models` (in `%APPDATA%` on Windows). The
 models already installed for an earlier denoiser are therefore used as they are.
 
 `--verify` needs `onnxruntime` for Python and checks that the new model

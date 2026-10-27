@@ -436,7 +436,7 @@ fn session(path: &Path, threads: usize, gpu: Option<Gpu>) -> Result<Session, Str
 #[must_use]
 pub fn rtx_cache_dir() -> PathBuf {
     platform::cache_dir(platform::Os::current(), platform::APP_DIR, crate::models::process_env)
-        .unwrap_or_else(|| std::env::temp_dir().join("RawNodeEditor"))
+        .unwrap_or_else(|| std::env::temp_dir().join(platform::APP_DIR))
         .join("tensorrt-rtx-cache")
 }
 
