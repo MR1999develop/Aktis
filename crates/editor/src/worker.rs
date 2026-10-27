@@ -88,6 +88,9 @@ pub enum Event {
         backend: Backend,
         /// Why the GPU was skipped, if it failed and the CPU took over.
         gpu_failure: Option<String>,
+        /// Nodes that could not run and were passed through, as messages for
+        /// the user ("AI denoise: no SCUNet model found …").
+        node_problems: Vec<String>,
     },
     /// A render for the screen failed.
     RenderFailed {
@@ -275,6 +278,7 @@ fn render_for_screen(engine: &Engine, req: &RenderRequest) -> Event {
             image,
             backend: rendered.backend,
             gpu_failure: rendered.gpu_failure,
+            node_problems: rendered.tool_errors.iter().map(|(_, e)| e.to_string()).collect(),
         },
         Err(e) => Event::RenderFailed { generation: req.generation, message: e.to_string() },
     }

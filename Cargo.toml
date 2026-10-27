@@ -16,6 +16,7 @@ members = [
     "crates/cli",
     "crates/app",
     "tools/exposure",
+    "tools/denoise-ai",
 ]
 
 [workspace.package]
@@ -39,6 +40,7 @@ export = { path = "crates/export" }
 engine = { path = "crates/engine" }
 editor = { path = "crates/editor" }
 tool-exposure = { path = "tools/exposure" }
+tool-denoise-ai = { path = "tools/denoise-ai" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

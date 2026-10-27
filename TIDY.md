@@ -17,3 +17,16 @@
   system, Ubuntu should ship Inter or Noto Sans (see the design guidelines).
 - File dialogs have no parent window yet (`rfd::FileDialog::set_parent`), so
   on Windows they are not modal to the editor.
+- `denoise-ai` keeps the tile-speed profile only for the running process;
+  persist it in the settings folder (as an earlier denoiser does) once the app has
+  settings, so the GPU search is not repeated at each start.
+- `denoise-ai` fingerprints the whole input image (about 0.3 s at 24 MP) to
+  reuse the network output; the app can key the cache on the upstream
+  recipe instead.
+- The GPU renderer reads back before a host tool and uploads after it; fine
+  for the denoiser (seconds of network time), revisit if host tools multiply.
+- With the AI denoise node on, the editor's preview worker is busy for the
+  whole network run (seconds on a GPU, minutes on a CPU) with no progress
+  and no cancel. Port an earlier denoiser's `JobControl` and progressive tiles
+  (starting from the visible area) into `editor::worker` when the node
+  becomes a common one.

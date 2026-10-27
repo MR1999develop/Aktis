@@ -1,7 +1,8 @@
 //! `rne`: develops RAW files from the command line.
 //!
 //! ```text
-//! rne develop <file> [-o <out.jpg>] [--exposure <stops>] [--quality <1-100>] [--cpu]
+//! rne develop <file> [-o <out.jpg>] [--exposure <stops>] [--denoise <grain %>]
+//!             [--denoise-color <colour %>] [--quality <1-100>] [--cpu]
 //! rne info <file>
 //! rne gpu
 //! ```
@@ -19,6 +20,7 @@ use args::{Command, DevelopArgs};
 use commands::{Edit, EditSession};
 use core_model::{ParamId, ParamValue, Recipe, ToolId, WorkingSpace};
 use engine::{Engine, EngineChoice};
+use tool_api::ToolRegistry;
 
 type BoxError = Box<dyn std::error::Error>;
 
@@ -63,6 +65,25 @@ fn chain(e: &dyn std::error::Error) -> String {
     s
 }
 
+/// Inserts `tool` after the node currently feeding the Output and sets its
+/// float parameters.
+fn append_node(
+    session: &mut EditSession,
+    registry: &ToolRegistry,
+    tool: &str,
+    values: &[(&str, f32)],
+) -> Result<(), BoxError> {
+    let output = session.recipe().graph.output();
+    let last = session.recipe().graph.input_link(output, 0).ok_or("the output is not connected")?.from;
+    session.apply(registry, Edit::InsertSerial { after: last, tool: ToolId::new(tool)? })?;
+    let node = session.recipe().graph.input_link(output, 0).ok_or("new node not connected")?.from;
+    for (param, value) in values {
+        session
+            .apply(registry, Edit::SetParam { node, param: ParamId::new(param)?, value: ParamValue::Float(*value) })?;
+    }
+    Ok(())
+}
+
 fn gpu_info() -> Result<(), BoxError> {
     let ctx = gpu::GpuContext::new()?;
     println!("{}", ctx.adapter_name());
@@ -99,12 +120,11 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
     // Build the recipe through commands, exactly as the UI and MCP will.
     let mut session = EditSession::new(Recipe::default());
     if let Some(stops) = a.exposure {
-        let source = session.recipe().graph.source();
-        session.apply(engine.registry(), Edit::InsertSerial { after: source, tool: ToolId::new("exposure")? })?;
-        let output = session.recipe().graph.output();
-        let node = session.recipe().graph.input_link(output, 0).ok_or("exposure node not connected")?.from;
-        let param = ParamId::new(tool_exposure::EXPOSURE)?;
-        session.apply(engine.registry(), Edit::SetParam { node, param, value: ParamValue::Float(stops) })?;
+        append_node(&mut session, engine.registry(), "exposure", &[(tool_exposure::EXPOSURE, stops)])?;
+    }
+    if let Some((grain, color)) = a.denoise {
+        // After the exposure: the network judges noise at the final brightness.
+        append_node(&mut session, engine.registry(), "denoise_ai", &[("grain", grain), ("color", color)])?;
     }
     let recipe = session.recipe();
 
@@ -117,6 +137,14 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
     }
     for t in &rendered.missing_tools {
         eprintln!("rne: warning: tool '{t}' is not in this build; its node was skipped");
+    }
+    for (node, e) in &rendered.tool_errors {
+        eprintln!("rne: warning: node {node} was skipped: {e}");
+    }
+    if a.denoise.is_some()
+        && let Some(status) = engine::ai_denoise_status()
+    {
+        eprintln!("rne: AI denoise: {status}");
     }
     let rendered_at = started.elapsed();
 

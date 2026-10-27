@@ -1,17 +1,18 @@
 //! Reference renderer on the CPU.
 //!
-//! Evaluates a node graph with each tool's [`Tool::apply_cpu`] and turns the
-//! result into display pixels. It favours clarity over speed: the GPU engine
-//! must produce the same pixels (within a stated tolerance), and this crate
+//! Evaluates a node graph with each tool's [`Tool::apply`] (its CPU reference,
+//! or its own engine for host tools) and turns the result into display
+//! pixels. It favours clarity over speed: the GPU engine must produce the
+//! same pixels (within a stated tolerance), and this crate
 //! is what its tests compare against. It is also the fallback without a GPU.
 //!
-//! [`Tool::apply_cpu`]: tool_api::Tool::apply_cpu
+//! [`Tool::apply`]: tool_api::Tool::apply
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 use core_model::{GraphError, ImageF32, NodeGraph, NodeId, NodeKind, ToolId, WorkingSpace};
-use tool_api::{ResolvedParams, ToolRegistry};
+use tool_api::{ResolvedParams, ToolError, ToolRegistry};
 
 /// Why the graph could not be rendered.
 #[derive(Debug, Clone, PartialEq)]
@@ -57,6 +58,9 @@ pub struct Rendered {
     /// Tools used by the recipe but missing from this build. Their nodes
     /// passed the image through unchanged; their parameters are kept.
     pub missing_tools: Vec<ToolId>,
+    /// Nodes whose tool could not run (for example a missing model file).
+    /// They passed the image through unchanged.
+    pub tool_errors: Vec<(NodeId, ToolError)>,
 }
 
 /// Evaluates `graph` on `source` (the developed image).
@@ -67,6 +71,7 @@ pub fn render(graph: &NodeGraph, registry: &ToolRegistry, source: &ImageF32) -> 
     let order = graph.evaluation_order()?;
     let mut results: BTreeMap<NodeId, ImageF32> = BTreeMap::new();
     let mut missing_tools = Vec::new();
+    let mut tool_errors = Vec::new();
 
     for id in order {
         let Some(node) = graph.node(id) else { continue };
@@ -80,7 +85,9 @@ pub fn render(graph: &NodeGraph, registry: &ToolRegistry, source: &ImageF32) -> 
                 match registry.get(tool_id) {
                     Some(tool) if node.enabled => {
                         let params = ResolvedParams::resolve(tool.descriptor(), &node.params);
-                        tool.apply_cpu(&mut img, &params);
+                        if let Err(e) = tool.apply(&mut img, &params) {
+                            tool_errors.push((id, e));
+                        }
                     }
                     Some(_) => {}
                     None => {
@@ -97,7 +104,7 @@ pub fn render(graph: &NodeGraph, registry: &ToolRegistry, source: &ImageF32) -> 
     }
 
     let image = results.remove(&graph.output()).ok_or(RenderError::MissingInput(graph.output()))?;
-    Ok(Rendered { image, missing_tools })
+    Ok(Rendered { image, missing_tools, tool_errors })
 }
 
 /// Converts a linear image to 8-bit sRGB for display or JPEG export.

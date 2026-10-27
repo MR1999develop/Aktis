@@ -4,3 +4,6 @@
 /out
 /testdata/*
 !/testdata/README.md
+/models/
+*.onnx
+__pycache__/

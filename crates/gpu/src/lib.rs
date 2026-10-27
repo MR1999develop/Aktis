@@ -6,13 +6,18 @@
 //! GPU for the whole chain of nodes and are read back once. Images larger
 //! than the device's buffer limits are processed in chunks of rows; per-pixel
 //! kernels need no overlap between chunks.
+//!
+//! Host tools ([`GpuKernel::Host`], such as the neural-network denoiser) split
+//! the chain: the kernels before them run and are read back, the tool runs on
+//! the whole image through [`Tool::apply`](tool_api::Tool::apply), and the
+//! kernels after it start from its result.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use core_model::{GraphError, ImageError, ImageF32, NodeGraph, NodeId, NodeKind, Rgba, ToolId};
-use tool_api::{GpuKernel, MAX_PARAMS, ResolvedParams, ToolRegistry};
+use tool_api::{GpuKernel, MAX_PARAMS, ResolvedParams, ToolError, ToolRegistry};
 
 /// Threads per workgroup in every kernel.
 const WORKGROUP: u32 = 256;
@@ -167,6 +172,8 @@ pub struct Rendered {
     pub image: ImageF32,
     /// Tools used by the recipe but missing from this build (passed through).
     pub missing_tools: Vec<ToolId>,
+    /// Nodes whose tool could not run (passed through), as in `render-cpu`.
+    pub tool_errors: Vec<(NodeId, ToolError)>,
 }
 
 /// What one node does in a render.
@@ -267,16 +274,28 @@ impl GpuRenderer {
     /// # Errors
     /// [`GpuError`] when the graph cannot be evaluated, a shader is invalid, or the GPU fails.
     pub fn render(&self, graph: &NodeGraph, registry: &ToolRegistry, source: &ImageF32) -> Result<Rendered, GpuError> {
-        // Plan: buffer 0 holds the source; each active kernel writes a new buffer.
+        // Plan: buffer 0 holds the segment's input; each active kernel writes a new buffer.
         // Bypassed nodes, missing tools and the output just reuse their input's buffer.
+        // A host tool ends the segment: its input is read back, the tool runs on
+        // the CPU side, and its result becomes buffer 0 of the next segment.
+        let mut segment_input = source.clone();
         let mut buffer_of: BTreeMap<NodeId, usize> = BTreeMap::new();
+        // Nodes whose buffers belonged to a finished segment.
+        let mut finished: BTreeSet<NodeId> = BTreeSet::new();
         let mut steps = Vec::new();
         let mut missing_tools = Vec::new();
+        let mut tool_errors = Vec::new();
         let mut buffers = 1;
         for id in graph.evaluation_order()? {
             let Some(node) = graph.node(id) else { continue };
             let input = || {
-                graph.input_link(id, 0).and_then(|l| buffer_of.get(&l.from).copied()).ok_or(GpuError::MissingInput(id))
+                let from = graph.input_link(id, 0).ok_or(GpuError::MissingInput(id))?.from;
+                if finished.contains(&from) {
+                    // A branch that skips over a host tool: not needed until
+                    // the parallel mixer is rendered.
+                    return Err(GpuError::NotYetSupported(id));
+                }
+                buffer_of.get(&from).copied().ok_or(GpuError::MissingInput(id))
             };
             let slot = match &node.kind {
                 NodeKind::Source => 0,
@@ -284,13 +303,34 @@ impl GpuRenderer {
                 NodeKind::Parallel { .. } => return Err(GpuError::NotYetSupported(id)),
                 NodeKind::Tool(tool_id) => match registry.get(tool_id) {
                     Some(tool) if node.enabled => {
-                        let GpuKernel::PerPixel { wgsl } = tool.gpu_kernel();
-                        let pipeline = self.pipeline(tool_id, wgsl)?;
-                        let params = ResolvedParams::resolve(tool.descriptor(), &node.params).gpu_uniforms();
-                        let output = buffers;
-                        buffers += 1;
-                        steps.push(Step::Kernel { pipeline, params, input: input()?, output });
-                        output
+                        let params = ResolvedParams::resolve(tool.descriptor(), &node.params);
+                        match tool.gpu_kernel() {
+                            GpuKernel::PerPixel { wgsl } => {
+                                let pipeline = self.pipeline(tool_id, wgsl)?;
+                                let output = buffers;
+                                buffers += 1;
+                                steps.push(Step::Kernel {
+                                    pipeline,
+                                    params: params.gpu_uniforms(),
+                                    input: input()?,
+                                    output,
+                                });
+                                output
+                            }
+                            GpuKernel::Host => {
+                                let from = input()?;
+                                let mut image = self.finish_segment(&segment_input, &steps, buffers, from)?;
+                                if let Err(e) = tool.apply(&mut image, &params) {
+                                    tool_errors.push((id, e));
+                                }
+                                segment_input = image;
+                                steps.clear();
+                                buffers = 1;
+                                finished.extend(buffer_of.keys().copied());
+                                buffer_of.clear();
+                                0
+                            }
+                        }
                     }
                     Some(_) => input()?,
                     None => {
@@ -303,12 +343,29 @@ impl GpuRenderer {
             };
             buffer_of.insert(id, slot);
         }
-        let result_slot = *buffer_of.get(&graph.output()).ok_or(GpuError::MissingInput(graph.output()))?;
+        let output = graph.output();
+        if finished.contains(&output) {
+            return Err(GpuError::NotYetSupported(output));
+        }
+        let result_slot = *buffer_of.get(&output).ok_or(GpuError::MissingInput(output))?;
+        let image = self.finish_segment(&segment_input, &steps, buffers, result_slot)?;
+        Ok(Rendered { image, missing_tools, tool_errors })
+    }
 
-        let pixels = self.run(source.pixels(), &steps, buffers, result_slot)?;
-        let image =
-            ImageF32::from_pixels(source.width(), source.height(), source.space(), pixels).map_err(GpuError::Image)?;
-        Ok(Rendered { image, missing_tools })
+    /// Runs one segment's kernels over `input` and returns buffer `slot`.
+    /// A segment without kernels returns its input as is.
+    fn finish_segment(
+        &self,
+        input: &ImageF32,
+        steps: &[Step],
+        buffers: usize,
+        slot: usize,
+    ) -> Result<ImageF32, GpuError> {
+        if steps.is_empty() {
+            return Ok(input.clone());
+        }
+        let pixels = self.run(input.pixels(), steps, buffers, slot)?;
+        ImageF32::from_pixels(input.width(), input.height(), input.space(), pixels).map_err(GpuError::Image)
     }
 
     /// Runs the planned steps over `src`, chunk by chunk, and reads back `result_slot`.

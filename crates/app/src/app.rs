@@ -112,6 +112,8 @@ pub struct EditorApp {
     backend: Option<Backend>,
     gpu_problem: Option<String>,
     toast: Option<Toast>,
+    /// The last "node skipped" message shown, so it is not repeated at every render.
+    node_problem: Option<String>,
     title: String,
 }
 
@@ -165,6 +167,7 @@ impl EditorApp {
             backend: None,
             gpu_problem: None,
             toast,
+            node_problem: None,
             title: String::new(),
         };
         if let Some(path) = open {
@@ -289,7 +292,7 @@ impl EditorApp {
                         Err(message) => self.toast = Some(error_toast(message)),
                     }
                 }
-                Event::Rendered { generation, quality, image, backend, gpu_failure } => {
+                Event::Rendered { generation, quality, image, backend, gpu_failure, node_problems } => {
                     if !self.plan.accepts(generation, quality) {
                         continue;
                     }
@@ -303,6 +306,13 @@ impl EditorApp {
                     self.plan.shown(generation, quality);
                     if let Some(why) = gpu_failure {
                         self.toast = Some(error_toast(format!("The GPU failed, the CPU took over: {why}")));
+                    }
+                    // Told once per message, not at every render.
+                    if let Some(problem) = node_problems.into_iter().next()
+                        && self.node_problem.as_ref() != Some(&problem)
+                    {
+                        self.toast = Some(error_toast(problem.clone()));
+                        self.node_problem = Some(problem);
                     }
                     self.backend = Some(backend);
                 }

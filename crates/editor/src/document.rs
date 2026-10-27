@@ -12,8 +12,11 @@ use commands::{Edit, EditError, EditSession, GestureId};
 use core_model::{GraphError, ImageF32, NodeId, NodeKind, Orientation, ParamId, ParamValue, Params, Recipe, ToolId};
 use tool_api::{ParamDescriptor, ToolRegistry};
 
-/// Tools placed in the graph of a newly opened image, in order, when this build has them.
-pub const STARTING_TOOLS: &[&str] = &["exposure"];
+/// Tools placed in the graph of a newly opened image, in order, when this
+/// build has them, and whether they start enabled. The AI denoise node starts
+/// bypassed: the network takes seconds on a GPU and minutes on a CPU, so the
+/// user switches it on.
+pub const STARTING_TOOLS: &[(&str, bool)] = &[("exposure", true), ("denoise_ai", false)];
 
 /// A decoded and developed image, as the open job delivers it.
 #[derive(Debug, Clone)]
@@ -73,10 +76,13 @@ impl Document {
     pub fn new(opened: Opened, registry: &ToolRegistry, first_generation: u64) -> Result<Self, GraphError> {
         let mut recipe = Recipe::default();
         let mut last = recipe.graph.source();
-        for name in STARTING_TOOLS {
+        for &(name, enabled) in STARTING_TOOLS {
             let Ok(id) = ToolId::new(name) else { continue };
             if registry.get(&id).is_some() {
                 last = recipe.graph.insert_serial(last, id, Params::new())?;
+                if let Some(mut node) = recipe.graph.node_mut(last) {
+                    node.set_enabled(enabled);
+                }
             }
         }
         Ok(Self { opened, session: EditSession::new(recipe), generation: first_generation })
@@ -307,9 +313,13 @@ mod tests {
         let reg = registry();
         let doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), &reg, 1).unwrap();
         let rows = doc.node_rows(&reg);
-        assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "Exposure");
+        assert!(rows[0].enabled);
         assert_eq!(rows[0].params[0].value, ParamValue::Float(0.0));
+        // The AI denoise node, when this build has it, comes after and starts bypassed.
+        let denoise: Vec<_> = rows.iter().filter(|r| r.name == "AI denoise").collect();
+        assert!(denoise.iter().all(|r| !r.enabled));
+        assert_eq!(rows.len(), 1 + denoise.len());
         assert_eq!(doc.undo_label(), None);
         assert_eq!(doc.file_name(), "DSC_1.NEF");
     }

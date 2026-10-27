@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 core-model.workspace = true
+tool-api.workspace = true
 commands.workspace = true
 develop.workspace = true
 raw-io.workspace = true

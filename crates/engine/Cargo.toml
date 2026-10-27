@@ -13,6 +13,17 @@ render-cpu.workspace = true
 gpu.workspace = true
 export.workspace = true
 tool-exposure.workspace = true
+tool-denoise-ai = { workspace = true, optional = true }
+
+# On Windows the AI denoise tool also gets its GPU back ends: DirectML (any
+# DirectX 12 card) and TensorRT for RTX (used when its DLLs are present).
+[target.'cfg(windows)'.dependencies]
+tool-denoise-ai = { workspace = true, optional = true, features = ["directml", "nvrtx"] }
+
+[features]
+default = ["ai-denoise"]
+# The SCUNet neural-network denoiser (ONNX Runtime, downloaded at build time).
+ai-denoise = ["dep:tool-denoise-ai"]
 
 [dev-dependencies]
 commands.workspace = true

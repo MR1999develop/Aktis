@@ -8,6 +8,12 @@
 //! The UI and the MCP schema are generated from [`ToolDescriptor`]; the GPU
 //! engine builds its pipelines from [`GpuKernel`]; [`Tool::apply_cpu`] is the
 //! simple reference every GPU kernel is tested against.
+//!
+//! A few tools cannot be a WGSL kernel: a neural network running on its own
+//! inference engine, or an algorithm that needs the whole image. They declare
+//! [`GpuKernel::Host`] and do their work in [`Tool::apply`], which may fail
+//! (a missing model file): the renderers then pass the image through and
+//! report the failure instead of stopping the render.
 
 mod descriptor;
 mod registry;
@@ -34,6 +40,11 @@ pub enum GpuKernel {
         /// WGSL function body.
         wgsl: &'static str,
     },
+    /// The tool runs outside the GPU engine's kernels, through [`Tool::apply`]:
+    /// the engine reads the image back at this node, hands it to the tool and
+    /// uploads the result. For tools with their own accelerator (a neural
+    /// network on ONNX Runtime) or that need the whole image at once.
+    Host,
 }
 
 /// Why a tool could not do what was asked.
@@ -46,6 +57,9 @@ pub enum ToolError {
         /// Version this build understands.
         current: u32,
     },
+    /// The tool cannot run here (for example its model file is missing or its
+    /// engine failed). The image is left unchanged; the text is for the user.
+    Unavailable(String),
 }
 
 impl std::fmt::Display for ToolError {
@@ -54,6 +68,7 @@ impl std::fmt::Display for ToolError {
             Self::UnsupportedVersion { found, current } => {
                 write!(f, "parameters are from tool version {found}, this build knows up to {current}")
             }
+            Self::Unavailable(why) => f.write_str(why),
         }
     }
 }
@@ -68,6 +83,19 @@ pub trait Tool: Send + Sync + std::fmt::Debug {
     /// Reference implementation on the CPU, written for clarity, not speed.
     /// GPU kernels are tested against it; it is also the fallback without a GPU.
     fn apply_cpu(&self, image: &mut ImageF32, params: &ResolvedParams);
+
+    /// What the renderers call: [`Tool::apply_cpu`] for ordinary tools.
+    ///
+    /// Tools with [`GpuKernel::Host`] override it to run their own engine.
+    /// On error the image must be left unchanged; the renderers pass it on
+    /// and report the error.
+    ///
+    /// # Errors
+    /// [`ToolError::Unavailable`] when the tool cannot run here.
+    fn apply(&self, image: &mut ImageF32, params: &ResolvedParams) -> Result<(), ToolError> {
+        self.apply_cpu(image, params);
+        Ok(())
+    }
 
     /// How the GPU engine runs this tool.
     fn gpu_kernel(&self) -> GpuKernel;

@@ -108,6 +108,40 @@ pub fn command_key_name(os: Os) -> &'static str {
     }
 }
 
+/// Folder for data files the user may add, such as neural-network models:
+/// `%APPDATA%\<app>` on Windows, `$XDG_DATA_HOME/<app>` or
+/// `~/.local/share/<app>` on Linux, `~/Library/Application Support/<app>` on
+/// macOS. `env` as in [`config_dir`].
+#[must_use]
+pub fn data_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let absolute = |v: OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
+    let base = match os {
+        Os::Windows => env("APPDATA").and_then(absolute)?,
+        Os::Linux => env("XDG_DATA_HOME")
+            .and_then(absolute)
+            .or_else(|| env("HOME").and_then(absolute).map(|h| h.join(".local").join("share")))?,
+        Os::MacOs => env("HOME").and_then(absolute)?.join("Library").join("Application Support"),
+    };
+    Some(base.join(app))
+}
+
+/// Folder for caches that can be rebuilt (compiled GPU engines):
+/// `%LOCALAPPDATA%\<app>` on Windows, `$XDG_CACHE_HOME/<app>` or
+/// `~/.cache/<app>` on Linux, `~/Library/Caches/<app>` on macOS. `env` as in
+/// [`config_dir`].
+#[must_use]
+pub fn cache_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let absolute = |v: OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
+    let base = match os {
+        Os::Windows => env("LOCALAPPDATA").and_then(absolute)?,
+        Os::Linux => env("XDG_CACHE_HOME")
+            .and_then(absolute)
+            .or_else(|| env("HOME").and_then(absolute).map(|h| h.join(".cache")))?,
+        Os::MacOs => env("HOME").and_then(absolute)?.join("Library").join("Caches"),
+    };
+    Some(base.join(app))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +214,38 @@ mod tests {
         assert_eq!(command_key_name(Os::Windows), "Ctrl");
         assert_eq!(command_key_name(Os::Linux), "Ctrl");
         assert_eq!(command_key_name(Os::MacOs), "Cmd");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn data_and_cache_dirs_follow_xdg_then_home_on_linux_and_library_on_macos() {
+        let vars = [("XDG_DATA_HOME", "/data"), ("XDG_CACHE_HOME", "/cache"), ("HOME", "/home/m")];
+        assert_eq!(data_dir(Os::Linux, "rne", env(&vars)), Some(PathBuf::from("/data/rne")));
+        assert_eq!(cache_dir(Os::Linux, "rne", env(&vars)), Some(PathBuf::from("/cache/rne")));
+        let home = [("HOME", "/home/m")];
+        assert_eq!(data_dir(Os::Linux, "rne", env(&home)), Some(PathBuf::from("/home/m/.local/share/rne")));
+        assert_eq!(cache_dir(Os::Linux, "rne", env(&home)), Some(PathBuf::from("/home/m/.cache/rne")));
+        let mac = [("HOME", "/Users/m")];
+        assert_eq!(
+            data_dir(Os::MacOs, "rne", env(&mac)),
+            Some(PathBuf::from("/Users/m/Library/Application Support/rne"))
+        );
+        assert_eq!(cache_dir(Os::MacOs, "rne", env(&mac)), Some(PathBuf::from("/Users/m/Library/Caches/rne")));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn data_dir_is_roaming_and_cache_dir_is_local_on_windows() {
+        let vars = [("APPDATA", r"C:\Users\m\AppData\Roaming"), ("LOCALAPPDATA", r"C:\Users\m\AppData\Local")];
+        assert_eq!(data_dir(Os::Windows, "rne", env(&vars)), Some(PathBuf::from(r"C:\Users\m\AppData\Roaming\rne")));
+        assert_eq!(cache_dir(Os::Windows, "rne", env(&vars)), Some(PathBuf::from(r"C:\Users\m\AppData\Local\rne")));
+    }
+
+    #[test]
+    fn data_and_cache_dirs_are_none_without_the_needed_variables() {
+        for os in [Os::Windows, Os::Linux, Os::MacOs] {
+            assert_eq!(data_dir(os, "rne", env(&[])), None);
+            assert_eq!(cache_dir(os, "rne", env(&[])), None);
+        }
     }
 }
