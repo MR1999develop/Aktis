@@ -33,6 +33,21 @@ pub enum Command {
 const CMD: Modifiers = Modifiers::COMMAND;
 const CMD_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 
+const fn k(modifiers: Modifiers, key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(modifiers, key)
+}
+
+const OPEN: &[KeyboardShortcut] = &[k(CMD, Key::O)];
+const EXPORT: &[KeyboardShortcut] = &[k(CMD, Key::E)];
+const EXPORT_TO: &[KeyboardShortcut] = &[k(CMD_SHIFT, Key::E)];
+const QUIT: &[KeyboardShortcut] = &[k(CMD, Key::Q)];
+const UNDO: &[KeyboardShortcut] = &[k(CMD, Key::Z)];
+const REDO: &[KeyboardShortcut] = &[k(CMD, Key::Y), k(CMD_SHIFT, Key::Z)];
+const ZOOM_FIT: &[KeyboardShortcut] = &[k(CMD, Key::Num0)];
+const ZOOM_100: &[KeyboardShortcut] = &[k(CMD, Key::Num1)];
+const ZOOM_IN: &[KeyboardShortcut] = &[k(CMD, Key::Plus), k(CMD, Key::Equals)];
+const ZOOM_OUT: &[KeyboardShortcut] = &[k(CMD, Key::Minus)];
+
 impl Command {
     /// Menu label, sentence case.
     #[must_use]
@@ -54,20 +69,17 @@ impl Command {
     /// Shortcuts, the first one shown in menus.
     #[must_use]
     pub fn shortcuts(self) -> &'static [KeyboardShortcut] {
-        const fn k(m: Modifiers, key: Key) -> KeyboardShortcut {
-            KeyboardShortcut::new(m, key)
-        }
         match self {
-            Self::Open => &[k(CMD, Key::O)],
-            Self::Export => &[k(CMD, Key::E)],
-            Self::ExportTo => &[k(CMD_SHIFT, Key::E)],
-            Self::Quit => &[k(CMD, Key::Q)],
-            Self::Undo => &[k(CMD, Key::Z)],
-            Self::Redo => &[k(CMD, Key::Y), k(CMD_SHIFT, Key::Z)],
-            Self::ZoomFit => &[k(CMD, Key::Num0)],
-            Self::Zoom100 => &[k(CMD, Key::Num1)],
-            Self::ZoomIn => &[k(CMD, Key::Plus), k(CMD, Key::Equals)],
-            Self::ZoomOut => &[k(CMD, Key::Minus)],
+            Self::Open => OPEN,
+            Self::Export => EXPORT,
+            Self::ExportTo => EXPORT_TO,
+            Self::Quit => QUIT,
+            Self::Undo => UNDO,
+            Self::Redo => REDO,
+            Self::ZoomFit => ZOOM_FIT,
+            Self::Zoom100 => ZOOM_100,
+            Self::ZoomIn => ZOOM_IN,
+            Self::ZoomOut => ZOOM_OUT,
         }
     }
 

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 # Each job publishes its log (and any output files) to the branch
-# ci-results/<job>, so results can be read with git alone.
+# ci-results/<branch>--<job>, so results can be read with git alone.
 permissions:
   contents: write
 

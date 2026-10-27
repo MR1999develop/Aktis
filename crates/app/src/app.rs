@@ -643,7 +643,7 @@ impl EditorApp {
         let t = Tokens::of(ctx.theme());
         let mut close = false;
         let mut action = None;
-        let shown = egui::Area::new(Id::new("toast"))
+        let shown = egui::Area::new(Id::unique("rne-toast"))
             .anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -48.0))
             .order(Order::Foreground)
             .show(ctx, |ui| {

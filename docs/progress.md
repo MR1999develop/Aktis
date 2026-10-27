@@ -70,7 +70,7 @@ GitHub Actions (`.github/workflows/ci.yml`) on every push:
 - `lockfile`: when a `Cargo.toml` adds dependencies, it resolves them,
   commits `Cargo.lock` and the other jobs build that commit.
 
-Each job pushes its log and output files to the branch `ci-results/<job>`
+Each job pushes its log and output files to the branch `ci-results/<branch>--<job>`
 (Linux, Windows, macOS, real-raw), so results can be read with git:
 `git fetch origin "refs/heads/ci-results/*:refs/remotes/origin/ci-results/*"`.
 
