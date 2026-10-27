@@ -364,7 +364,7 @@ mod tests {
         // a different image runs it again
         let mut other = source.clone();
         other.pixels_mut()[0][1] = 0.9;
-        tool.apply(&mut other, &params(100.0, 100.0)).expect("runs");
+        tool.apply(&mut other.clone(), &params(100.0, 100.0)).expect("runs");
         assert_eq!(runs.load(Ordering::Relaxed), 4);
         // preview and full image alternating: both stay cached
         for img in [&source, &other, &source] {
