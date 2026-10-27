@@ -14,6 +14,7 @@ develop.workspace = true
 raw-io.workspace = true
 engine.workspace = true
 lens-db.workspace = true
+catalog.workspace = true
 
 [lints]
 workspace = true

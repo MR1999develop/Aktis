@@ -21,6 +21,12 @@ use rawler::imgop::xyz::Illuminant;
 use rawler::rawimage::RawPhotometricInterpretation;
 use rawler::rawsource::RawSource;
 
+mod info;
+mod thumbnail;
+
+pub use info::PhotoInfo;
+pub use thumbnail::{Thumbnail, orient_rgb8, read_thumbnail};
+
 /// Largest file accepted, checked before reading (1 GiB; real RAW files are far smaller).
 pub const MAX_FILE_BYTES: u64 = 1 << 30;
 
@@ -107,6 +113,8 @@ pub struct RawFile {
     pub has_camera_white_balance: bool,
     /// Camera, lens, shooting settings and colour calibration.
     pub capture: CaptureInfo,
+    /// Exposure, date, GPS and rating for the Metadata panel.
+    pub info: PhotoInfo,
 }
 
 /// Reads and decodes a RAW or DNG file.
@@ -132,7 +140,25 @@ pub fn read_raw(path: &Path) -> Result<RawFile, RawIoError> {
     }))
     .ok()
     .flatten();
-    convert(&raw, metadata.as_ref())
+    let mut file = convert(&raw, metadata.as_ref())?;
+    file.info = metadata.as_ref().map(info::from_metadata).unwrap_or_default();
+    Ok(file)
+}
+
+/// Reads only the shooting data of a RAW file (no pixel decoding).
+///
+/// # Errors
+/// [`RawIoError`] when the file cannot be read or its format is unknown.
+pub fn read_info(path: &Path) -> Result<PhotoInfo, RawIoError> {
+    let source = RawSource::new(path).map_err(RawIoError::Io)?;
+    let params = RawDecodeParams::default();
+    catch_unwind(AssertUnwindSafe(|| {
+        let decoder = rawler::get_decoder(&source).map_err(|e| RawIoError::Decode(e.to_string()))?;
+        let metadata =
+            Decoder::raw_metadata(&*decoder, &source, &params).map_err(|e| RawIoError::Decode(e.to_string()))?;
+        Ok(info::from_metadata(&metadata))
+    }))
+    .map_err(|_| RawIoError::DecoderCrashed)?
 }
 
 fn convert(raw: &rawler::RawImage, metadata: Option<&RawMetadata>) -> Result<RawFile, RawIoError> {
@@ -177,6 +203,7 @@ fn convert(raw: &rawler::RawImage, metadata: Option<&RawMetadata>) -> Result<Raw
         orientation: orientation(raw.orientation),
         has_camera_white_balance: has_wb,
         capture,
+        info: PhotoInfo::default(),
     })
 }
 
@@ -361,6 +388,22 @@ fn matrix_from_flat(flat: &[f32]) -> Option<Matrix3> {
     Some(Matrix3::from_rows([[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]]))
 }
 
+/// The orientation of an EXIF/TIFF Orientation tag value (1–8); anything
+/// else is treated as upright.
+#[must_use]
+pub fn orientation_from_exif(code: u16) -> Orientation {
+    match code {
+        2 => Orientation::FlipHorizontal,
+        3 => Orientation::Rotate180,
+        4 => Orientation::FlipVertical,
+        5 => Orientation::Transpose,
+        6 => Orientation::Rotate90,
+        7 => Orientation::Transverse,
+        8 => Orientation::Rotate270,
+        _ => Orientation::Normal,
+    }
+}
+
 fn orientation(o: rawler::Orientation) -> Orientation {
     use rawler::Orientation as R;
     match o {
@@ -456,6 +499,16 @@ mod tests {
     fn a_missing_file_is_an_io_error() {
         let r = read_raw(Path::new("this/file/does/not/exist.dng"));
         assert!(matches!(r, Err(RawIoError::Io(_))), "{r:?}");
+    }
+
+    #[test]
+    fn exif_orientation_codes_map_to_the_eight_orientations() {
+        assert_eq!(orientation_from_exif(1), Orientation::Normal);
+        assert_eq!(orientation_from_exif(6), Orientation::Rotate90);
+        assert_eq!(orientation_from_exif(8), Orientation::Rotate270);
+        assert_eq!(orientation_from_exif(3), Orientation::Rotate180);
+        assert_eq!(orientation_from_exif(0), Orientation::Normal);
+        assert_eq!(orientation_from_exif(42), Orientation::Normal);
     }
 
     #[test]

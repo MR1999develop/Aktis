@@ -103,6 +103,59 @@ pub fn reveal_in_file_manager(os: Os, file: &Path) -> Launch {
     }
 }
 
+/// How to open `file` with the application the system associates with it
+/// (Explorer on Windows hands it to the default app).
+#[must_use]
+pub fn open_with_default_app(os: Os, file: &Path) -> Launch {
+    let program = match os {
+        Os::Windows => "explorer",
+        Os::MacOs => "open",
+        Os::Linux => "xdg-open",
+    };
+    Launch { program, args: vec![file.as_os_str().to_owned()] }
+}
+
+/// Top-level folders of the Explorer: the user's Pictures folder first,
+/// then the drives (Windows), the home folder and mount points (Linux),
+/// or the home folder and volumes (macOS). Only folders for which `exists`
+/// is true are listed.
+#[must_use]
+pub fn library_roots(os: Os, env: impl Fn(&str) -> Option<OsString>, exists: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let absolute = |v: OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
+    let mut roots = Vec::new();
+    match os {
+        Os::Windows => {
+            if let Some(home) = env("USERPROFILE").and_then(absolute) {
+                roots.push(home.join("Pictures"));
+            }
+            roots.extend((b'A'..=b'Z').map(|d| PathBuf::from(format!("{}:\\", char::from(d)))));
+        }
+        Os::Linux => {
+            if let Some(home) = env("HOME").and_then(absolute) {
+                roots.push(home.join("Pictures"));
+                roots.push(home);
+            }
+            roots.extend(["/media", "/mnt", "/"].into_iter().map(PathBuf::from));
+        }
+        Os::MacOs => {
+            if let Some(home) = env("HOME").and_then(absolute) {
+                roots.push(home.join("Pictures"));
+                roots.push(home);
+            }
+            roots.push(PathBuf::from("/Volumes"));
+        }
+    }
+    let mut seen = Vec::new();
+    roots.retain(|p| {
+        let keep = exists(p) && !seen.contains(p);
+        if keep {
+            seen.push(p.clone());
+        }
+        keep
+    });
+    roots
+}
+
 /// Primary modifier name shown in menus and tooltips ("Ctrl" or "Cmd").
 #[must_use]
 pub fn command_key_name(os: Os) -> &'static str {
@@ -300,5 +353,37 @@ mod tests {
             assert_eq!(cache_dir(os, "rne", env(&[])), None);
             assert_eq!(roaming_data_dir(os, "rne", env(&[])), None);
         }
+    }
+
+    #[test]
+    fn library_roots_start_with_pictures_and_keep_only_existing_folders() {
+        let windows = library_roots(Os::Windows, env(&[("USERPROFILE", r"C:\Users\m")]), |p| {
+            [r"C:\Users\m\Pictures", r"C:\", r"D:\"].iter().any(|e| p == Path::new(e))
+        });
+        if cfg!(windows) {
+            assert_eq!(
+                windows,
+                vec![PathBuf::from(r"C:\Users\m\Pictures"), PathBuf::from(r"C:\"), PathBuf::from(r"D:\")]
+            );
+        } else {
+            // A Windows path is not absolute here, so only the drives remain.
+            assert_eq!(windows, vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")]);
+        }
+        let linux = library_roots(Os::Linux, env(&[("HOME", "/home/m")]), |p| p != Path::new("/mnt"));
+        if cfg!(unix) {
+            assert_eq!(
+                linux,
+                ["/home/m/Pictures", "/home/m", "/media", "/"].iter().map(PathBuf::from).collect::<Vec<_>>()
+            );
+        }
+        assert!(library_roots(Os::MacOs, env(&[]), |_| true).contains(&PathBuf::from("/Volumes")));
+    }
+
+    #[test]
+    fn files_open_with_the_systems_default_app() {
+        let f = Path::new("a b/c.jpg");
+        assert_eq!(open_with_default_app(Os::Windows, f).program, "explorer");
+        assert_eq!(open_with_default_app(Os::Linux, f).args, vec![OsString::from("a b/c.jpg")]);
+        assert_eq!(open_with_default_app(Os::MacOs, f).program, "open");
     }
 }

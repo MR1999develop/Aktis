@@ -185,7 +185,7 @@ impl ModelsUi {
                     }
                 } else {
                     let label = if matches!(this.outcome, Some(Err(_))) { "Try again" } else { "Download" };
-                    if ui.add(Button::new(RichText::new(label).color(egui::Color32::WHITE)).fill(t.accent)).clicked() {
+                    if ui.add(Button::new(RichText::new(label).color(t.on_accent)).fill(t.accent)).clicked() {
                         download = true;
                     }
                     if ui.button("Not now").clicked() {
@@ -260,7 +260,7 @@ impl ModelsUi {
                 } else if !all_missing.is_empty()
                     && ui
                         .add(
-                            Button::new(RichText::new("Download everything needed").color(egui::Color32::WHITE))
+                            Button::new(RichText::new("Download everything needed").color(t.on_accent))
                                 .fill(t.accent),
                         )
                         .on_hover_text("Every pack a tool needs; optional ones are left out")

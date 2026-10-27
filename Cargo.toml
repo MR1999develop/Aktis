@@ -13,6 +13,7 @@ members = [
     "crates/export",
     "crates/engine",
     "crates/editor",
+    "crates/catalog",
     "crates/lens-db",
     "crates/masks",
     "crates/onnx-env",
@@ -46,6 +47,7 @@ gpu = { path = "crates/gpu" }
 export = { path = "crates/export" }
 engine = { path = "crates/engine" }
 editor = { path = "crates/editor" }
+catalog = { path = "crates/catalog", default-features = false }
 lens-db = { path = "crates/lens-db" }
 tagging = { path = "crates/tagging" }
 tagging-onnx = { path = "crates/tagging-onnx" }

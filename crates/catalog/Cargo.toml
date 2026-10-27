@@ -1,0 +1,19 @@
+[package]
+name = "catalog"
+description = "The photo catalog: ratings, colour labels and keywords (AI or the user's), with the filters of the Explorer. Stored in SQLite."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["sqlite"]
+# The SQLite store (bundled SQLite, no system library needed). Without it only
+# the model and the filters are built, which needs no C compiler.
+sqlite = ["dep:rusqlite"]
+
+[dependencies]
+rusqlite = { version = "0.41.0", features = ["bundled"], optional = true }
+
+[lints]
+workspace = true

@@ -9,8 +9,10 @@ use eframe::egui::{self, Color32, CornerRadius, Stroke, Theme, Visuals};
 /// Semantic colours of one theme.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tokens {
-    /// Fills of interactive elements (primary button, selection); one primary per view.
+    /// Fills of interactive elements (primary button, selection, active tool); one primary per view.
     pub accent: Color32,
+    /// Text and icons drawn on an `accent` fill.
+    pub on_accent: Color32,
     /// Links and accent-coloured text (readable on `bg`).
     pub accent_text: Color32,
     /// Titles, values, main labels.
@@ -23,14 +25,26 @@ pub struct Tokens {
     pub stroke_weak: Color32,
     /// Secondary fills, hover.
     pub fill: Color32,
-    /// Panels.
+    /// Side panels.
     pub bg: Color32,
+    /// Top bar and status bar.
+    pub bar: Color32,
     /// Windows, popups and menus.
     pub bg_raised: Color32,
-    /// Toasts and overlays.
+    /// Toasts, overlays and badges.
     pub bg_overlay: Color32,
     /// Neutral grey behind the photo, never tinted.
     pub canvas: Color32,
+    /// Background of the node graph.
+    pub graph: Color32,
+    /// Grid lines of the node graph.
+    pub graph_grid: Color32,
+    /// Filled rating stars.
+    pub star: Color32,
+    /// Image ports and links of the node graph.
+    pub port_image: Color32,
+    /// Mask ports and links of the node graph.
+    pub port_mask: Color32,
     /// Errors (always with text, never colour alone).
     pub error: Color32,
     /// Warnings.
@@ -40,24 +54,32 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    /// The dark theme, default for a photo editor.
+    /// The dark theme (warm greys and a copper accent, from the Interface design),
+    /// default for a photo editor.
     #[must_use]
     pub const fn dark() -> Self {
         Self {
-            accent: Color32::from_rgb(0x2f, 0x6f, 0xe0),
-            accent_text: Color32::from_rgb(0x7a, 0xa7, 0xff),
-            text_strong: Color32::from_rgb(0xe6, 0xe6, 0xe6),
-            text_weak: Color32::from_rgb(0xa8, 0xa8, 0xa8),
-            stroke_strong: Color32::from_rgb(0x74, 0x74, 0x74),
-            stroke_weak: Color32::from_rgb(0x3a, 0x3a, 0x3a),
-            fill: Color32::from_rgb(0x33, 0x33, 0x33),
-            bg: Color32::from_rgb(0x23, 0x23, 0x23),
-            bg_raised: Color32::from_rgb(0x2b, 0x2b, 0x2b),
-            bg_overlay: Color32::from_rgb(0x36, 0x36, 0x36),
-            canvas: Color32::from_rgb(0x1c, 0x1c, 0x1c),
-            error: Color32::from_rgb(0xff, 0x7b, 0x72),
+            accent: Color32::from_rgb(0xe2, 0x89, 0x4f),
+            on_accent: Color32::from_rgb(0x1a, 0x12, 0x10),
+            accent_text: Color32::from_rgb(0xe2, 0x89, 0x4f),
+            text_strong: Color32::from_rgb(0xe9, 0xe6, 0xe1),
+            text_weak: Color32::from_rgb(0xa2, 0x9d, 0x95),
+            stroke_strong: Color32::from_rgb(0x77, 0x71, 0x6a),
+            stroke_weak: Color32::from_rgb(0x2a, 0x28, 0x26),
+            fill: Color32::from_rgb(0x24, 0x22, 0x20),
+            bg: Color32::from_rgb(0x18, 0x17, 0x16),
+            bar: Color32::from_rgb(0x16, 0x15, 0x14),
+            bg_raised: Color32::from_rgb(0x23, 0x21, 0x20),
+            bg_overlay: Color32::from_rgb(0x2c, 0x29, 0x26),
+            canvas: Color32::from_rgb(0x0e, 0x0e, 0x0e),
+            graph: Color32::from_rgb(0x1b, 0x1a, 0x19),
+            graph_grid: Color32::from_rgb(0x24, 0x22, 0x1f),
+            star: Color32::from_rgb(0xe5, 0xa0, 0x0d),
+            port_image: Color32::from_rgb(0x7f, 0xbf, 0x6a),
+            port_mask: Color32::from_rgb(0x5b, 0x8f, 0xd6),
+            error: Color32::from_rgb(0xff, 0x8a, 0x7a),
             warning: Color32::from_rgb(0xe3, 0xb3, 0x41),
-            success: Color32::from_rgb(0x5f, 0xc8, 0x6e),
+            success: Color32::from_rgb(0x7f, 0xbf, 0x6a),
         }
     }
 
@@ -65,17 +87,24 @@ impl Tokens {
     #[must_use]
     pub const fn light() -> Self {
         Self {
-            accent: Color32::from_rgb(0x1f, 0x5f, 0xcc),
-            accent_text: Color32::from_rgb(0x1f, 0x5f, 0xcc),
-            text_strong: Color32::from_rgb(0x1a, 0x1a, 0x1a),
-            text_weak: Color32::from_rgb(0x55, 0x55, 0x55),
-            stroke_strong: Color32::from_rgb(0x86, 0x86, 0x86),
-            stroke_weak: Color32::from_rgb(0xd6, 0xd6, 0xd6),
-            fill: Color32::from_rgb(0xe6, 0xe6, 0xe6),
-            bg: Color32::from_rgb(0xf3, 0xf3, 0xf3),
+            accent: Color32::from_rgb(0xa4, 0x52, 0x1d),
+            on_accent: Color32::WHITE,
+            accent_text: Color32::from_rgb(0xa4, 0x52, 0x1d),
+            text_strong: Color32::from_rgb(0x1f, 0x1c, 0x1a),
+            text_weak: Color32::from_rgb(0x5c, 0x57, 0x51),
+            stroke_strong: Color32::from_rgb(0x86, 0x82, 0x7d),
+            stroke_weak: Color32::from_rgb(0xdd, 0xd9, 0xd4),
+            fill: Color32::from_rgb(0xe9, 0xe6, 0xe2),
+            bg: Color32::from_rgb(0xf3, 0xf2, 0xf0),
+            bar: Color32::from_rgb(0xec, 0xea, 0xe7),
             bg_raised: Color32::from_rgb(0xff, 0xff, 0xff),
             bg_overlay: Color32::from_rgb(0xff, 0xff, 0xff),
             canvas: Color32::from_rgb(0x9a, 0x9a, 0x9a),
+            graph: Color32::from_rgb(0xe9, 0xe6, 0xe2),
+            graph_grid: Color32::from_rgb(0xdd, 0xd9, 0xd4),
+            star: Color32::from_rgb(0xb7, 0x7c, 0x00),
+            port_image: Color32::from_rgb(0x3f, 0x8a, 0x2a),
+            port_mask: Color32::from_rgb(0x2f, 0x62, 0xb0),
             error: Color32::from_rgb(0xb3, 0x26, 0x1e),
             warning: Color32::from_rgb(0x8a, 0x5a, 0x00),
             success: Color32::from_rgb(0x1e, 0x7a, 0x34),
@@ -100,8 +129,14 @@ pub const FONT: [f32; 6] = [12., 13., 14., 16., 20., 24.];
 pub const RADIUS_CONTROL: u8 = 4;
 /// Corner radius of windows, menus and popups.
 pub const RADIUS_WINDOW: u8 = 8;
-/// Width of the inspector panel: default, minimum, maximum.
-pub const INSPECTOR_WIDTH: [f32; 3] = [300., 260., 420.];
+/// Width of the right panel (histogram and node settings): default, minimum, maximum.
+pub const INSPECTOR_WIDTH: [f32; 3] = [330., 280., 460.];
+/// Width of the left panel (Explorer and filmstrip): default, minimum, maximum.
+pub const LEFT_WIDTH: [f32; 3] = [420., 340., 640.];
+/// Width of the filmstrip column inside the left panel.
+pub const FILMSTRIP_WIDTH: f32 = 172.0;
+/// Height of the node graph under the viewer: default, minimum, maximum.
+pub const GRAPH_HEIGHT: [f32; 3] = [190., 120., 420.];
 /// Seconds a toast stays (5 s like GNOME; errors a little longer).
 pub const TOAST_SECONDS: f32 = 5.0;
 /// Seconds an error toast stays.
@@ -124,7 +159,7 @@ pub fn visuals(t: &Tokens, theme: Theme) -> Visuals {
     v.warn_fg_color = t.warning;
     v.weak_text_color = Some(t.text_weak);
     v.selection.bg_fill = t.accent;
-    v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+    v.selection.stroke = Stroke::new(1.0, t.on_accent);
     v.window_corner_radius = CornerRadius::same(RADIUS_WINDOW);
     v.menu_corner_radius = CornerRadius::same(RADIUS_WINDOW);
     v.window_stroke = Stroke::new(1.0, t.stroke_weak);
@@ -187,7 +222,7 @@ mod tests {
     #[test]
     fn text_and_controls_meet_wcag_contrast_in_both_themes() {
         for (name, t) in [("dark", Tokens::dark()), ("light", Tokens::light())] {
-            for bg in [t.bg, t.bg_raised, t.bg_overlay] {
+            for bg in [t.bg, t.bar, t.bg_raised, t.bg_overlay] {
                 assert!(contrast(t.text_strong, bg) >= 4.5, "{name}: strong text");
                 assert!(contrast(t.text_weak, bg) >= 4.5, "{name}: weak text");
                 assert!(contrast(t.accent_text, bg) >= 4.5, "{name}: links");
@@ -195,7 +230,7 @@ mod tests {
             }
             assert!(contrast(t.stroke_strong, t.bg) >= 3.0, "{name}: control borders");
             assert!(contrast(t.accent, t.bg) >= 3.0, "{name}: accent fills");
-            assert!(contrast(Color32::WHITE, t.accent) >= 4.5, "{name}: text on accent");
+            assert!(contrast(t.on_accent, t.accent) >= 4.5, "{name}: text on accent");
         }
     }
 

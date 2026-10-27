@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use commands::{Edit, EditError, EditSession, GestureId};
+use commands::{Edit, EditError, EditSession, GestureId, HistoryItem, RewriteReport};
 use core_model::{
     CaptureInfo, DevelopSettings, GraphError, ImageF32, LensSettings, NodeId, NodeKind, Orientation, ParamId,
     ParamValue, Params, Recipe, SensorImage, ToolId,
@@ -63,6 +63,8 @@ pub struct Opened {
     pub detected_lens: Option<String>,
     /// Lenses of the database that fit the camera, for choosing by hand.
     pub lens_choices: Vec<String>,
+    /// Exposure, date, GPS and the camera's rating, for the Metadata panel.
+    pub info: raw_io::PhotoInfo,
     /// The developed image.
     pub image: DevelopedImage,
 }
@@ -173,6 +175,32 @@ impl Document {
     #[must_use]
     pub fn has_camera_white_balance(&self) -> bool {
         self.opened.has_camera_white_balance
+    }
+
+    /// Shooting data for the Metadata panel.
+    #[must_use]
+    pub fn info(&self) -> &raw_io::PhotoInfo {
+        &self.opened.info
+    }
+
+    /// The edit history, oldest step first.
+    #[must_use]
+    pub fn history(&self) -> Vec<HistoryItem> {
+        self.session.history()
+    }
+
+    /// Keeps the history steps at positions `order`, in that order; the
+    /// others are deleted. One undo step.
+    ///
+    /// # Errors
+    /// [`EditError::BadHistoryOrder`] for an invalid order; nothing changes.
+    pub fn rewrite_history(&mut self, registry: &ToolRegistry, order: &[usize]) -> Result<RewriteReport, EditError> {
+        let before = self.session.undo_label();
+        let report = self.session.rewrite_history(registry, order)?;
+        if self.session.undo_label() != before || report.removed > 0 {
+            self.generation += 1;
+        }
+        Ok(report)
     }
 
     /// Lens whose corrections are applied in the shown image, if any.
@@ -393,6 +421,7 @@ mod tests {
             raw: None,
             detected_lens: None,
             lens_choices: Vec::new(),
+            info: raw_io::PhotoInfo::default(),
             image: DevelopedImage {
                 settings: DevelopSettings::default(),
                 developed: Arc::clone(&img),
@@ -502,6 +531,26 @@ mod tests {
         assert_eq!(doc.upright_size(), (4, 6));
         assert_eq!(doc.export_path(Path::new("out")), Path::new("out").join("IMG 7.jpg"));
         assert!(!doc.preview_is_reduced());
+    }
+
+    #[test]
+    fn deleting_a_history_step_is_a_new_generation_and_can_be_undone() {
+        let reg = registry();
+        let mut doc = Document::new(opened("x.NEF", Orientation::Normal), &reg, 1).unwrap();
+        let node = doc.node_rows(&reg)[0].node;
+        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(2.0), None).unwrap();
+        assert_eq!(doc.history().len(), 2);
+        let g = doc.generation();
+        let report = doc.rewrite_history(&reg, &[0]).unwrap();
+        assert_eq!(report.removed, 1);
+        assert!(doc.generation() > g);
+        assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(1.0));
+        let g = doc.generation();
+        doc.rewrite_history(&reg, &[0]).unwrap();
+        assert_eq!(doc.generation(), g, "the same order changes nothing");
+        assert_eq!(doc.undo().as_deref(), Some("Delete a history step"));
+        assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(2.0));
     }
 
     #[test]

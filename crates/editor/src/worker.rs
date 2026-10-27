@@ -12,6 +12,7 @@
 //! - The engine (GPU start-up can take a second) is created on a thread of
 //!   its own; renders wait for it.
 
+use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -23,12 +24,20 @@ use engine::{Backend, Engine, EngineChoice, Rgb8Image};
 use tool_api::ToolRegistry;
 
 use crate::document::{DevelopedImage, Opened, RawData};
+use crate::histogram::Histogram;
+use crate::library::{FolderListing, list_folder};
 
 /// Longer side of the preview copy made when a file is opened.
 pub const PREVIEW_SIDE: u32 = 2560;
 
 /// JPEG quality of exports.
 pub const EXPORT_QUALITY: u8 = 92;
+
+/// Longer side of filmstrip thumbnails (twice the card width, for sharp HiDPI screens).
+pub const THUMBNAIL_SIDE: u32 = 320;
+
+/// Threads making thumbnails at once (each reads a file and decodes a JPEG).
+const THUMBNAIL_THREADS: usize = 3;
 
 /// Called after every event, from a worker thread (e.g. `egui::Context::request_repaint`).
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -98,6 +107,8 @@ pub enum Event {
         /// Nodes that could not run and were passed through, as messages for
         /// the user ("AI denoise: no SCUNet model found …").
         node_problems: Vec<String>,
+        /// Levels of the displayed pixels.
+        histogram: Box<Histogram>,
     },
     /// A render for the screen failed.
     RenderFailed {
@@ -110,6 +121,20 @@ pub enum Event {
     Exported {
         /// The file written, or a message for the user.
         result: Result<PathBuf, String>,
+    },
+    /// A folder was listed for the Explorer.
+    FolderListed {
+        /// The folder.
+        dir: PathBuf,
+        /// Its sub-folders and photos, or a message for the user.
+        result: Result<FolderListing, String>,
+    },
+    /// A filmstrip thumbnail is ready (or could not be made).
+    Thumbnail {
+        /// The photo.
+        path: PathBuf,
+        /// Upright 8-bit pixels, or why there is none.
+        result: Result<Arc<raw_io::Thumbnail>, String>,
     },
 }
 
@@ -125,6 +150,19 @@ struct RenderQueue {
     wake: Condvar,
 }
 
+#[derive(Debug, Default)]
+struct ThumbState {
+    queue: VecDeque<PathBuf>,
+    shutdown: bool,
+}
+
+/// Photos waiting for a thumbnail, served by a few threads.
+#[derive(Debug, Default)]
+struct ThumbQueue {
+    state: Mutex<ThumbState>,
+    wake: Condvar,
+}
+
 /// Owns the background threads. Dropping it stops the preview thread.
 pub struct Worker {
     tx: Sender<Event>,
@@ -133,6 +171,8 @@ pub struct Worker {
     engine: Arc<OnceLock<Arc<Engine>>>,
     queue: Arc<RenderQueue>,
     render_thread: Option<JoinHandle<()>>,
+    thumbs: Arc<ThumbQueue>,
+    thumb_threads: Vec<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -171,7 +211,18 @@ impl Worker {
             thread::Builder::new().name("preview".into()).spawn(move || preview_loop(&engine, &queue, &tx, &*notify))?
         };
 
-        Ok(Self { tx, rx, notify, engine, queue, render_thread: Some(render_thread) })
+        let thumbs = Arc::new(ThumbQueue::default());
+        let mut thumb_threads = Vec::with_capacity(THUMBNAIL_THREADS);
+        for i in 0..THUMBNAIL_THREADS {
+            let (thumbs, tx, notify) = (Arc::clone(&thumbs), tx.clone(), Arc::clone(&notify));
+            thumb_threads.push(
+                thread::Builder::new()
+                    .name(format!("thumbnails-{i}"))
+                    .spawn(move || thumbnail_loop(&thumbs, &tx, &*notify))?,
+            );
+        }
+
+        Ok(Self { tx, rx, notify, engine, queue, render_thread: Some(render_thread), thumbs, thumb_threads })
     }
 
     /// Events that arrived since the last call. Never blocks.
@@ -217,6 +268,32 @@ impl Worker {
         }
     }
 
+    /// Lists `dir` for the Explorer: sub-folders and RAW files. Reported as
+    /// [`Event::FolderListed`].
+    pub fn list_folder(&self, dir: PathBuf) {
+        let (tx, notify) = (self.tx.clone(), Arc::clone(&self.notify));
+        let fallback = tx.clone();
+        let fallback_dir = dir.clone();
+        let spawned = thread::Builder::new().name("list-folder".into()).spawn(move || {
+            let result = list_folder(&dir).map_err(|e| format!("{} cannot be read: {e}", display_name(&dir)));
+            let _ = tx.send(Event::FolderListed { dir, result });
+            notify();
+        });
+        if let Err(e) = spawned {
+            let _ = fallback.send(Event::FolderListed { dir: fallback_dir, result: Err(format!("cannot start: {e}")) });
+        }
+    }
+
+    /// Asks for the thumbnails of `paths`, first ones first. Replaces the
+    /// photos still waiting from an earlier request (another folder, or
+    /// rows scrolled away). Each one comes back as [`Event::Thumbnail`].
+    pub fn request_thumbnails(&self, paths: Vec<PathBuf>) {
+        let mut state = self.thumbs.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.queue = paths.into();
+        drop(state);
+        self.thumbs.wake.notify_all();
+    }
+
     /// Asks for a screen render. Replaces a request that has not started yet.
     pub fn render(&self, request: RenderRequest) {
         let mut slot = self.queue.slot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -250,9 +327,42 @@ impl Drop for Worker {
     fn drop(&mut self) {
         self.queue.slot.lock().unwrap_or_else(PoisonError::into_inner).shutdown = true;
         self.queue.wake.notify_all();
+        {
+            let mut state = self.thumbs.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.shutdown = true;
+            state.queue.clear();
+        }
+        self.thumbs.wake.notify_all();
         if let Some(handle) = self.render_thread.take() {
             let _ = handle.join();
         }
+        for handle in self.thumb_threads.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn thumbnail_loop(thumbs: &ThumbQueue, tx: &Sender<Event>, notify: &(dyn Fn() + Send + Sync)) {
+    loop {
+        let path = {
+            let guard = thumbs.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = thumbs
+                .wake
+                .wait_while(guard, |s| s.queue.is_empty() && !s.shutdown)
+                .unwrap_or_else(PoisonError::into_inner);
+            if state.shutdown {
+                return;
+            }
+            state.queue.pop_front()
+        };
+        let Some(path) = path else { continue };
+        let result = catch_unwind(AssertUnwindSafe(|| raw_io::read_thumbnail(&path, THUMBNAIL_SIDE)))
+            .map_err(|_| "the preview could not be read (internal error)".to_owned())
+            .and_then(|r| r.map(Arc::new).map_err(|e| e.to_string()));
+        if tx.send(Event::Thumbnail { path, result }).is_err() {
+            return; // the UI is gone
+        }
+        notify();
     }
 }
 
@@ -298,6 +408,7 @@ fn render_for_screen(engine: &Engine, req: &RenderRequest) -> Event {
         Ok(image) => Event::Rendered {
             generation: req.generation,
             quality: req.quality,
+            histogram: Box::new(Histogram::of_rgb8(&image.pixels)),
             image,
             backend: rendered.backend,
             gpu_failure: rendered.gpu_failure,
@@ -350,6 +461,7 @@ fn open_file(path: &std::path::Path) -> Result<Opened, String> {
         raw: Some(raw),
         detected_lens,
         lens_choices,
+        info: file.info,
         image,
     })
 }

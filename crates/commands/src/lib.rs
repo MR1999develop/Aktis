@@ -6,6 +6,7 @@
 //! how to undo it. So every change, from any source, is validated the same
 //! way and can be undone with Ctrl+Z.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use core_model::{
@@ -109,6 +110,89 @@ impl Edit {
             Self::SetMask { .. } => "Change mask".to_owned(),
         }
     }
+
+    /// The new value in a few characters, for the History panel ("+0.50",
+    /// "off", "as shot"); empty when the label says it all.
+    #[must_use]
+    pub fn detail(&self) -> String {
+        match self {
+            Self::SetParam { value, .. } => match value {
+                ParamValue::Float(v) => format_number(*v),
+                ParamValue::Bool(b) => on_off(*b).to_owned(),
+                ParamValue::Choice(c) => format!("#{}", c + 1),
+            },
+            Self::ResetParam { .. } => "default".to_owned(),
+            Self::SetEnabled { enabled, .. } => on_off(*enabled).to_owned(),
+            Self::SetWhiteBalance(WhiteBalance::AsShot) => "as shot".to_owned(),
+            Self::SetWhiteBalance(WhiteBalance::Multipliers(m)) => {
+                format!("{:.2} \u{b7} {:.2} \u{b7} {:.2}", m[0], m[1], m[2])
+            }
+            Self::SetCameraProfile(ProfileChoice::Named(name)) => name.clone(),
+            Self::SetLensCorrection(lens) => on_off(lens.enabled).to_owned(),
+            _ => String::new(),
+        }
+    }
+
+    /// What kind of change this is (the History panel colours it).
+    #[must_use]
+    pub fn kind(&self) -> EditKind {
+        match self {
+            Self::SetParam { .. } | Self::ResetParam { .. } => EditKind::Adjust,
+            Self::SetWhiteBalance(_) | Self::SetCameraProfile(_) | Self::SetLensCorrection(_) => EditKind::Develop,
+            Self::AddMask { .. } | Self::SetMask { .. } => EditKind::Mask,
+            Self::InsertSerial { .. }
+            | Self::RemoveNode { .. }
+            | Self::Connect(_)
+            | Self::Disconnect { .. }
+            | Self::SetEnabled { .. } => EditKind::Node,
+        }
+    }
+
+    /// The same edit with every node id passed through `map`; `None` when
+    /// `map` drops a node the edit needs.
+    fn map_nodes(&self, map: impl Fn(NodeId) -> Option<NodeId>) -> Option<Self> {
+        Some(match self {
+            Self::SetParam { node, param, value } => {
+                Self::SetParam { node: map(*node)?, param: param.clone(), value: *value }
+            }
+            Self::ResetParam { node, param } => Self::ResetParam { node: map(*node)?, param: param.clone() },
+            Self::InsertSerial { after, tool } => Self::InsertSerial { after: map(*after)?, tool: tool.clone() },
+            Self::RemoveNode { node } => Self::RemoveNode { node: map(*node)? },
+            Self::Connect(link) => Self::Connect(Link { from: map(link.from)?, to: map(link.to)?, ..*link }),
+            Self::Disconnect { to, port } => Self::Disconnect { to: map(*to)?, port: *port },
+            Self::SetEnabled { node, enabled } => Self::SetEnabled { node: map(*node)?, enabled: *enabled },
+            Self::AddMask { to, def } => Self::AddMask { to: map(*to)?, def: def.clone() },
+            Self::SetMask { node, def } => Self::SetMask { node: map(*node)?, def: def.clone() },
+            Self::SetWhiteBalance(_) | Self::SetCameraProfile(_) | Self::SetLensCorrection(_) => self.clone(),
+        })
+    }
+}
+
+/// Groups of edits, for colouring the History panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditKind {
+    /// Development stage: white balance, camera profile, lens corrections.
+    Develop,
+    /// A tool parameter.
+    Adjust,
+    /// The node graph: add, remove, connect, bypass.
+    Node,
+    /// A mask.
+    Mask,
+}
+
+fn on_off(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
+}
+
+/// "+0.50", "-1.20", "12"; never "-0.00".
+fn format_number(v: f32) -> String {
+    let places = if v.fract().abs() < 1e-6 { 0 } else { 2 };
+    let text = format!("{v:.places$}");
+    if text.trim_start_matches('-').chars().all(|c| c == '0' || c == '.') {
+        return text.trim_start_matches('-').to_owned();
+    }
+    if v > 0.0 { format!("+{text}") } else { text }
 }
 
 /// Why an edit was refused. The recipe is unchanged when an error is returned.
@@ -132,6 +216,10 @@ pub enum EditError {
     NotAMaskNode(NodeId),
     /// The node has no key (mask) input.
     NoMaskInput(NodeId),
+    /// A history rewrite named a step twice or a step that does not exist.
+    BadHistoryOrder,
+    /// The step acts on a node made by a step that was deleted or no longer applies.
+    NodeFromRemovedStep,
 }
 
 impl fmt::Display for EditError {
@@ -148,6 +236,8 @@ impl fmt::Display for EditError {
             }
             Self::NotAMaskNode(id) => write!(f, "node {id} is not a mask node"),
             Self::NoMaskInput(id) => write!(f, "node {id} cannot take a mask"),
+            Self::BadHistoryOrder => write!(f, "the new history order names a step twice or a missing step"),
+            Self::NodeFromRemovedStep => write!(f, "it acts on a node made by a removed step"),
         }
     }
 }
@@ -197,19 +287,88 @@ enum Undo {
     Graph(Box<NodeGraph>),
 }
 
+/// One entry of the history.
 #[derive(Debug, Clone, PartialEq)]
 struct Step {
     edit: Edit,
-    undo: Undo,
+    /// How to undo it; `None` when the step does not apply (see `skipped`).
+    undo: Option<Undo>,
     gesture: Option<GestureId>,
+    /// Nodes this step added to the graph, in id order.
+    created: Vec<NodeId>,
+    /// Why the step no longer applies after the history was rewritten.
+    skipped: Option<EditError>,
 }
 
-/// A recipe being edited, with its undo and redo history.
+/// The whole history at one moment, to undo a rewrite.
+#[derive(Debug, Clone, PartialEq)]
+struct Snapshot {
+    base: Recipe,
+    recipe: Recipe,
+    steps: Vec<Step>,
+}
+
+/// A reorder or deletion of history steps.
+#[derive(Debug, Clone, PartialEq)]
+struct Rewrite {
+    label: String,
+    before: Snapshot,
+    after: Snapshot,
+}
+
+/// What Ctrl+Z undoes, newest last.
+#[derive(Debug, Clone, PartialEq)]
+enum Done {
+    /// The last step of the history.
+    Step,
+    /// A rewrite of the history.
+    Rewrite(Box<Rewrite>),
+}
+
+/// What Ctrl+Y redoes, newest last.
+#[derive(Debug, Clone, PartialEq)]
+enum Undone {
+    Step(Step),
+    Rewrite(Box<Rewrite>),
+}
+
+/// One row of the History panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryItem {
+    /// "Change exposure".
+    pub label: String,
+    /// The new value in a few characters ("+0.50"), may be empty.
+    pub detail: String,
+    /// For the colour of the row.
+    pub kind: EditKind,
+    /// Why the step no longer applies (shown, never dropped silently).
+    pub skipped: Option<String>,
+}
+
+/// What a history rewrite did.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RewriteReport {
+    /// Steps that no longer apply, by their new position, with the reason.
+    pub skipped: Vec<(usize, String)>,
+    /// Steps deleted.
+    pub removed: usize,
+}
+
+/// A recipe being edited, with its history and undo/redo.
+///
+/// The history is the list of steps from the opened recipe (the *base*) to
+/// the current one. Steps can be reordered or deleted
+/// ([`Self::rewrite_history`]): the remaining steps are applied again from
+/// the base, and a step that no longer makes sense (it changes a node made
+/// by a deleted step, for example) stays in the list, marked as skipped,
+/// instead of disappearing. Rewrites are undone with Ctrl+Z like any edit.
 #[derive(Debug, Clone)]
 pub struct EditSession {
+    base: Recipe,
     recipe: Recipe,
-    done: Vec<Step>,
-    undone: Vec<Step>,
+    steps: Vec<Step>,
+    done: Vec<Done>,
+    undone: Vec<Undone>,
     next_gesture: u64,
 }
 
@@ -217,13 +376,19 @@ impl EditSession {
     /// Starts editing `recipe` with an empty history.
     #[must_use]
     pub fn new(recipe: Recipe) -> Self {
-        Self { recipe, done: Vec::new(), undone: Vec::new(), next_gesture: 0 }
+        Self { base: recipe.clone(), recipe, steps: Vec::new(), done: Vec::new(), undone: Vec::new(), next_gesture: 0 }
     }
 
     /// The current recipe.
     #[must_use]
     pub fn recipe(&self) -> &Recipe {
         &self.recipe
+    }
+
+    /// The recipe the history starts from.
+    #[must_use]
+    pub fn base(&self) -> &Recipe {
+        &self.base
     }
 
     /// Starts a continuous gesture; pass the id to every edit it produces.
@@ -251,10 +416,11 @@ impl EditSession {
         edit: Edit,
         gesture: Option<GestureId>,
     ) -> Result<(), EditError> {
-        let edit = self.validate(registry, edit)?;
-        let undo = self.perform(&edit)?;
+        let edit = validate(&self.recipe, registry, edit)?;
+        let (undo, created) = perform(&mut self.recipe, &edit)?;
         self.undone.clear();
-        if let Some(top) = self.done.last_mut()
+        if matches!(self.done.last(), Some(Done::Step))
+            && let Some(top) = self.steps.last_mut()
             && gesture.is_some()
             && top.gesture == gesture
             && same_param(&top.edit, &edit)
@@ -263,223 +429,373 @@ impl EditSession {
             top.edit = edit;
             return Ok(());
         }
-        self.done.push(Step { edit, undo, gesture });
-        if self.done.len() > MAX_UNDO_STEPS {
-            self.done.remove(0);
-        }
+        self.steps.push(Step { edit, undo: Some(undo), gesture, created, skipped: None });
+        self.done.push(Done::Step);
+        self.trim();
         Ok(())
     }
 
-    /// Undoes the last step; returns its label, or `None` when there is nothing to undo.
+    /// Undoes the last step or history rewrite; returns its label, or `None`
+    /// when there is nothing to undo.
     pub fn undo(&mut self) -> Option<String> {
-        let step = self.done.pop()?;
-        let label = step.edit.label();
-        match &step.undo {
-            Undo::Param { node, param, previous } => {
-                if let Some(mut n) = self.recipe.graph.node_mut(*node) {
-                    match previous {
-                        Some(v) => n.params().set(param.clone(), *v),
-                        None => n.params().reset(param),
-                    };
+        match self.done.pop()? {
+            Done::Step => {
+                let step = self.steps.pop()?;
+                if let Some(undo) = &step.undo {
+                    revert(&mut self.recipe, undo);
                 }
-            }
-            Undo::Enabled { node, previous } => {
-                if let Some(mut n) = self.recipe.graph.node_mut(*node) {
-                    n.set_enabled(*previous);
-                }
-            }
-            Undo::WhiteBalance(wb) => self.recipe.develop.white_balance = *wb,
-            Undo::Profile(p) => self.recipe.develop.profile = p.clone(),
-            Undo::Lens(l) => self.recipe.develop.lens = l.clone(),
-            Undo::Mask { node, previous } => {
-                if let Some(mut n) = self.recipe.graph.node_mut(*node)
-                    && let Some(def) = n.mask()
-                {
-                    *def = previous.clone();
-                }
-            }
-            Undo::Graph(g) => self.recipe.graph = (**g).clone(),
-        }
-        self.undone.push(step);
-        Some(label)
-    }
-
-    /// Redoes the last undone step; returns its label, or `None` when there is nothing to redo.
-    pub fn redo(&mut self) -> Option<String> {
-        let mut step = self.undone.pop()?;
-        // Undo restored the exact state the edit was validated against, so it cannot fail now.
-        match self.perform(&step.edit) {
-            Ok(undo) => {
                 let label = step.edit.label();
-                step.undo = undo;
-                self.done.push(step);
+                self.undone.push(Undone::Step(step));
                 Some(label)
             }
-            Err(_) => {
-                self.undone.clear();
-                None
+            Done::Rewrite(r) => {
+                self.restore(r.before.clone());
+                let label = r.label.clone();
+                self.undone.push(Undone::Rewrite(r));
+                Some(label)
             }
         }
     }
 
-    /// Label of the step [`Self::undo`] would undo.
+    /// Redoes the last undone step or rewrite; returns its label, or `None`
+    /// when there is nothing to redo.
+    pub fn redo(&mut self) -> Option<String> {
+        match self.undone.pop()? {
+            Undone::Step(mut step) => {
+                // Undo restored the exact state the edit was validated against, so it cannot fail now.
+                if let Ok((undo, created)) = perform(&mut self.recipe, &step.edit) {
+                    let label = step.edit.label();
+                    step.undo = Some(undo);
+                    step.created = created;
+                    self.steps.push(step);
+                    self.done.push(Done::Step);
+                    Some(label)
+                } else {
+                    self.undone.clear();
+                    None
+                }
+            }
+            Undone::Rewrite(r) => {
+                self.restore(r.after.clone());
+                let label = r.label.clone();
+                self.done.push(Done::Rewrite(r));
+                Some(label)
+            }
+        }
+    }
+
+    /// Label of what [`Self::undo`] would undo.
     #[must_use]
     pub fn undo_label(&self) -> Option<String> {
-        self.done.last().map(|s| s.edit.label())
+        match self.done.last()? {
+            Done::Step => self.steps.last().map(|s| s.edit.label()),
+            Done::Rewrite(r) => Some(r.label.clone()),
+        }
     }
 
-    /// Label of the step [`Self::redo`] would redo.
+    /// Label of what [`Self::redo`] would redo.
     #[must_use]
     pub fn redo_label(&self) -> Option<String> {
-        self.undone.last().map(|s| s.edit.label())
+        match self.undone.last()? {
+            Undone::Step(s) => Some(s.edit.label()),
+            Undone::Rewrite(r) => Some(r.label.clone()),
+        }
     }
 
-    /// Checks `edit` against the registry and normalises it (clamped values).
-    fn validate(&self, registry: &ToolRegistry, edit: Edit) -> Result<Edit, EditError> {
-        match edit {
-            Edit::SetParam { node, param, value } => {
-                let tool = self.tool_of(node)?;
-                let d = registry.get(&tool).ok_or_else(|| EditError::UnknownTool(tool.clone()))?.descriptor();
-                let p = d.param(&param).ok_or_else(|| EditError::UnknownParam(tool.clone(), param.clone()))?;
-                let value = p.sanitize(value);
-                Ok(Edit::SetParam { node, param, value })
+    /// The history, oldest step first.
+    #[must_use]
+    pub fn history(&self) -> Vec<HistoryItem> {
+        self.steps
+            .iter()
+            .map(|s| HistoryItem {
+                label: s.edit.label(),
+                detail: s.edit.detail(),
+                kind: s.edit.kind(),
+                skipped: s.skipped.as_ref().map(ToString::to_string),
+            })
+            .collect()
+    }
+
+    /// Rebuilds the history from the steps at positions `order` (current
+    /// positions, in the new order); steps not named are deleted. The steps
+    /// are applied again from the base; one that no longer applies stays in
+    /// the history, marked as skipped. One undo step.
+    ///
+    /// # Errors
+    /// [`EditError::BadHistoryOrder`] when `order` names a position twice or
+    /// one past the end; nothing changes.
+    pub fn rewrite_history(&mut self, registry: &ToolRegistry, order: &[usize]) -> Result<RewriteReport, EditError> {
+        let mut seen = vec![false; self.steps.len()];
+        for &i in order {
+            match seen.get_mut(i) {
+                Some(s) if !*s => *s = true,
+                _ => return Err(EditError::BadHistoryOrder),
             }
-            Edit::ResetParam { node, param } => {
-                let tool = self.tool_of(node)?;
-                let d = registry.get(&tool).ok_or_else(|| EditError::UnknownTool(tool.clone()))?.descriptor();
-                if d.param(&param).is_none() {
-                    return Err(EditError::UnknownParam(tool, param));
+        }
+        let identity = order.len() == self.steps.len() && order.iter().enumerate().all(|(n, i)| n == *i);
+        if identity {
+            return Ok(RewriteReport::default());
+        }
+        let removed = self.steps.len() - order.len();
+
+        // Nodes made by deleted steps are gone for the steps that follow.
+        let mut map: HashMap<NodeId, Option<NodeId>> = HashMap::new();
+        for (i, step) in self.steps.iter().enumerate() {
+            if !seen[i] {
+                for id in &step.created {
+                    map.insert(*id, None);
                 }
-                Ok(Edit::ResetParam { node, param })
             }
-            Edit::InsertSerial { after, tool } => {
-                if registry.get(&tool).is_none() {
-                    return Err(EditError::UnknownTool(tool));
+        }
+
+        let mut recipe = self.base.clone();
+        let mut steps = Vec::with_capacity(order.len());
+        let mut report = RewriteReport { skipped: Vec::new(), removed };
+        for (position, &i) in order.iter().enumerate() {
+            let old = &self.steps[i];
+            let lookup = |id: NodeId| map.get(&id).copied().unwrap_or(Some(id));
+            let applied = old
+                .edit
+                .map_nodes(lookup)
+                .ok_or(EditError::NodeFromRemovedStep)
+                .and_then(|edit| validate(&recipe, registry, edit))
+                .and_then(|edit| perform(&mut recipe, &edit).map(|done| (edit, done)));
+            match applied {
+                Ok((edit, (undo, created))) => {
+                    for (from, to) in old.created.iter().zip(&created) {
+                        map.insert(*from, Some(*to));
+                    }
+                    steps.push(Step { edit, undo: Some(undo), gesture: None, created, skipped: None });
                 }
-                Ok(Edit::InsertSerial { after, tool })
+                Err(why) => {
+                    for id in &old.created {
+                        map.insert(*id, None);
+                    }
+                    report.skipped.push((position, why.to_string()));
+                    steps.push(Step {
+                        edit: old.edit.clone(),
+                        undo: None,
+                        gesture: None,
+                        created: old.created.clone(),
+                        skipped: Some(why),
+                    });
+                }
             }
-            Edit::SetWhiteBalance(WhiteBalance::Multipliers(m)) if !m.iter().all(|v| v.is_finite() && *v > 0.0) => {
-                Err(EditError::InvalidWhiteBalance)
+        }
+
+        let label = if removed == 0 {
+            "Reorder history".to_owned()
+        } else if removed == 1 {
+            "Delete a history step".to_owned()
+        } else {
+            format!("Delete {removed} history steps")
+        };
+        let before = Snapshot { base: self.base.clone(), recipe: self.recipe.clone(), steps: self.steps.clone() };
+        let after = Snapshot { base: self.base.clone(), recipe, steps };
+        self.restore(after.clone());
+        self.undone.clear();
+        self.done.push(Done::Rewrite(Box::new(Rewrite { label, before, after })));
+        self.trim();
+        Ok(report)
+    }
+
+    fn restore(&mut self, snapshot: Snapshot) {
+        self.base = snapshot.base;
+        self.recipe = snapshot.recipe;
+        self.steps = snapshot.steps;
+    }
+
+    /// Keeps at most [`MAX_UNDO_STEPS`] steps and undo entries: the oldest
+    /// step becomes part of the base.
+    fn trim(&mut self) {
+        while self.steps.len() > MAX_UNDO_STEPS {
+            let oldest = self.steps.remove(0);
+            if oldest.skipped.is_none() {
+                // It applied on the base before, so it applies again.
+                let _ = perform(&mut self.base, &oldest.edit);
             }
-            Edit::SetCameraProfile(ProfileChoice::Named(name)) => {
+        }
+        if self.done.len() > MAX_UNDO_STEPS {
+            let excess = self.done.len() - MAX_UNDO_STEPS;
+            self.done.drain(..excess);
+        }
+    }
+}
+
+/// Checks `edit` against `recipe` and the registry and normalises it (clamped values).
+fn validate(recipe: &Recipe, registry: &ToolRegistry, edit: Edit) -> Result<Edit, EditError> {
+    match edit {
+        Edit::SetParam { node, param, value } => {
+            let tool = tool_of(recipe, node)?;
+            let d = registry.get(&tool).ok_or_else(|| EditError::UnknownTool(tool.clone()))?.descriptor();
+            let p = d.param(&param).ok_or_else(|| EditError::UnknownParam(tool.clone(), param.clone()))?;
+            let value = p.sanitize(value);
+            Ok(Edit::SetParam { node, param, value })
+        }
+        Edit::ResetParam { node, param } => {
+            let tool = tool_of(recipe, node)?;
+            let d = registry.get(&tool).ok_or_else(|| EditError::UnknownTool(tool.clone()))?.descriptor();
+            if d.param(&param).is_none() {
+                return Err(EditError::UnknownParam(tool, param));
+            }
+            Ok(Edit::ResetParam { node, param })
+        }
+        Edit::InsertSerial { after, tool } => {
+            if registry.get(&tool).is_none() {
+                return Err(EditError::UnknownTool(tool));
+            }
+            Ok(Edit::InsertSerial { after, tool })
+        }
+        Edit::SetWhiteBalance(WhiteBalance::Multipliers(m)) if !m.iter().all(|v| v.is_finite() && *v > 0.0) => {
+            Err(EditError::InvalidWhiteBalance)
+        }
+        Edit::SetCameraProfile(ProfileChoice::Named(name)) => {
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(EditError::InvalidProfileName);
+            }
+            Ok(Edit::SetCameraProfile(ProfileChoice::Named(name.to_owned())))
+        }
+        Edit::SetLensCorrection(mut lens) => {
+            if lens.zoom.is_some_and(|z| !(z.is_finite() && (0.25..=4.0).contains(&z))) {
+                return Err(EditError::InvalidLensSettings);
+            }
+            if let Some(name) = &lens.lens {
                 let name = name.trim();
                 if name.is_empty() {
-                    return Err(EditError::InvalidProfileName);
-                }
-                Ok(Edit::SetCameraProfile(ProfileChoice::Named(name.to_owned())))
-            }
-            Edit::SetLensCorrection(mut lens) => {
-                if lens.zoom.is_some_and(|z| !(z.is_finite() && (0.25..=4.0).contains(&z))) {
                     return Err(EditError::InvalidLensSettings);
                 }
-                if let Some(name) = &lens.lens {
-                    let name = name.trim();
-                    if name.is_empty() {
-                        return Err(EditError::InvalidLensSettings);
-                    }
-                    lens.lens = Some(name.to_owned());
-                }
-                Ok(Edit::SetLensCorrection(lens))
+                lens.lens = Some(name.to_owned());
             }
-            Edit::AddMask { to, def } => {
-                let node = self.recipe.graph.node(to).ok_or(GraphError::UnknownNode(to))?;
-                if !node.kind.inputs().contains(&PortKind::Mask) {
-                    return Err(EditError::NoMaskInput(to));
-                }
-                Ok(Edit::AddMask { to, def: def.sanitized() })
-            }
-            Edit::SetMask { node, def } => {
-                let n = self.recipe.graph.node(node).ok_or(GraphError::UnknownNode(node))?;
-                if n.kind != NodeKind::Mask {
-                    return Err(EditError::NotAMaskNode(node));
-                }
-                Ok(Edit::SetMask { node, def: def.sanitized() })
-            }
-            other => Ok(other),
+            Ok(Edit::SetLensCorrection(lens))
         }
+        Edit::AddMask { to, def } => {
+            let node = recipe.graph.node(to).ok_or(GraphError::UnknownNode(to))?;
+            if !node.kind.inputs().contains(&PortKind::Mask) {
+                return Err(EditError::NoMaskInput(to));
+            }
+            Ok(Edit::AddMask { to, def: def.sanitized() })
+        }
+        Edit::SetMask { node, def } => {
+            let n = recipe.graph.node(node).ok_or(GraphError::UnknownNode(node))?;
+            if n.kind != NodeKind::Mask {
+                return Err(EditError::NotAMaskNode(node));
+            }
+            Ok(Edit::SetMask { node, def: def.sanitized() })
+        }
+        other => Ok(other),
     }
+}
 
-    fn tool_of(&self, node: NodeId) -> Result<ToolId, EditError> {
-        match &self.recipe.graph.node(node).ok_or(GraphError::UnknownNode(node))?.kind {
-            NodeKind::Tool(t) => Ok(t.clone()),
-            _ => Err(EditError::NotAToolNode(node)),
-        }
+fn tool_of(recipe: &Recipe, node: NodeId) -> Result<ToolId, EditError> {
+    match &recipe.graph.node(node).ok_or(GraphError::UnknownNode(node))?.kind {
+        NodeKind::Tool(t) => Ok(t.clone()),
+        _ => Err(EditError::NotAToolNode(node)),
     }
+}
 
-    /// Applies an already validated edit and returns how to undo it.
-    /// Leaves the recipe unchanged on error.
-    fn perform(&mut self, edit: &Edit) -> Result<Undo, EditError> {
-        let graph = &mut self.recipe.graph;
-        match edit {
-            Edit::SetParam { node, param, value } => {
-                let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
-                let previous = n.params().set(param.clone(), *value);
-                Ok(Undo::Param { node: *node, param: param.clone(), previous })
-            }
-            Edit::ResetParam { node, param } => {
-                let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
-                let previous = n.params().reset(param);
-                Ok(Undo::Param { node: *node, param: param.clone(), previous })
-            }
-            Edit::SetEnabled { node, enabled } => {
-                let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
-                let previous = n.set_enabled(*enabled);
-                Ok(Undo::Enabled { node: *node, previous })
-            }
-            Edit::SetWhiteBalance(wb) => {
-                let previous = std::mem::replace(&mut self.recipe.develop.white_balance, *wb);
-                Ok(Undo::WhiteBalance(previous))
-            }
-            Edit::SetCameraProfile(p) => {
-                let previous = std::mem::replace(&mut self.recipe.develop.profile, p.clone());
-                Ok(Undo::Profile(previous))
-            }
-            Edit::SetLensCorrection(l) => {
-                let previous = std::mem::replace(&mut self.recipe.develop.lens, l.clone());
-                Ok(Undo::Lens(previous))
-            }
-            Edit::SetMask { node, def } => {
-                let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
-                let slot = n.mask().ok_or(EditError::NotAMaskNode(*node))?;
-                let previous = std::mem::replace(slot, def.clone());
-                Ok(Undo::Mask { node: *node, previous })
-            }
-            Edit::AddMask { to, def } => {
-                let before = graph.clone();
-                let mut next = before.clone();
-                let mask = next.add_mask_node(def.clone());
-                let port = next
-                    .node(*to)
-                    .and_then(|n| n.kind.inputs().iter().position(|k| *k == PortKind::Mask))
-                    .and_then(|p| u8::try_from(p).ok())
-                    .ok_or(EditError::NoMaskInput(*to))?;
-                next.connect(Link { from: mask, from_port: 0, to: *to, to_port: port })?;
-                *graph = next;
-                Ok(Undo::Graph(Box::new(before)))
-            }
-            Edit::InsertSerial { .. } | Edit::RemoveNode { .. } | Edit::Connect(_) | Edit::Disconnect { .. } => {
-                // Work on a copy and publish it only on success: the strong guarantee.
-                let before = graph.clone();
-                let mut next = before.clone();
-                match edit {
-                    Edit::InsertSerial { after, tool } => {
-                        next.insert_serial(*after, tool.clone(), Params::new())?;
-                    }
-                    Edit::RemoveNode { node } => {
-                        next.remove_node(*node)?;
-                    }
-                    Edit::Connect(link) => {
-                        next.connect(*link)?;
-                    }
-                    Edit::Disconnect { to, port } => {
-                        next.disconnect(*to, *port);
-                    }
-                    _ => unreachable!("outer match restricts to structural edits"),
+/// Applies an already validated edit to `recipe`; returns how to undo it
+/// and the nodes it added. Leaves the recipe unchanged on error.
+fn perform(recipe: &mut Recipe, edit: &Edit) -> Result<(Undo, Vec<NodeId>), EditError> {
+    let graph = &mut recipe.graph;
+    let undo = match edit {
+        Edit::SetParam { node, param, value } => {
+            let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
+            let previous = n.params().set(param.clone(), *value);
+            Undo::Param { node: *node, param: param.clone(), previous }
+        }
+        Edit::ResetParam { node, param } => {
+            let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
+            let previous = n.params().reset(param);
+            Undo::Param { node: *node, param: param.clone(), previous }
+        }
+        Edit::SetEnabled { node, enabled } => {
+            let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
+            let previous = n.set_enabled(*enabled);
+            Undo::Enabled { node: *node, previous }
+        }
+        Edit::SetWhiteBalance(wb) => Undo::WhiteBalance(std::mem::replace(&mut recipe.develop.white_balance, *wb)),
+        Edit::SetCameraProfile(p) => Undo::Profile(std::mem::replace(&mut recipe.develop.profile, p.clone())),
+        Edit::SetLensCorrection(l) => Undo::Lens(std::mem::replace(&mut recipe.develop.lens, l.clone())),
+        Edit::SetMask { node, def } => {
+            let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
+            let slot = n.mask().ok_or(EditError::NotAMaskNode(*node))?;
+            let previous = std::mem::replace(slot, def.clone());
+            Undo::Mask { node: *node, previous }
+        }
+        Edit::AddMask { to, def } => {
+            let before = graph.clone();
+            let mut next = before.clone();
+            let mask = next.add_mask_node(def.clone());
+            let port = next
+                .node(*to)
+                .and_then(|n| n.kind.inputs().iter().position(|k| *k == PortKind::Mask))
+                .and_then(|p| u8::try_from(p).ok())
+                .ok_or(EditError::NoMaskInput(*to))?;
+            next.connect(Link { from: mask, from_port: 0, to: *to, to_port: port })?;
+            *graph = next;
+            return Ok((Undo::Graph(Box::new(before.clone())), new_nodes(&before, graph)));
+        }
+        Edit::InsertSerial { .. } | Edit::RemoveNode { .. } | Edit::Connect(_) | Edit::Disconnect { .. } => {
+            // Work on a copy and publish it only on success: the strong guarantee.
+            let before = graph.clone();
+            let mut next = before.clone();
+            match edit {
+                Edit::InsertSerial { after, tool } => {
+                    next.insert_serial(*after, tool.clone(), Params::new())?;
                 }
-                *graph = next;
-                Ok(Undo::Graph(Box::new(before)))
+                Edit::RemoveNode { node } => {
+                    next.remove_node(*node)?;
+                }
+                Edit::Connect(link) => {
+                    next.connect(*link)?;
+                }
+                Edit::Disconnect { to, port } => {
+                    next.disconnect(*to, *port);
+                }
+                _ => unreachable!("outer match restricts to structural edits"),
+            }
+            *graph = next;
+            return Ok((Undo::Graph(Box::new(before.clone())), new_nodes(&before, graph)));
+        }
+    };
+    Ok((undo, Vec::new()))
+}
+
+/// Nodes of `after` that `before` did not have, in id order.
+fn new_nodes(before: &NodeGraph, after: &NodeGraph) -> Vec<NodeId> {
+    let mut ids: Vec<NodeId> = after.nodes().map(|n| n.id).filter(|id| before.node(*id).is_none()).collect();
+    ids.sort();
+    ids
+}
+
+/// Restores what an applied edit changed.
+fn revert(recipe: &mut Recipe, undo: &Undo) {
+    match undo {
+        Undo::Param { node, param, previous } => {
+            if let Some(mut n) = recipe.graph.node_mut(*node) {
+                match previous {
+                    Some(v) => n.params().set(param.clone(), *v),
+                    None => n.params().reset(param),
+                };
             }
         }
+        Undo::Enabled { node, previous } => {
+            if let Some(mut n) = recipe.graph.node_mut(*node) {
+                n.set_enabled(*previous);
+            }
+        }
+        Undo::WhiteBalance(wb) => recipe.develop.white_balance = *wb,
+        Undo::Profile(p) => recipe.develop.profile = p.clone(),
+        Undo::Lens(l) => recipe.develop.lens = l.clone(),
+        Undo::Mask { node, previous } => {
+            if let Some(mut n) = recipe.graph.node_mut(*node)
+                && let Some(def) = n.mask()
+            {
+                *def = previous.clone();
+            }
+        }
+        Undo::Graph(g) => recipe.graph = (**g).clone(),
     }
 }
 
@@ -489,4 +805,18 @@ fn same_param(a: &Edit, b: &Edit) -> bool {
         (Edit::SetParam { node: n1, param: p1, .. }, Edit::SetParam { node: n2, param: p2, .. })
             if n1 == n2 && p1 == p2
     ) || matches!((a, b), (Edit::SetMask { node: n1, .. }, Edit::SetMask { node: n2, .. }) if n1 == n2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbers_in_the_history_have_a_sign_and_no_minus_zero() {
+        assert_eq!(format_number(0.5), "+0.50");
+        assert_eq!(format_number(-1.25), "-1.25");
+        assert_eq!(format_number(-0.0), "0");
+        assert_eq!(format_number(12.0), "+12");
+        assert_eq!(format_number(-0.001), "0.00");
+    }
 }
