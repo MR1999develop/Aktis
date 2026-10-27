@@ -54,6 +54,18 @@ Done:
   (Ctrl+E, next to the RAW or to a chosen folder, never overwriting) with a
   "Show in folder" toast; status bar with camera, size, zoom, GPU; theme
   System/Light/Dark (dark by default); settings and recent files remembered.
+- `tools/denoise-ai`: AI denoise node, SCUNet on ONNX Runtime ported from
+  an earlier denoiser (tiles with a 64 px mirrored margin, TensorRT for RTX /
+  DirectML / CPU with fallback and tile-size search, grain and colour amounts
+  applied to a cached network output). Linear light is sRGB-encoded in the
+  working primaries for the network; noise below black is denoised, the
+  correction fades out above encoded 1.0.
+- `tool-api`: host tools (`GpuKernel::Host`, fallible `Tool::apply`): the GPU
+  renderer splits the chain around them; both renderers pass a failing node
+  through and report it (`tool_errors`).
+- `cli`: `rne develop --denoise <grain %> [--denoise-color <colour %>]`;
+  `engine` registers the node, the window shows it bypassed in every new
+  document (switch it on in the inspector) and tells when it cannot run.
 
 ## Camera profiles and lens corrections: done
 
@@ -95,6 +107,10 @@ GitHub Actions (`.github/workflows/ci.yml`) on every push:
 Each job pushes its log and output files to the branch `ci-results/<branch>--<job>`
 (Linux, Windows, macOS, real-raw), so results can be read with git:
 `git fetch origin "refs/heads/ci-results/*:refs/remotes/origin/ci-results/*"`.
+
+- `ai-denoise`: generates the SCUNet model from the KAIR weights, runs the
+  network test on the CPU, then `rne develop --denoise 80` on the Nikon D3S
+  (JPEGs with and without the node are published).
 
 First green run: Nikon D3S 4256×2832 develops in about 2 s on llvmpipe;
 the GPU and CPU renders look the same.

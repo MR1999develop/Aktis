@@ -1,6 +1,7 @@
 //! What the window and the command line share.
 //!
-//! - [`builtin_tools`]: the tools of this build (the composition root).
+//! - [`builtin_tools`]: the tools of this build (the composition root),
+//!   including the AI denoise node with the `ai-denoise` feature (default).
 //! - [`Engine`]: renders a recipe's node graph on the GPU when there is one,
 //!   on the CPU otherwise, and falls back to the CPU if the GPU fails mid-way.
 //! - [`downscale`]: a smaller copy of a developed image for the preview.
@@ -21,8 +22,8 @@ use core_color::ProfileLibrary;
 use lens_db::LensDatabase;
 use platform::{APP_DIR, Os};
 
-use core_model::{ImageError, ImageF32, NodeGraph, Orientation, Rgba, ToolId};
-use tool_api::{RegistryError, ToolRegistry};
+use core_model::{ImageError, ImageF32, NodeGraph, NodeId, Orientation, Rgba, ToolId};
+use tool_api::{RegistryError, ToolError, ToolRegistry};
 
 /// Every tool compiled into this build, registered once.
 ///
@@ -31,6 +32,8 @@ use tool_api::{RegistryError, ToolRegistry};
 pub fn builtin_tools() -> Result<ToolRegistry, RegistryError> {
     let mut r = ToolRegistry::new();
     r.register(tool_exposure::Exposure::shared())?;
+    #[cfg(feature = "ai-denoise")]
+    r.register(ai_denoise())?;
     Ok(r)
 }
 
@@ -58,6 +61,30 @@ pub fn lens_database() -> (Cow<'static, LensDatabase>, Vec<String>) {
 #[must_use]
 pub fn profile_library() -> ProfileLibrary {
     ProfileLibrary::new(platform::camera_profile_dirs(Os::current(), APP_DIR, |k| std::env::var_os(k)))
+}
+
+/// The AI denoise tool: one instance per process, shared by every registry,
+/// because it keeps the loaded network and its last outputs.
+#[cfg(feature = "ai-denoise")]
+fn ai_denoise() -> std::sync::Arc<tool_denoise_ai::AiDenoise> {
+    static TOOL: std::sync::OnceLock<std::sync::Arc<tool_denoise_ai::AiDenoise>> = std::sync::OnceLock::new();
+    std::sync::Arc::clone(TOOL.get_or_init(tool_denoise_ai::AiDenoise::from_environment))
+}
+
+/// What the AI denoise node last ran on ("GPU (DirectML), 960 px tiles"),
+/// or why it could not run; `None` before its first run or without the
+/// `ai-denoise` feature.
+#[cfg(feature = "ai-denoise")]
+#[must_use]
+pub fn ai_denoise_status() -> Option<String> {
+    ai_denoise().status()
+}
+
+/// Without the `ai-denoise` feature there is no AI denoise node.
+#[cfg(not(feature = "ai-denoise"))]
+#[must_use]
+pub fn ai_denoise_status() -> Option<String> {
+    None
 }
 
 /// Where a render may run.
@@ -141,6 +168,9 @@ pub struct Rendered {
     pub backend: Backend,
     /// Why the GPU was skipped for this render, if it failed and the CPU took over.
     pub gpu_failure: Option<String>,
+    /// Nodes whose tool could not run (for example the AI denoise node
+    /// without its model); they passed the image through.
+    pub tool_errors: Vec<(NodeId, ToolError)>,
 }
 
 /// Renders node graphs with the built-in tools, on the GPU when possible.
@@ -201,13 +231,20 @@ impl Engine {
                         missing_tools: r.missing_tools,
                         backend: Backend::Gpu(g.context().adapter_name()),
                         gpu_failure: None,
+                        tool_errors: r.tool_errors,
                     });
                 }
                 Err(e) => gpu_failure = Some(e.to_string()),
             }
         }
         let r = render_cpu::render(graph, &self.registry, source).map_err(EngineError::Render)?;
-        Ok(Rendered { image: r.image, missing_tools: r.missing_tools, backend: Backend::Cpu, gpu_failure })
+        Ok(Rendered {
+            image: r.image,
+            missing_tools: r.missing_tools,
+            backend: Backend::Cpu,
+            gpu_failure,
+            tool_errors: r.tool_errors,
+        })
     }
 }
 

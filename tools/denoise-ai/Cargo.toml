@@ -1,0 +1,27 @@
+[package]
+name = "tool-denoise-ai"
+description = "AI denoise tool: the SCUNet neural network on ONNX Runtime (TensorRT for RTX, DirectML, CPU), ported from an earlier denoiser."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# GPU on Windows with any DirectX 12 card (NVIDIA, AMD, Intel); nothing to install.
+directml = ["ort/directml"]
+# TensorRT for RTX (RTX 30xx and later), FP16 with the `_fp16` models; needs
+# the two TensorRT for RTX 1.4 DLLs next to the program, not CUDA or cuDNN.
+nvrtx = ["ort/nvrtx"]
+
+[dependencies]
+core-model.workspace = true
+core-color.workspace = true
+tool-api.workspace = true
+platform.workspace = true
+# rc.15 = ONNX Runtime 1.31, whose TensorRT for RTX provider needs TensorRT for
+# RTX 1.4. Pinned exactly, as in an earlier denoiser: upgraded deliberately.
+ort = "=2.0.0-rc.15"
+
+[lints]
+workspace = true

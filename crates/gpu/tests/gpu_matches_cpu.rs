@@ -107,3 +107,103 @@ fn missing_tools_pass_through_on_the_gpu_too() {
     assert_eq!(r.missing_tools, vec![curves]);
     assert_eq!(r.image, src);
 }
+
+/// A host tool that needs the whole image: mirrors it left to right.
+#[derive(Debug)]
+struct Mirror(tool_api::ToolDescriptor);
+
+/// A host tool whose engine is missing.
+#[derive(Debug)]
+struct Broken(tool_api::ToolDescriptor);
+
+fn host_descriptor(id: &str) -> tool_api::ToolDescriptor {
+    tool_api::ToolDescriptor {
+        id: ToolId::new(id).expect("id"),
+        version: 1,
+        name: "test host tool",
+        category: tool_api::Category::Details,
+        stage: tool_api::Stage::Graph,
+        params: vec![],
+    }
+}
+
+impl tool_api::Tool for Mirror {
+    fn descriptor(&self) -> &tool_api::ToolDescriptor {
+        &self.0
+    }
+    fn apply_cpu(&self, image: &mut ImageF32, _params: &tool_api::ResolvedParams) {
+        let w = image.width() as usize;
+        for row in image.pixels_mut().chunks_exact_mut(w) {
+            row.reverse();
+        }
+    }
+    fn gpu_kernel(&self) -> tool_api::GpuKernel {
+        tool_api::GpuKernel::Host
+    }
+}
+
+impl tool_api::Tool for Broken {
+    fn descriptor(&self) -> &tool_api::ToolDescriptor {
+        &self.0
+    }
+    fn apply_cpu(&self, _image: &mut ImageF32, _params: &tool_api::ResolvedParams) {}
+    fn apply(&self, _image: &mut ImageF32, _params: &tool_api::ResolvedParams) -> Result<(), tool_api::ToolError> {
+        Err(tool_api::ToolError::Unavailable("model missing".to_owned()))
+    }
+    fn gpu_kernel(&self) -> tool_api::GpuKernel {
+        tool_api::GpuKernel::Host
+    }
+}
+
+fn host_registry() -> ToolRegistry {
+    let mut r = registry();
+    r.register(Arc::new(Mirror(host_descriptor("mirror")))).expect("mirror registers");
+    r.register(Arc::new(Broken(host_descriptor("broken")))).expect("broken registers");
+    r
+}
+
+/// Source → exposure(+1) → `host` → exposure(−0.5) → Output.
+fn host_recipe(reg: &ToolRegistry, host: &str) -> Recipe {
+    let mut s = EditSession::new(Recipe::default());
+    let exposure = ToolId::new("exposure").expect("id");
+    let param = ParamId::new("exposure").expect("id");
+    let last = |s: &EditSession| s.recipe().graph.input_link(s.recipe().graph.output(), 0).expect("fed").from;
+    let source = s.recipe().graph.source();
+    s.apply(reg, Edit::InsertSerial { after: source, tool: exposure.clone() }).expect("first");
+    let first = last(&s);
+    s.apply(reg, Edit::SetParam { node: first, param: param.clone(), value: ParamValue::Float(1.0) }).expect("+1");
+    s.apply(reg, Edit::InsertSerial { after: first, tool: ToolId::new(host).expect("id") }).expect("host");
+    let host_node = last(&s);
+    s.apply(reg, Edit::InsertSerial { after: host_node, tool: exposure }).expect("second");
+    let second = last(&s);
+    s.apply(reg, Edit::SetParam { node: second, param, value: ParamValue::Float(-0.5) }).expect("-0.5");
+    s.recipe().clone()
+}
+
+#[test]
+fn a_host_tool_between_kernels_matches_the_cpu_reference() {
+    let Some(gpu) = renderer() else { return };
+    let reg = host_registry();
+    let src = test_image(97, 61);
+    let r = host_recipe(&reg, "mirror");
+    let on_gpu = gpu.render(&r.graph, &reg, &src).expect("gpu render");
+    let on_cpu = render_cpu::render(&r.graph, &reg, &src).expect("cpu render");
+    assert_close(&on_gpu.image, &on_cpu.image);
+    assert!(on_gpu.tool_errors.is_empty() && on_cpu.tool_errors.is_empty());
+    // the mirror really ran: the first pixel comes from the end of the row
+    assert!((on_cpu.image.pixels()[0][0] - src.pixels()[96][0] * 2.0_f32.sqrt()).abs() < 1e-5);
+}
+
+#[test]
+fn a_host_tool_that_cannot_run_passes_the_image_through_and_is_reported() {
+    let reg = host_registry();
+    let src = test_image(9, 7);
+    let r = host_recipe(&reg, "broken");
+    let on_cpu = render_cpu::render(&r.graph, &reg, &src).expect("cpu render");
+    assert_eq!(on_cpu.tool_errors.len(), 1);
+    assert_eq!(on_cpu.tool_errors[0].1, tool_api::ToolError::Unavailable("model missing".to_owned()));
+    let Some(gpu) = renderer() else { return };
+    let on_gpu = gpu.render(&r.graph, &reg, &src).expect("gpu render");
+    assert_eq!(on_gpu.tool_errors, on_cpu.tool_errors);
+    assert_close(&on_gpu.image, &on_cpu.image);
+}

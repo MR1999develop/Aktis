@@ -19,6 +19,7 @@ members = [
     "crates/tagging",
     "crates/tagging-onnx",
     "tools/exposure",
+    "tools/denoise-ai",
 ]
 
 [workspace.package]
@@ -45,6 +46,7 @@ lens-db = { path = "crates/lens-db" }
 tagging = { path = "crates/tagging" }
 tagging-onnx = { path = "crates/tagging-onnx" }
 tool-exposure = { path = "tools/exposure" }
+tool-denoise-ai = { path = "tools/denoise-ai" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
