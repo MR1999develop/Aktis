@@ -4,7 +4,8 @@
 //! Each decision is a pure function of an [`Os`] value, so all platforms are
 //! tested on every CI runner; [`Os::current`] picks the one we run on.
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 /// Operating systems the editor knows about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,8 +58,8 @@ pub fn button_order(os: Os) -> ButtonOrder {
 /// the application and a table in tests. Returns `None` when the variables a
 /// system needs are missing or relative.
 #[must_use]
-pub fn config_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
-    let absolute = |v: std::ffi::OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
+pub fn config_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let absolute = |v: OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
     let base = match os {
         Os::Windows => env("APPDATA").and_then(absolute)?,
         Os::Linux => env("XDG_CONFIG_HOME")
@@ -69,10 +70,47 @@ pub fn config_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<std::ffi::OsSt
     Some(base.join(app))
 }
 
+/// A program to start, with its arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launch {
+    /// Program name or path.
+    pub program: &'static str,
+    /// Arguments, passed as they are (no shell).
+    pub args: Vec<OsString>,
+}
+
+/// How to show `file` in the system's file manager: selected in Explorer on
+/// Windows and in Finder on macOS; on Linux the containing folder is opened
+/// with the desktop's default handler (selection is not portable there).
+#[must_use]
+pub fn reveal_in_file_manager(os: Os, file: &Path) -> Launch {
+    match os {
+        Os::Windows => {
+            // Explorer wants "/select," and the path as one argument.
+            let mut arg = OsString::from("/select,");
+            arg.push(file.as_os_str());
+            Launch { program: "explorer", args: vec![arg] }
+        }
+        Os::MacOs => Launch { program: "open", args: vec![OsString::from("-R"), file.as_os_str().to_owned()] },
+        Os::Linux => {
+            let folder = file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            Launch { program: "xdg-open", args: vec![folder.as_os_str().to_owned()] }
+        }
+    }
+}
+
+/// Primary modifier name shown in menus and tooltips ("Ctrl" or "Cmd").
+#[must_use]
+pub fn command_key_name(os: Os) -> &'static str {
+    match os {
+        Os::MacOs => "Cmd",
+        Os::Windows | Os::Linux => "Ctrl",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
 
     fn env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
         move |k| vars.iter().find(|(name, _)| *name == k).map(|(_, v)| OsString::from(v))
@@ -117,5 +155,30 @@ mod tests {
         assert_eq!(config_dir(Os::Windows, "rne", env(&[])), None);
         assert_eq!(config_dir(Os::Linux, "rne", env(&[])), None);
         assert_eq!(config_dir(Os::MacOs, "rne", env(&[])), None);
+    }
+
+    #[test]
+    fn reveal_selects_the_file_on_windows_and_macos_and_opens_its_folder_on_linux() {
+        let file = Path::new("photos/with space/a.jpg");
+        assert_eq!(
+            reveal_in_file_manager(Os::Windows, file),
+            Launch { program: "explorer", args: vec![OsString::from("/select,photos/with space/a.jpg")] }
+        );
+        assert_eq!(
+            reveal_in_file_manager(Os::MacOs, file),
+            Launch { program: "open", args: vec![OsString::from("-R"), OsString::from("photos/with space/a.jpg")] }
+        );
+        assert_eq!(
+            reveal_in_file_manager(Os::Linux, file),
+            Launch { program: "xdg-open", args: vec![OsString::from("photos/with space")] }
+        );
+        assert_eq!(reveal_in_file_manager(Os::Linux, Path::new("a.jpg")).args, vec![OsString::from(".")]);
+    }
+
+    #[test]
+    fn the_command_key_is_cmd_only_on_macos() {
+        assert_eq!(command_key_name(Os::Windows), "Ctrl");
+        assert_eq!(command_key_name(Os::Linux), "Ctrl");
+        assert_eq!(command_key_name(Os::MacOs), "Cmd");
     }
 }

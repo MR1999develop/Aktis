@@ -9,7 +9,7 @@ publish.workspace = true
 [dependencies]
 core-model.workspace = true
 tool-api.workspace = true
-wgpu = "29.0.3"
+wgpu = "30.0.1"
 pollster = "0.4"
 bytemuck = "1.22"
 

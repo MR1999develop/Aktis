@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 # Each job publishes its log (and any output files) to the branch
-# ci-results/<job>, so results can be read with git alone.
+# ci-results/<branch>--<job>, so results can be read with git alone.
 permissions:
   contents: write
 
@@ -19,8 +19,36 @@ defaults:
     shell: bash
 
 jobs:
+  # Adds new dependencies to Cargo.lock when a Cargo.toml changed (the cloud
+  # workspace that writes the code cannot reach crates.io). Existing entries
+  # are kept; nothing is upgraded. The other jobs build the updated lock.
+  lockfile:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.push.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Resolve new dependencies
+        run: cargo metadata --format-version 1 > /dev/null
+      - name: Commit Cargo.lock if it changed
+        id: push
+        run: |
+          if git diff --quiet Cargo.lock; then
+            echo "Cargo.lock is up to date"
+          elif [ "$GITHUB_EVENT_NAME" != "push" ]; then
+            echo "::error::Cargo.lock is out of date; push to a branch to update it"
+            exit 1
+          else
+            git config user.name "ci"
+            git config user.email "ci@users.noreply.github.com"
+            git commit -q -m "Update Cargo.lock for new dependencies" Cargo.lock
+            git push -q origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   check:
     name: ${{ matrix.os }}
+    needs: lockfile
     strategy:
       fail-fast: false
       matrix:
@@ -28,6 +56,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.lockfile.outputs.sha }}
       # rust-toolchain.toml pins the compiler; rustup installs it on first use.
       - name: Toolchain
         run: mkdir -p ci-out && rustup show active-toolchain 2>&1 | tee ci-out/log.txt
@@ -46,7 +76,6 @@ jobs:
       - name: Publish results
         if: always()
         run: |
-          cp Cargo.lock ci-out/
           bash .github/scripts/publish-results.sh ${{ runner.os }} ${{ job.status }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -54,9 +83,12 @@ jobs:
   # A real RAW file end to end: decode, develop, render on the (software) GPU,
   # export. The JPEGs are published with the log so they can be looked at.
   real-raw:
+    needs: lockfile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.lockfile.outputs.sha }}
       - uses: Swatinem/rust-cache@v2
       - name: Software Vulkan driver
         run: sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers
@@ -76,6 +108,10 @@ jobs:
             cargo run -q --release --locked -p cli -- develop testdata/nikon-d3s.NEF --exposure 0.5 -o ci-out/nikon-d3s.jpg
             cargo run -q --release --locked -p cli -- develop testdata/nikon-d3s.NEF --cpu -o ci-out/nikon-d3s-cpu.jpg
           } 2>&1 | tee -a ci-out/log.txt
+      - name: Screenshot of the window with the sample open
+        run: cargo test -p app --release --locked --test screenshot -- --ignored --nocapture 2>&1 | tee -a ci-out/log.txt
+        env:
+          RNE_SCREENSHOT_DIR: ci-out
       - name: Publish results
         if: always()
         run: bash .github/scripts/publish-results.sh real-raw ${{ job.status }}
@@ -156,10 +192,13 @@ jobs:
 
   # macOS is prepared but not shipped in version 1: keep it compiling.
   macos-check:
+    needs: lockfile
     runs-on: macos-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.lockfile.outputs.sha }}
       - uses: Swatinem/rust-cache@v2
       - run: mkdir -p ci-out && cargo check --workspace --all-targets --locked 2>&1 | tee ci-out/log.txt
       - name: Publish results

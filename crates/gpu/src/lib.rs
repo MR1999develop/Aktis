@@ -97,6 +97,7 @@ impl GpuContext {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
+            apply_limit_buckets: false,
         };
         let adapter =
             pollster::block_on(instance.request_adapter(&options)).map_err(|e| GpuError::NoAdapter(e.to_string()))?;
@@ -383,7 +384,7 @@ impl GpuRenderer {
                 .map_err(|_| GpuError::Readback("no answer from the GPU".to_owned()))?
                 .map_err(|e| GpuError::Readback(e.to_string()))?;
             {
-                let view = readback.slice(..bytes).get_mapped_range();
+                let view = readback.slice(..bytes).get_mapped_range().map_err(|e| GpuError::Readback(e.to_string()))?;
                 out.extend_from_slice(bytemuck::cast_slice::<u8, Rgba>(&view));
             }
             readback.unmap();

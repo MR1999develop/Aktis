@@ -1,0 +1,494 @@
+//! Background work: opening files, rendering previews, exporting.
+//!
+//! The UI thread never decodes, develops, renders or writes. It sends
+//! requests to a [`Worker`] and reads [`Event`]s back once per frame with
+//! [`Worker::poll`]. After each event the worker calls the `notify`
+//! function given at start, so the UI wakes up and repaints.
+//!
+//! - Opening and exporting run on their own short-lived thread each.
+//! - Previews run on one long-lived thread. Only the newest request is kept:
+//!   while the user drags a slider, intermediate values that the renderer
+//!   could not reach in time are skipped instead of queued.
+//! - The engine (GPU start-up can take a second) is created on a thread of
+//!   its own; renders wait for it.
+
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::thread::{self, JoinHandle};
+
+use core_model::{ImageF32, NodeGraph, Orientation, WorkingSpace};
+use engine::{Backend, Engine, EngineChoice, Rgb8Image};
+use tool_api::ToolRegistry;
+
+use crate::document::Opened;
+
+/// Longer side of the preview copy made when a file is opened.
+pub const PREVIEW_SIDE: u32 = 2560;
+
+/// JPEG quality of exports.
+pub const EXPORT_QUALITY: u8 = 92;
+
+/// Called after every event, from a worker thread (e.g. `egui::Context::request_repaint`).
+pub type Notify = Arc<dyn Fn() + Send + Sync>;
+
+/// Which source a render uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Quality {
+    /// The reduced preview copy: fast, used while editing.
+    Preview,
+    /// The full-size image: sharp at 100 %.
+    Full,
+}
+
+/// A render of a document's recipe for the screen.
+#[derive(Debug, Clone)]
+pub struct RenderRequest {
+    /// The document generation this render is for.
+    pub generation: u64,
+    /// Which source.
+    pub quality: Quality,
+    /// The node graph to evaluate.
+    pub graph: NodeGraph,
+    /// The developed image to start from.
+    pub source: Arc<ImageF32>,
+    /// How to turn the result upright.
+    pub orientation: Orientation,
+    /// Largest texture side the screen accepts.
+    pub max_side: u32,
+}
+
+/// What the worker reports back.
+#[derive(Debug)]
+pub enum Event {
+    /// The engine is ready; `backend` says where renders run.
+    EngineReady {
+        /// Where renders run.
+        backend: Backend,
+        /// Why there is no GPU, when one was wanted.
+        gpu_problem: Option<String>,
+    },
+    /// A file was opened (or could not be).
+    Opened {
+        /// The ticket given to [`Worker::open`].
+        ticket: u64,
+        /// The image, or a message for the user.
+        result: Result<Box<Opened>, String>,
+    },
+    /// A render for the screen is ready.
+    Rendered {
+        /// Document generation it was made for.
+        generation: u64,
+        /// Which source it used.
+        quality: Quality,
+        /// Upright 8-bit pixels.
+        image: Rgb8Image,
+        /// Where it ran.
+        backend: Backend,
+        /// Why the GPU was skipped, if it failed and the CPU took over.
+        gpu_failure: Option<String>,
+    },
+    /// A render for the screen failed.
+    RenderFailed {
+        /// Document generation it was made for.
+        generation: u64,
+        /// Message for the user.
+        message: String,
+    },
+    /// An export finished (or failed).
+    Exported {
+        /// The file written, or a message for the user.
+        result: Result<PathBuf, String>,
+    },
+}
+
+#[derive(Debug, Default)]
+struct Slot {
+    request: Option<RenderRequest>,
+    shutdown: bool,
+}
+
+#[derive(Debug, Default)]
+struct RenderQueue {
+    slot: Mutex<Slot>,
+    wake: Condvar,
+}
+
+/// Owns the background threads. Dropping it stops the preview thread.
+pub struct Worker {
+    tx: Sender<Event>,
+    rx: Receiver<Event>,
+    notify: Notify,
+    engine: Arc<OnceLock<Arc<Engine>>>,
+    queue: Arc<RenderQueue>,
+    render_thread: Option<JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for Worker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Worker").field("engine_ready", &self.engine.get().is_some()).finish_non_exhaustive()
+    }
+}
+
+impl Worker {
+    /// Starts the engine and the preview thread.
+    ///
+    /// # Errors
+    /// The operating system refused to start a thread.
+    pub fn start(registry: ToolRegistry, choice: EngineChoice, notify: Notify) -> std::io::Result<Self> {
+        let (tx, rx) = mpsc::channel();
+        let engine: Arc<OnceLock<Arc<Engine>>> = Arc::new(OnceLock::new());
+        let queue = Arc::new(RenderQueue::default());
+
+        {
+            let (engine, tx, notify) = (Arc::clone(&engine), tx.clone(), Arc::clone(&notify));
+            thread::Builder::new().name("engine-start".into()).spawn(move || {
+                // A driver that panics while starting must not leave renders waiting forever.
+                let made = catch_unwind(AssertUnwindSafe(|| Engine::new(registry.clone(), choice)))
+                    .unwrap_or_else(|_| Engine::new(registry, EngineChoice::CpuOnly));
+                let event =
+                    Event::EngineReady { backend: made.backend(), gpu_problem: made.gpu_problem().map(str::to_owned) };
+                let _ = engine.set(Arc::new(made));
+                let _ = tx.send(event);
+                notify();
+            })?;
+        }
+
+        let render_thread = {
+            let (engine, queue, tx, notify) =
+                (Arc::clone(&engine), Arc::clone(&queue), tx.clone(), Arc::clone(&notify));
+            thread::Builder::new().name("preview".into()).spawn(move || preview_loop(&engine, &queue, &tx, &*notify))?
+        };
+
+        Ok(Self { tx, rx, notify, engine, queue, render_thread: Some(render_thread) })
+    }
+
+    /// Events that arrived since the last call. Never blocks.
+    pub fn poll(&self) -> Vec<Event> {
+        self.rx.try_iter().collect()
+    }
+
+    /// `true` once the engine has started.
+    #[must_use]
+    pub fn engine_ready(&self) -> bool {
+        self.engine.get().is_some()
+    }
+
+    /// Opens `path` in the background: decode, develop, make the preview copy.
+    /// The result comes back as [`Event::Opened`] with the same `ticket`.
+    pub fn open(&self, ticket: u64, path: PathBuf) {
+        let (tx, notify) = (self.tx.clone(), Arc::clone(&self.notify));
+        let fallback = tx.clone();
+        let spawned = thread::Builder::new().name("open".into()).spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| open_file(&path)))
+                .unwrap_or_else(|_| Err(format!("{} could not be opened (internal error)", display_name(&path))));
+            let _ = tx.send(Event::Opened { ticket, result: result.map(Box::new) });
+            notify();
+        });
+        if let Err(e) = spawned {
+            let _ = fallback.send(Event::Opened { ticket, result: Err(format!("cannot start opening: {e}")) });
+        }
+    }
+
+    /// Asks for a screen render. Replaces a request that has not started yet.
+    pub fn render(&self, request: RenderRequest) {
+        let mut slot = self.queue.slot.lock().unwrap_or_else(PoisonError::into_inner);
+        slot.request = Some(request);
+        drop(slot);
+        self.queue.wake.notify_one();
+    }
+
+    /// Renders `graph` on the full-size `source` and writes a JPEG at
+    /// `wanted` (or a free name next to it). Reported as [`Event::Exported`].
+    pub fn export(&self, graph: NodeGraph, source: Arc<ImageF32>, orientation: Orientation, wanted: PathBuf) {
+        let (tx, notify, engine) = (self.tx.clone(), Arc::clone(&self.notify), Arc::clone(&self.engine));
+        let fallback = tx.clone();
+        let spawned = thread::Builder::new().name("export".into()).spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                let engine = engine.wait();
+                let rendered = engine.render(&graph, &source).map_err(|e| e.to_string())?;
+                engine::export_jpeg(&rendered.image, orientation, EXPORT_QUALITY, &wanted).map_err(|e| e.to_string())
+            }))
+            .unwrap_or_else(|_| Err("the export stopped because of an internal error".to_owned()));
+            let _ = tx.send(Event::Exported { result });
+            notify();
+        });
+        if let Err(e) = spawned {
+            let _ = fallback.send(Event::Exported { result: Err(format!("cannot start the export: {e}")) });
+        }
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.queue.slot.lock().unwrap_or_else(PoisonError::into_inner).shutdown = true;
+        self.queue.wake.notify_all();
+        if let Some(handle) = self.render_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn preview_loop(
+    engine: &OnceLock<Arc<Engine>>,
+    queue: &RenderQueue,
+    tx: &Sender<Event>,
+    notify: &(dyn Fn() + Send + Sync),
+) {
+    loop {
+        let request = {
+            let guard = queue.slot.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut slot = queue
+                .wake
+                .wait_while(guard, |s| s.request.is_none() && !s.shutdown)
+                .unwrap_or_else(PoisonError::into_inner);
+            if slot.shutdown {
+                return;
+            }
+            slot.request.take()
+        };
+        let Some(req) = request else { continue };
+        let engine = engine.wait();
+        let event = catch_unwind(AssertUnwindSafe(|| render_for_screen(engine, &req))).unwrap_or_else(|_| {
+            Event::RenderFailed {
+                generation: req.generation,
+                message: "the preview stopped because of an internal error".into(),
+            }
+        });
+        if tx.send(event).is_err() {
+            return; // the UI is gone
+        }
+        notify();
+    }
+}
+
+fn render_for_screen(engine: &Engine, req: &RenderRequest) -> Event {
+    let rendered = match engine.render(&req.graph, &req.source) {
+        Ok(r) => r,
+        Err(e) => return Event::RenderFailed { generation: req.generation, message: e.to_string() },
+    };
+    match engine::to_display(&rendered.image, req.orientation, req.max_side) {
+        Ok(image) => Event::Rendered {
+            generation: req.generation,
+            quality: req.quality,
+            image,
+            backend: rendered.backend,
+            gpu_failure: rendered.gpu_failure,
+        },
+        Err(e) => Event::RenderFailed { generation: req.generation, message: e.to_string() },
+    }
+}
+
+fn display_name(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// Decodes, develops and makes the preview copy. Errors are user messages.
+fn open_file(path: &std::path::Path) -> Result<Opened, String> {
+    let name = display_name(path);
+    let raw = raw_io::read_raw(path).map_err(|e| format!("{name} could not be opened: {e}"))?;
+    let developed = develop::develop(&raw.sensor, &core_model::DevelopSettings::default(), WorkingSpace::LinearRec2020)
+        .map_err(|e| format!("{name} could not be developed: {e}"))?;
+    let preview = engine::downscale(&developed, PREVIEW_SIDE).map_err(|e| format!("{name}: {e}"))?;
+    let developed = Arc::new(developed);
+    let preview = if preview.width() == developed.width() { Arc::clone(&developed) } else { Arc::new(preview) };
+    Ok(Opened {
+        path: path.to_owned(),
+        camera: format!("{} {}", raw.make, raw.model).trim().to_owned(),
+        orientation: raw.orientation,
+        developed,
+        preview,
+        has_camera_white_balance: raw.has_camera_white_balance,
+    })
+}
+
+/// Decides which screen render to ask for next, so that editing stays
+/// fast (previews) and the image ends up sharp (one full render once the
+/// user stops).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RenderPlan {
+    requested: Option<(u64, Quality)>,
+    shown: Option<(u64, Quality)>,
+    floor: u64,
+}
+
+impl RenderPlan {
+    /// Starts over for another document whose generations begin at
+    /// `first_generation`; late results of earlier documents are refused.
+    pub fn reset(&mut self, first_generation: u64) {
+        *self = Self { requested: None, shown: None, floor: first_generation };
+    }
+
+    /// What to request now for a document at `generation`, or `None`.
+    /// `busy` is true while the user is dragging a control: no full render then.
+    /// `full_adds_detail` is false when the preview already is the full image.
+    #[must_use]
+    pub fn next(&self, generation: u64, busy: bool, full_adds_detail: bool) -> Option<Quality> {
+        match self.requested {
+            Some((g, _)) if g != generation => Some(Quality::Preview),
+            None => Some(Quality::Preview),
+            Some((_, Quality::Preview))
+                if !busy && full_adds_detail && self.shown == Some((generation, Quality::Preview)) =>
+            {
+                Some(Quality::Full)
+            }
+            Some(_) => None,
+        }
+    }
+
+    /// Records a request that was sent.
+    pub fn requested(&mut self, generation: u64, quality: Quality) {
+        self.requested = Some((generation, quality));
+    }
+
+    /// Whether a render result should replace what is on screen: never an
+    /// older generation, and never a preview over the full render of the same generation.
+    #[must_use]
+    pub fn accepts(&self, generation: u64, quality: Quality) -> bool {
+        generation >= self.floor && self.shown.is_none_or(|shown| (generation, quality) > shown)
+    }
+
+    /// Records that a result is now on screen.
+    pub fn shown(&mut self, generation: u64, quality: Quality) {
+        self.shown = Some((generation, quality));
+    }
+
+    /// `true` while the image on screen is older than the recipe.
+    #[must_use]
+    pub fn is_stale(&self, generation: u64) -> bool {
+        self.shown.is_none_or(|(g, _)| g != generation)
+    }
+
+    /// `true` while a requested render has not arrived yet.
+    #[must_use]
+    pub fn is_waiting(&self) -> bool {
+        self.requested.is_some() && self.requested != self.shown
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_new_document_gets_a_preview_then_one_full_render_when_idle() {
+        let mut plan = RenderPlan::default();
+        assert_eq!(plan.next(1, false, true), Some(Quality::Preview));
+        plan.requested(1, Quality::Preview);
+        assert_eq!(plan.next(1, false, true), None, "wait for the preview");
+        plan.shown(1, Quality::Preview);
+        assert_eq!(plan.next(1, true, true), None, "no full render while dragging");
+        assert_eq!(plan.next(1, false, true), Some(Quality::Full));
+        plan.requested(1, Quality::Full);
+        assert_eq!(plan.next(1, false, true), None);
+        assert!(plan.is_waiting());
+        plan.shown(1, Quality::Full);
+        assert!(!plan.is_waiting());
+        assert_eq!(plan.next(1, false, true), None);
+    }
+
+    #[test]
+    fn a_change_asks_for_a_new_preview_and_small_images_skip_the_full_render() {
+        let mut plan = RenderPlan::default();
+        plan.requested(1, Quality::Preview);
+        plan.shown(1, Quality::Preview);
+        assert_eq!(plan.next(1, false, false), None);
+        assert_eq!(plan.next(2, false, false), Some(Quality::Preview));
+    }
+
+    #[test]
+    fn late_and_lower_quality_results_do_not_replace_newer_ones() {
+        let mut plan = RenderPlan::default();
+        assert!(plan.accepts(1, Quality::Preview));
+        plan.shown(2, Quality::Preview);
+        assert!(!plan.accepts(1, Quality::Full));
+        assert!(plan.accepts(2, Quality::Full));
+        plan.shown(2, Quality::Full);
+        assert!(!plan.accepts(2, Quality::Preview));
+        assert!(plan.accepts(3, Quality::Preview));
+        assert!(plan.is_stale(3));
+        assert!(!plan.is_stale(2));
+    }
+
+    #[test]
+    fn after_opening_another_document_late_results_of_the_old_one_are_refused() {
+        let mut plan = RenderPlan::default();
+        plan.requested(4, Quality::Preview);
+        plan.reset(5);
+        assert!(!plan.accepts(4, Quality::Full));
+        assert!(plan.accepts(5, Quality::Preview));
+        assert_eq!(plan.next(5, false, true), Some(Quality::Preview));
+    }
+
+    fn wait_for(worker: &Worker, mut done: impl FnMut(&Event) -> bool) -> Vec<Event> {
+        let start = Instant::now();
+        let mut seen = Vec::new();
+        while start.elapsed() < Duration::from_secs(20) {
+            for e in worker.poll() {
+                let stop = done(&e);
+                seen.push(e);
+                if stop {
+                    return seen;
+                }
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("timed out; events so far: {seen:?}");
+    }
+
+    fn cpu_worker() -> Worker {
+        Worker::start(engine::builtin_tools().unwrap(), EngineChoice::CpuOnly, Arc::new(|| {})).unwrap()
+    }
+
+    #[test]
+    fn the_worker_reports_the_engine_and_renders_for_the_screen() {
+        let worker = cpu_worker();
+        wait_for(&worker, |e| matches!(e, Event::EngineReady { backend: Backend::Cpu, .. }));
+        let img = ImageF32::from_pixels(3, 2, WorkingSpace::LinearRec2020, vec![[0.18, 0.18, 0.18, 1.0]; 6]).unwrap();
+        worker.render(RenderRequest {
+            generation: 7,
+            quality: Quality::Preview,
+            graph: NodeGraph::new(),
+            source: Arc::new(img),
+            orientation: Orientation::Rotate90,
+            max_side: 4096,
+        });
+        let events = wait_for(&worker, |e| matches!(e, Event::Rendered { .. } | Event::RenderFailed { .. }));
+        let Some(Event::Rendered { generation, image, .. }) = events.last() else { panic!("{events:?}") };
+        assert_eq!(*generation, 7);
+        assert_eq!((image.width, image.height), (2, 3));
+    }
+
+    #[test]
+    fn opening_a_missing_file_reports_a_message_with_the_file_name() {
+        let worker = cpu_worker();
+        worker.open(3, PathBuf::from("no/such/DSC_0042.NEF"));
+        let events = wait_for(&worker, |e| matches!(e, Event::Opened { .. }));
+        let Some(Event::Opened { ticket, result: Err(message) }) = events.last() else { panic!("{events:?}") };
+        assert_eq!(*ticket, 3);
+        assert!(message.contains("DSC_0042.NEF"), "{message}");
+    }
+
+    #[test]
+    fn exports_are_written_and_reported() {
+        let worker = cpu_worker();
+        let dir = std::env::temp_dir().join(format!("rne-worker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = ImageF32::from_pixels(4, 2, WorkingSpace::LinearRec2020, vec![[0.5, 0.2, 0.1, 1.0]; 8]).unwrap();
+        worker.export(NodeGraph::new(), Arc::new(img), Orientation::Normal, dir.join("a.jpg"));
+        let events = wait_for(&worker, |e| matches!(e, Event::Exported { .. }));
+        let Some(Event::Exported { result: Ok(path) }) = events.last() else { panic!("{events:?}") };
+        assert_eq!(path, &dir.join("a.jpg"));
+        assert!(path.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    const _: () = {
+        const fn send<T: Send>() {}
+        send::<Event>();
+        send::<RenderRequest>();
+    };
+}
