@@ -247,12 +247,24 @@ pub struct Filmstrip {
     pub photos: Vec<StripPhoto>,
     /// The Explorer's filters.
     pub filter: Filter,
+    /// Selected photos (several with Ctrl or Shift), in no particular order.
+    selected: Vec<PathBuf>,
+    /// Where a Shift+click range starts.
+    anchor: Option<PathBuf>,
 }
 
 impl Filmstrip {
     /// Shows `folder` with `photos` (paths and catalog data, in order).
     pub fn set_folder(&mut self, folder: PathBuf, photos: Vec<(PathBuf, PhotoMeta)>) {
+        if self.folder.as_deref() != Some(folder.as_path()) {
+            self.selected.clear();
+            self.anchor = None;
+        }
         self.folder = Some(folder);
+        self.selected.retain(|s| photos.iter().any(|(p, _)| p == s));
+        if self.anchor.as_ref().is_some_and(|a| !photos.iter().any(|(p, _)| p == a)) {
+            self.anchor = None;
+        }
         self.photos = photos
             .into_iter()
             .map(|(path, meta)| {
@@ -312,10 +324,98 @@ impl Filmstrip {
 
     /// Replaces a renamed file, keeping its place.
     pub fn rename(&mut self, from: &Path, to: PathBuf) {
+        for s in self.selected.iter_mut().chain(self.anchor.iter_mut()).filter(|s| s.as_path() == from) {
+            to.clone_into(s);
+        }
         if let Some(p) = self.photos.iter_mut().find(|p| p.path == from) {
             p.name = folder_name(&to);
             p.path = to;
         }
+    }
+
+    // ----- selection, as in a photo viewer -----
+
+    /// A click on a filmstrip card, with Ctrl (Cmd on macOS) and Shift as
+    /// held. Returns the photo to open, if the click opens one:
+    ///
+    /// - click: only this photo is selected and opened;
+    /// - Ctrl+click: adds the photo (and opens it), or removes it when it
+    ///   was selected and others remain;
+    /// - Shift+click: selects from the last Ctrl/plain click (or the open
+    ///   photo) to this one and opens it; with Ctrl the range is added.
+    pub fn click(&mut self, path: &Path, ctrl: bool, shift: bool, current: Option<&Path>) -> Option<PathBuf> {
+        self.index_of(path)?;
+        if shift {
+            let visible: Vec<&Path> = self.visible().into_iter().map(|i| self.photos[i].path.as_path()).collect();
+            let anchor = self.anchor.as_deref().or(current).filter(|a| visible.contains(a)).unwrap_or(path);
+            let (Some(a), Some(b)) =
+                (visible.iter().position(|p| *p == anchor), visible.iter().position(|p| *p == path))
+            else {
+                return None;
+            };
+            let range: Vec<PathBuf> = visible[a.min(b)..=a.max(b)].iter().map(|p| p.to_path_buf()).collect();
+            if !ctrl {
+                self.selected.clear();
+            }
+            for p in range {
+                if !self.selected.contains(&p) {
+                    self.selected.push(p);
+                }
+            }
+            return Some(path.to_owned());
+        }
+        if ctrl {
+            if self.is_selected(path) {
+                if self.selected.len() > 1 {
+                    self.selected.retain(|p| p != path);
+                }
+                return None;
+            }
+            self.selected.push(path.to_owned());
+            self.anchor = Some(path.to_owned());
+            return Some(path.to_owned());
+        }
+        self.select_only(path);
+        Some(path.to_owned())
+    }
+
+    /// Only `path` selected (arrow keys, a photo opened from elsewhere).
+    pub fn select_only(&mut self, path: &Path) {
+        self.selected = vec![path.to_owned()];
+        self.anchor = Some(path.to_owned());
+    }
+
+    /// Every visible photo selected (Ctrl+A).
+    pub fn select_all(&mut self) {
+        self.selected = self.visible().into_iter().map(|i| self.photos[i].path.clone()).collect();
+    }
+
+    /// `true` when `path` is selected.
+    #[must_use]
+    pub fn is_selected(&self, path: &Path) -> bool {
+        self.selected.iter().any(|p| p == path)
+    }
+
+    /// The selected photos that pass the filter, in filmstrip order.
+    #[must_use]
+    pub fn selection(&self) -> Vec<PathBuf> {
+        self.visible().into_iter().map(|i| &self.photos[i].path).filter(|p| self.is_selected(p)).cloned().collect()
+    }
+
+    /// What an action on the card of `clicked` (stars, its menu) applies
+    /// to: the whole selection when the card is part of a selection of
+    /// several, else that photo alone.
+    #[must_use]
+    pub fn targets(&self, clicked: &Path) -> Vec<PathBuf> {
+        let selection = self.selection();
+        if selection.len() > 1 && selection.iter().any(|p| p == clicked) { selection } else { vec![clicked.to_owned()] }
+    }
+
+    /// What a key (rating, label) applies to: the selection, else the open photo.
+    #[must_use]
+    pub fn selected_or(&self, current: Option<&Path>) -> Vec<PathBuf> {
+        let selection = self.selection();
+        if selection.is_empty() { current.map(Path::to_owned).into_iter().collect() } else { selection }
     }
 }
 
@@ -512,5 +612,49 @@ mod tests {
         }
         assert_eq!(s.tagging_targets().len(), 3, "all tagged: tag again");
         assert_eq!(s.tag_counts(), vec![("lake".to_owned(), 3)]);
+    }
+
+    #[test]
+    fn clicks_select_like_a_photo_viewer() {
+        let mut s = Filmstrip::default();
+        let p = |n: &str| PathBuf::from(format!("/f/{n}.NEF"));
+        let photos = ["a", "b", "c", "d", "e"].map(|n| (p(n), PhotoMeta::default())).to_vec();
+        s.set_folder("/f".into(), photos.clone());
+        let path = |n: &str| p(n);
+
+        // Plain click: one photo, opened.
+        assert_eq!(s.click(&path("b"), false, false, None), Some(path("b")));
+        assert_eq!(s.selection(), vec![path("b")]);
+        // Shift+click: the range from the anchor, the clicked one opened.
+        assert_eq!(s.click(&path("d"), false, true, Some(&path("b"))), Some(path("d")));
+        assert_eq!(s.selection(), vec![path("b"), path("c"), path("d")]);
+        // Ctrl+click on a selected photo removes it, without opening anything.
+        assert_eq!(s.click(&path("c"), true, false, Some(&path("d"))), None);
+        assert_eq!(s.selection(), vec![path("b"), path("d")]);
+        // Ctrl+click adds and becomes the anchor; Ctrl+Shift adds a range.
+        assert_eq!(s.click(&path("a"), true, false, None), Some(path("a")));
+        assert_eq!(s.click(&path("c"), true, true, None), Some(path("c")));
+        assert_eq!(s.selection(), vec![path("a"), path("b"), path("c"), path("d")]);
+        // Shift without Ctrl replaces the selection with the range.
+        s.click(&path("e"), false, true, None);
+        assert_eq!(s.selection(), vec![path("a"), path("b"), path("c"), path("d"), path("e")]);
+        s.click(&path("b"), false, false, None);
+        s.click(&path("b"), true, false, None);
+        assert_eq!(s.selection(), vec![path("b")], "the last selected photo stays");
+
+        // Actions on a card of the selection apply to all of it.
+        s.click(&path("c"), false, true, None);
+        assert_eq!(s.targets(&path("c")), vec![path("b"), path("c")]);
+        assert_eq!(s.targets(&path("e")), vec![path("e")]);
+        assert_eq!(s.selected_or(Some(&path("e"))), vec![path("b"), path("c")]);
+
+        // Renames follow; another folder clears; Ctrl+A takes every visible photo.
+        s.rename(&path("c"), path("z"));
+        assert!(s.is_selected(&path("z")));
+        s.select_all();
+        assert_eq!(s.selection().len(), 5);
+        s.set_folder("/g".into(), photos);
+        assert!(s.selection().is_empty());
+        assert_eq!(s.selected_or(Some(&path("a"))), vec![path("a")]);
     }
 }

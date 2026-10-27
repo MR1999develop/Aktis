@@ -10,6 +10,7 @@
 //! - [`library`]: the Explorer's folder tree and the filmstrip with its filters;
 //! - [`graph_layout`] and [`graph_view`]: where the node graph's nodes are
 //!   drawn, moved and hit;
+//! - [`overview`]: the viewer's grid when several photos are selected;
 //! - [`thumbs`]: the filmstrip's thumbnail cache;
 //! - [`history_order`]: History-tab gestures as step orders;
 //! - [`histogram`]: levels of the displayed image.
@@ -22,6 +23,7 @@ pub mod graph_view;
 pub mod histogram;
 pub mod history_order;
 pub mod library;
+pub mod overview;
 pub mod thumbs;
 pub mod view;
 pub mod worker;
@@ -33,6 +35,7 @@ pub use histogram::Histogram;
 pub use library::{
     Filmstrip, FolderListing, FolderNode, FolderTree, RenameError, StripPhoto, file_stem, rename_target,
 };
+pub use overview::OverviewLayout;
 pub use thumbs::{ThumbCache, ThumbState};
 pub use view::{Rect, ViewState, Viewport, Zoom, needs_full_resolution};
 pub use worker::{Event, Quality, RenderPlan, RenderRequest, RenderTiming, Worker};

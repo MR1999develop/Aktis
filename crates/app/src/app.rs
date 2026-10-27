@@ -780,8 +780,12 @@ impl EditorApp {
             if let Some(folder) = self.library.folder() {
                 let shown = self.library.strip.visible().len();
                 let total = self.library.strip.photos.len();
-                let count =
+                let mut count =
                     if shown == total { format!("{total} photos") } else { format!("{shown} of {total} photos") };
+                let selected = self.library.selection().len();
+                if selected > 1 {
+                    count.push_str(&format!(", {selected} selected"));
+                }
                 ui.label(
                     RichText::new(format!("{} \u{b7} {count}", editor::library::folder_name(folder)))
                         .color(t.text_weak),
@@ -858,12 +862,19 @@ impl EditorApp {
         });
     }
 
-    fn central(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+    fn central(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>, library: &mut Vec<LibraryAction>) {
         let t = Tokens::of(ui.ctx().theme());
         let rect = ui.max_rect();
         let ppp = ui.ctx().pixels_per_point();
         let vp = Viewport { rect: to_view_rect(rect), pixels_per_point: ppp };
         self.viewport = Some(vp);
+
+        // Several photos selected in the filmstrip: their tiles instead of the photo.
+        if self.library.selection().len() > 1 {
+            let current = self.doc.as_ref().map(|d| d.path().to_owned());
+            self.library.overview(ui, current.as_deref(), library);
+            return;
+        }
 
         if let Some(doc) = &self.doc {
             let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -1081,7 +1092,7 @@ impl EditorApp {
     }
 
     /// The photo, with the node graph under it when a photo is open.
-    fn center(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+    fn center(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>, library: &mut Vec<LibraryAction>) {
         let t = Tokens::of(ui.ctx().theme());
         let mut actions = Vec::new();
         if let Some(doc) = &self.doc {
@@ -1095,7 +1106,9 @@ impl EditorApp {
                 });
         }
         self.apply_graph(actions);
-        egui::CentralPanel::default().frame(Frame::NONE.fill(t.canvas)).show(ui, |ui| self.central(ui, commands));
+        egui::CentralPanel::default()
+            .frame(Frame::NONE.fill(t.canvas))
+            .show(ui, |ui| self.central(ui, commands, library));
     }
 
     /// Applies what the user did in the node graph.
@@ -1181,7 +1194,9 @@ impl eframe::App for EditorApp {
             .size_range(INSPECTOR_WIDTH[1]..=INSPECTOR_WIDTH[2])
             .frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(10, 4)))
             .show(ui, |ui| self.right_panel(ui, &mut edits));
-        egui::CentralPanel::default().frame(Frame::NONE.fill(t.canvas)).show(ui, |ui| self.center(ui, &mut commands));
+        egui::CentralPanel::default()
+            .frame(Frame::NONE.fill(t.canvas))
+            .show(ui, |ui| self.center(ui, &mut commands, &mut library));
         self.library.rename_dialog(&ctx, &mut library);
 
         self.apply_edits(edits);
