@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.profraw
+/out
+/testdata/*
+!/testdata/README.md

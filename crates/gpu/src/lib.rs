@@ -1,0 +1,420 @@
+//! GPU engine on wgpu: Vulkan (NVIDIA, AMD, Intel), DirectX 12 and Metal from
+//! one code base.
+//!
+//! [`GpuRenderer::render`] evaluates a node graph on the GPU and returns the
+//! same pixels as `render-cpu` within a stated tolerance. Data stay on the
+//! GPU for the whole chain of nodes and are read back once. Images larger
+//! than the device's buffer limits are processed in chunks of rows; per-pixel
+//! kernels need no overlap between chunks.
+
+use std::collections::{BTreeMap, HashMap};
+use std::fmt;
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
+
+use core_model::{GraphError, ImageError, ImageF32, NodeGraph, NodeId, NodeKind, Rgba, ToolId};
+use tool_api::{GpuKernel, MAX_PARAMS, ResolvedParams, ToolRegistry};
+
+/// Threads per workgroup in every kernel.
+const WORKGROUP: u32 = 256;
+/// Bytes per pixel on the GPU (RGBA `f32`).
+const PIXEL_BYTES: u64 = 16;
+/// GPU memory a render may use at once, before chunking kicks in.
+const MEMORY_BUDGET: u64 = 1 << 30;
+
+/// Why the GPU could not be used or a render failed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GpuError {
+    /// No GPU adapter with compute support was found.
+    NoAdapter(String),
+    /// The adapter refused to create a device.
+    Device(String),
+    /// The graph cannot be evaluated.
+    Graph(GraphError),
+    /// A node has no image input.
+    MissingInput(NodeId),
+    /// The node kind is not rendered yet in this phase (parallel mixer).
+    NotYetSupported(NodeId),
+    /// A tool's WGSL code was refused by the shader compiler (a bug in the tool).
+    InvalidShader {
+        /// The tool.
+        tool: ToolId,
+        /// Compiler message.
+        message: String,
+    },
+    /// Reading the result back from the GPU failed (device lost or out of memory).
+    Readback(String),
+    /// The result could not be assembled into an image.
+    Image(ImageError),
+}
+
+impl fmt::Display for GpuError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoAdapter(why) => write!(f, "no usable GPU found: {why}"),
+            Self::Device(why) => write!(f, "the GPU refused to start: {why}"),
+            Self::Graph(e) => e.fmt(f),
+            Self::MissingInput(id) => write!(f, "node {id} has no image input"),
+            Self::NotYetSupported(id) => write!(f, "node {id} cannot be rendered on the GPU yet"),
+            Self::InvalidShader { tool, message } => write!(f, "GPU code of tool '{tool}' is invalid: {message}"),
+            Self::Readback(why) => write!(f, "reading the result from the GPU failed: {why}"),
+            Self::Image(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for GpuError {}
+
+impl From<GraphError> for GpuError {
+    fn from(e: GraphError) -> Self {
+        Self::Graph(e)
+    }
+}
+
+/// The GPU device and its queue. Create once and share; creation blocks, so
+/// do it on a worker thread, never on the UI thread.
+pub struct GpuContext {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    info: wgpu::AdapterInfo,
+    limits: wgpu::Limits,
+}
+
+impl fmt::Debug for GpuContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GpuContext").field("adapter", &self.adapter_name()).finish_non_exhaustive()
+    }
+}
+
+impl GpuContext {
+    /// Opens the most powerful GPU with compute support. The backend can be
+    /// forced with the `WGPU_BACKEND` environment variable (`vulkan`, `dx12`, `metal`).
+    ///
+    /// # Errors
+    /// [`GpuError::NoAdapter`] or [`GpuError::Device`].
+    pub fn new() -> Result<Self, GpuError> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let options = wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+        };
+        let adapter =
+            pollster::block_on(instance.request_adapter(&options)).map_err(|e| GpuError::NoAdapter(e.to_string()))?;
+        if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS) {
+            return Err(GpuError::NoAdapter(format!("{} has no compute shaders", adapter.get_info().name)));
+        }
+        let limits = adapter.limits();
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("raw-node-editor"),
+            required_features: wgpu::Features::empty(),
+            required_limits: limits.clone(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .map_err(|e| GpuError::Device(e.to_string()))?;
+        Ok(Self { device, queue, info: adapter.get_info(), limits })
+    }
+
+    /// Adapter name and backend, for the status bar and logs ("NVIDIA GeForce RTX 4070 · Vulkan").
+    #[must_use]
+    pub fn adapter_name(&self) -> String {
+        format!("{} \u{b7} {:?}", self.info.name, self.info.backend)
+    }
+
+    /// Largest number of pixels per chunk when `buffers` images are alive at once.
+    fn chunk_pixels(&self, total: usize, buffers: usize) -> usize {
+        let by_binding = self.limits.max_storage_buffer_binding_size / PIXEL_BYTES;
+        let by_buffer = self.limits.max_buffer_size / PIXEL_BYTES;
+        let by_dispatch = u64::from(self.limits.max_compute_workgroups_per_dimension) * u64::from(WORKGROUP);
+        let by_budget = MEMORY_BUDGET / (PIXEL_BYTES * buffers.max(1) as u64);
+        let limit = by_binding.min(by_buffer).min(by_dispatch).min(by_budget).max(1);
+        total.min(usize::try_from(limit).unwrap_or(usize::MAX))
+    }
+}
+
+/// The WGSL wrapped around a tool's per-pixel body. `params.v[i]` holds the
+/// tool's parameters in descriptor order; `params.n.x` is the pixel count.
+fn per_pixel_shader(body: &str) -> String {
+    format!(
+        "struct Params {{ v: array<vec4<f32>, {groups}>, n: vec4<u32>, }};\n\
+         @group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;\n\
+         @group(0) @binding(1) var<storage, read_write> dst: array<vec4<f32>>;\n\
+         @group(0) @binding(2) var<uniform> params: Params;\n\
+         fn tool_apply(c: vec4<f32>) -> vec4<f32> {{\n{body}\n}}\n\
+         @compute @workgroup_size({WORKGROUP})\n\
+         fn main(@builtin(global_invocation_id) id: vec3<u32>) {{\n\
+             if (id.x >= params.n.x) {{ return; }}\n\
+             dst[id.x] = tool_apply(src[id.x]);\n\
+         }}\n",
+        groups = MAX_PARAMS / 4,
+    )
+}
+
+/// Uniform block: the tool's parameters, then the pixel count.
+fn uniform_bytes(params: &[f32; MAX_PARAMS], pixels: u32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(MAX_PARAMS * 4 + 16);
+    bytes.extend_from_slice(bytemuck::cast_slice(params));
+    bytes.extend_from_slice(bytemuck::cast_slice(&[pixels, 0, 0, 0]));
+    bytes
+}
+
+/// The rendered image and what could not be applied.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rendered {
+    /// Linear image in the source's working space.
+    pub image: ImageF32,
+    /// Tools used by the recipe but missing from this build (passed through).
+    pub missing_tools: Vec<ToolId>,
+}
+
+/// What one node does in a render.
+enum Step {
+    /// Run a kernel from buffer `input` into buffer `output`.
+    Kernel { pipeline: Arc<wgpu::ComputePipeline>, params: [f32; MAX_PARAMS], input: usize, output: usize },
+}
+
+/// Renders node graphs on a [`GpuContext`], caching one pipeline per tool.
+pub struct GpuRenderer {
+    ctx: Arc<GpuContext>,
+    layout: wgpu::BindGroupLayout,
+    pipeline_layout: wgpu::PipelineLayout,
+    pipelines: Mutex<HashMap<ToolId, Arc<wgpu::ComputePipeline>>>,
+}
+
+impl fmt::Debug for GpuRenderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GpuRenderer").field("ctx", &self.ctx).finish_non_exhaustive()
+    }
+}
+
+impl GpuRenderer {
+    /// A renderer on `ctx`.
+    #[must_use]
+    pub fn new(ctx: Arc<GpuContext>) -> Self {
+        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let layout = ctx.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("per-pixel kernel"),
+            entries: &[
+                storage(0, true),
+                storage(1, false),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("per-pixel kernel"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        Self { ctx, layout, pipeline_layout, pipelines: Mutex::new(HashMap::new()) }
+    }
+
+    /// The context this renderer runs on.
+    #[must_use]
+    pub fn context(&self) -> &GpuContext {
+        &self.ctx
+    }
+
+    /// The compiled pipeline of a tool, built on first use.
+    fn pipeline(&self, tool: &ToolId, body: &str) -> Result<Arc<wgpu::ComputePipeline>, GpuError> {
+        let mut cache = self.pipelines.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(p) = cache.get(tool) {
+            return Ok(Arc::clone(p));
+        }
+        let device = &self.ctx.device;
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(tool.as_str()),
+            source: wgpu::ShaderSource::Wgsl(per_pixel_shader(body).into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(tool.as_str()),
+            layout: Some(&self.pipeline_layout),
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            return Err(GpuError::InvalidShader { tool: tool.clone(), message: e.to_string() });
+        }
+        let pipeline = Arc::new(pipeline);
+        cache.insert(tool.clone(), Arc::clone(&pipeline));
+        Ok(pipeline)
+    }
+
+    /// Evaluates `graph` on `source` (the developed image).
+    ///
+    /// # Errors
+    /// [`GpuError`] when the graph cannot be evaluated, a shader is invalid, or the GPU fails.
+    pub fn render(&self, graph: &NodeGraph, registry: &ToolRegistry, source: &ImageF32) -> Result<Rendered, GpuError> {
+        // Plan: buffer 0 holds the source; each active kernel writes a new buffer.
+        // Bypassed nodes, missing tools and the output just reuse their input's buffer.
+        let mut buffer_of: BTreeMap<NodeId, usize> = BTreeMap::new();
+        let mut steps = Vec::new();
+        let mut missing_tools = Vec::new();
+        let mut buffers = 1;
+        for id in graph.evaluation_order()? {
+            let Some(node) = graph.node(id) else { continue };
+            let input = || {
+                graph.input_link(id, 0).and_then(|l| buffer_of.get(&l.from).copied()).ok_or(GpuError::MissingInput(id))
+            };
+            let slot = match &node.kind {
+                NodeKind::Source => 0,
+                NodeKind::Output => input()?,
+                NodeKind::Parallel { .. } => return Err(GpuError::NotYetSupported(id)),
+                NodeKind::Tool(tool_id) => match registry.get(tool_id) {
+                    Some(tool) if node.enabled => {
+                        let GpuKernel::PerPixel { wgsl } = tool.gpu_kernel();
+                        let pipeline = self.pipeline(tool_id, wgsl)?;
+                        let params = ResolvedParams::resolve(tool.descriptor(), &node.params).gpu_uniforms();
+                        let output = buffers;
+                        buffers += 1;
+                        steps.push(Step::Kernel { pipeline, params, input: input()?, output });
+                        output
+                    }
+                    Some(_) => input()?,
+                    None => {
+                        if !missing_tools.contains(tool_id) {
+                            missing_tools.push(tool_id.clone());
+                        }
+                        input()?
+                    }
+                },
+            };
+            buffer_of.insert(id, slot);
+        }
+        let result_slot = *buffer_of.get(&graph.output()).ok_or(GpuError::MissingInput(graph.output()))?;
+
+        let pixels = self.run(source.pixels(), &steps, buffers, result_slot)?;
+        let image =
+            ImageF32::from_pixels(source.width(), source.height(), source.space(), pixels).map_err(GpuError::Image)?;
+        Ok(Rendered { image, missing_tools })
+    }
+
+    /// Runs the planned steps over `src`, chunk by chunk, and reads back `result_slot`.
+    fn run(&self, src: &[Rgba], steps: &[Step], buffers: usize, result_slot: usize) -> Result<Vec<Rgba>, GpuError> {
+        let device = &self.ctx.device;
+        let queue = &self.ctx.queue;
+        let chunk = self.ctx.chunk_pixels(src.len(), buffers);
+        let chunk_bytes = chunk as u64 * PIXEL_BYTES;
+
+        let storage: Vec<wgpu::Buffer> = (0..buffers)
+            .map(|i| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(if i == 0 { "source" } else { "node result" }),
+                    size: chunk_bytes,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: chunk_bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut out: Vec<Rgba> = Vec::with_capacity(src.len());
+        for part in src.chunks(chunk) {
+            let n = u32::try_from(part.len()).map_err(|_| GpuError::Readback("chunk too large".to_owned()))?;
+            let bytes = u64::from(n) * PIXEL_BYTES;
+            queue.write_buffer(&storage[0], 0, bytemuck::cast_slice(part));
+
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("render") });
+            // Uniform buffers must outlive the submission; keep them until the chunk is done.
+            let mut uniforms = Vec::with_capacity(steps.len());
+            for step in steps {
+                let Step::Kernel { pipeline, params, input, output } = step;
+                let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("params"),
+                    size: (MAX_PARAMS * 4 + 16) as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                queue.write_buffer(&uniform, 0, &uniform_bytes(params, n));
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &self.layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: storage[*input].as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: storage[*output].as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
+                    ],
+                });
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("per-pixel"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.dispatch_workgroups(n.div_ceil(WORKGROUP), 1, 1);
+                drop(pass);
+                uniforms.push(uniform);
+            }
+            encoder.copy_buffer_to_buffer(&storage[result_slot], 0, &readback, 0, bytes);
+            queue.submit([encoder.finish()]);
+
+            let (tx, rx) = mpsc::channel();
+            readback.slice(..bytes).map_async(wgpu::MapMode::Read, move |r| {
+                let _ = tx.send(r);
+            });
+            device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| GpuError::Readback(e.to_string()))?;
+            rx.recv()
+                .map_err(|_| GpuError::Readback("no answer from the GPU".to_owned()))?
+                .map_err(|e| GpuError::Readback(e.to_string()))?;
+            {
+                let view = readback.slice(..bytes).get_mapped_range();
+                out.extend_from_slice(bytemuck::cast_slice::<u8, Rgba>(&view));
+            }
+            readback.unmap();
+            drop(uniforms);
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_shader_template_declares_the_three_bindings_and_the_tool_body() {
+        let s = per_pixel_shader("return c;");
+        assert!(s.contains("@binding(0) var<storage, read> src"));
+        assert!(s.contains("@binding(1) var<storage, read_write> dst"));
+        assert!(s.contains("@binding(2) var<uniform> params"));
+        assert!(s.contains("array<vec4<f32>, 4>"));
+        assert!(s.contains("return c;"));
+        assert!(s.contains("@workgroup_size(256)"));
+    }
+
+    #[test]
+    fn uniforms_are_sixteen_floats_then_the_pixel_count() {
+        let mut p = [0.0; MAX_PARAMS];
+        p[0] = 1.5;
+        let b = uniform_bytes(&p, 7);
+        assert_eq!(b.len(), 80);
+        assert_eq!(&b[0..4], &1.5_f32.to_le_bytes());
+        assert_eq!(&b[64..68], &7_u32.to_le_bytes());
+    }
+}

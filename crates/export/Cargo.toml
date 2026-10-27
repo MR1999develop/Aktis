@@ -1,0 +1,13 @@
+[package]
+name = "export"
+description = "Writes finished images: JPEG with an embedded colour profile, atomic writes, non-destructive names."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+jpeg-encoder = "0.7.1"
+
+[lints]
+workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "cli"
+description = "Command line: develop a RAW file to JPEG without the window (tracer bullet and batch use)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rne"
+path = "src/main.rs"
+
+[dependencies]
+core-model.workspace = true
+tool-api.workspace = true
+commands.workspace = true
+develop.workspace = true
+render-cpu.workspace = true
+raw-io.workspace = true
+gpu.workspace = true
+export.workspace = true
+tool-exposure.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,57 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core-model",
+    "crates/core-color",
+    "crates/tool-api",
+    "crates/commands",
+    "crates/develop",
+    "crates/render-cpu",
+    "crates/platform",
+    "crates/raw-io",
+    "crates/gpu",
+    "crates/export",
+    "crates/cli",
+    "tools/exposure",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+# Licence still to be decided (see docs/decisions.md); nothing is published until then.
+
+[workspace.dependencies]
+core-model = { path = "crates/core-model" }
+core-color = { path = "crates/core-color" }
+tool-api = { path = "crates/tool-api" }
+commands = { path = "crates/commands" }
+develop = { path = "crates/develop" }
+render-cpu = { path = "crates/render-cpu" }
+platform = { path = "crates/platform" }
+raw-io = { path = "crates/raw-io" }
+gpu = { path = "crates/gpu" }
+export = { path = "crates/export" }
+tool-exposure = { path = "tools/exposure" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+float_cmp = "warn"
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.profiling]
+inherits = "release"
+debug = true

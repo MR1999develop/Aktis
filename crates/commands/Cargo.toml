@@ -1,0 +1,17 @@
+[package]
+name = "commands"
+description = "Edits to a recipe, with validation and undo/redo. The only way UI and MCP change an image."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-model.workspace = true
+tool-api.workspace = true
+
+[dev-dependencies]
+tool-exposure.workspace = true
+
+[lints]
+workspace = true

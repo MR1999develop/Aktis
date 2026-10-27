@@ -1,0 +1,20 @@
+[package]
+name = "render-cpu"
+description = "Reference renderer on the CPU: evaluates the node graph and produces display pixels."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-model.workspace = true
+core-color.workspace = true
+tool-api.workspace = true
+
+[dev-dependencies]
+commands.workspace = true
+develop.workspace = true
+tool-exposure.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "gpu"
+description = "GPU engine on wgpu (Vulkan, DirectX 12, Metal): runs tool kernels over the node graph."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-model.workspace = true
+tool-api.workspace = true
+wgpu = "29.0.3"
+pollster = "0.4"
+bytemuck = "1.22"
+
+[dev-dependencies]
+commands.workspace = true
+render-cpu.workspace = true
+tool-exposure.workspace = true
+
+[lints]
+workspace = true
