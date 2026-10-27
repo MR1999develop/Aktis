@@ -31,5 +31,5 @@ pub use library::{
     Filmstrip, FolderListing, FolderNode, FolderTree, RenameError, StripPhoto, file_stem, rename_target,
 };
 pub use thumbs::{ThumbCache, ThumbState};
-pub use view::{Rect, ViewState, Viewport, Zoom};
-pub use worker::{Event, Quality, RenderPlan, RenderRequest, Worker};
+pub use view::{Rect, ViewState, Viewport, Zoom, needs_full_resolution};
+pub use worker::{Event, Quality, RenderPlan, RenderRequest, RenderTiming, Worker};

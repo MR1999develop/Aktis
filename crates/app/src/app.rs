@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use core_model::{DevelopSettings, NodeId, NodeKind};
-use editor::{Document, Event, Histogram, Quality, RenderPlan, RenderRequest, ViewState, Viewport, Worker, Zoom};
+use editor::{
+    Document, Event, Histogram, Quality, RenderPlan, RenderRequest, RenderTiming, ViewState, Viewport, Worker, Zoom,
+};
 use eframe::egui::{
     self, Align, Align2, Button, Color32, CursorIcon, Frame, Id, Layout, Margin, Order, RichText, Sense, TextureOptions,
 };
@@ -127,6 +129,8 @@ pub struct EditorApp {
     histogram: Option<Box<Histogram>>,
     /// "AI-tag this folder", while it runs.
     tagging: Option<TaggingJob>,
+    /// Time, kind and size of the last render shown.
+    last_render: Option<(RenderTiming, Quality, [u32; 2])>,
 }
 
 impl std::fmt::Debug for EditorApp {
@@ -189,6 +193,7 @@ impl EditorApp {
             selected_node: None,
             histogram: None,
             tagging: None,
+            last_render: None,
         };
         if let Some(problem) = app.library.catalog_problem.take() {
             app.toast = Some(error_toast(problem));
@@ -343,10 +348,20 @@ impl EditorApp {
                     }
                     self.opening_path = None;
                 }
-                Event::Rendered { generation, quality, image, backend, gpu_failure, node_problems, histogram } => {
+                Event::Rendered {
+                    generation,
+                    quality,
+                    image,
+                    backend,
+                    gpu_failure,
+                    node_problems,
+                    histogram,
+                    timing,
+                } => {
                     if !self.plan.accepts(generation, quality) {
                         continue;
                     }
+                    self.last_render = Some((timing, quality, [image.width, image.height]));
                     self.histogram = Some(histogram);
                     let size = [image.width as usize, image.height as usize];
                     let color = egui::ColorImage::from_rgb(size, &image.pixels);
@@ -631,8 +646,17 @@ impl EditorApp {
     fn request_render(&mut self, ctx: &egui::Context) {
         let (Some(doc), Some(worker)) = (&self.doc, &self.worker) else { return };
         let busy = self.drag.is_some();
-        let Some(quality) = self.plan.next(doc.generation(), busy, doc.preview_is_reduced()) else { return };
+        // The full-size render only when the zoom shows more than the preview has.
+        let (w, h) = doc.upright_size();
+        let full_adds_detail = doc.preview_is_reduced()
+            && self.viewport.as_ref().is_some_and(|vp| {
+                editor::needs_full_resolution(self.view.scale([w as f32, h as f32], vp), doc.preview_scale())
+            });
+        let Some(quality) = self.plan.next(doc.generation(), busy, doc.draft_is_reduced(), full_adds_detail) else {
+            return;
+        };
         let source = match quality {
+            Quality::Draft => doc.draft(),
             Quality::Preview => doc.preview(),
             Quality::Full => doc.developed(),
         };
@@ -797,7 +821,19 @@ impl EditorApp {
                         ui.weak("CPU").on_hover_text(format!("No GPU in use: {why}"));
                     }
                     (Some(b), _) => {
-                        ui.weak(b.to_string());
+                        let label = ui.weak(b.to_string());
+                        if let Some((timing, quality, [w, h])) = &self.last_render {
+                            let kind = match quality {
+                                Quality::Draft => "draft",
+                                Quality::Preview => "preview",
+                                Quality::Full => "full-size image",
+                            };
+                            label.on_hover_text(format!(
+                                "Last {kind} ({w} \u{d7} {h}): render {} ms, display {} ms",
+                                timing.render.as_millis(),
+                                timing.display.as_millis()
+                            ));
+                        }
                     }
                     (None, _) => {
                         ui.weak("Starting the GPU\u{2026}");

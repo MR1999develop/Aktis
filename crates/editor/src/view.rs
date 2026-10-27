@@ -178,6 +178,16 @@ impl ViewState {
     }
 }
 
+/// Whether the full-size image adds detail over the preview at this
+/// zoom: when one preview pixel would cover more than one screen pixel.
+/// `screen_scale` is screen pixels per full-size pixel ([`ViewState::scale`]),
+/// `preview_scale` the preview's size over the full size.
+#[must_use]
+pub fn needs_full_resolution(screen_scale: f32, preview_scale: f32) -> bool {
+    // A little slack: a preview shown at 103 % looks as sharp.
+    screen_scale > preview_scale * 1.05
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
@@ -284,5 +294,15 @@ mod tests {
         let mut v = ViewState::default();
         v.pan([30.0, 30.0], IMAGE, &vp(1.0));
         assert_eq!(v.zoom(), Zoom::Fit);
+    }
+
+    #[test]
+    fn the_full_image_is_rendered_only_when_the_preview_would_be_enlarged() {
+        // A 6000 px photo with a 2560 px preview.
+        let preview = 2560.0 / 6000.0;
+        assert!(!needs_full_resolution(0.2, preview), "fit on a laptop screen");
+        assert!(!needs_full_resolution(0.44, preview), "a hair above the preview size");
+        assert!(needs_full_resolution(1.0, preview), "100 %");
+        assert!(!needs_full_resolution(1.0, 1.0), "the preview is the full image");
     }
 }

@@ -62,7 +62,8 @@ impl Orientation {
     }
 
     /// Source coordinates of output pixel `(x, y)` in an input of `w × h`.
-    fn source(self, x: usize, y: usize, w: usize, h: usize) -> (usize, usize) {
+    #[must_use]
+    pub fn source(self, x: usize, y: usize, w: usize, h: usize) -> (usize, usize) {
         match self {
             Self::Normal => (x, y),
             Self::FlipHorizontal => (w - 1 - x, y),

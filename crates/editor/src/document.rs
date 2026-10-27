@@ -40,6 +40,9 @@ pub struct DevelopedImage {
     pub developed: Arc<ImageF32>,
     /// Smaller copy for fast previews (may be the same image when small).
     pub preview: Arc<ImageF32>,
+    /// Still smaller copy for renders while a control is dragged (may be
+    /// the preview itself).
+    pub draft: Arc<ImageF32>,
     /// Lens whose corrections were applied ("Sony FE 24-70mm f/2.8 GM"), if any.
     pub lens: Option<String>,
     /// What the development stage corrected, or why not, for the inspector.
@@ -163,10 +166,32 @@ impl Document {
         &self.opened.image.preview
     }
 
+    /// Smallest copy, rendered while a control is dragged.
+    #[must_use]
+    pub fn draft(&self) -> &Arc<ImageF32> {
+        &self.opened.image.draft
+    }
+
+    /// `true` when the draft is smaller than the preview, so dragging renders faster with it.
+    #[must_use]
+    pub fn draft_is_reduced(&self) -> bool {
+        self.opened.image.draft.width() < self.opened.image.preview.width()
+    }
+
     /// `true` when the preview is smaller than the full image, so a full render adds detail.
     #[must_use]
     pub fn preview_is_reduced(&self) -> bool {
         self.opened.image.preview.width() < self.opened.image.developed.width()
+    }
+
+    /// The preview's width over the full-size image's width (1 when the
+    /// preview is the full image).
+    #[must_use]
+    pub fn preview_scale(&self) -> f32 {
+        let (p, f) = (self.opened.image.preview.width(), self.opened.image.developed.width());
+        #[allow(clippy::cast_precision_loss)] // image widths
+        let scale = if f == 0 { 1.0 } else { p as f32 / f as f32 };
+        scale
     }
 
     /// Width and height of the upright full-size image.
@@ -430,7 +455,8 @@ mod tests {
             image: DevelopedImage {
                 settings: DevelopSettings::default(),
                 developed: Arc::clone(&img),
-                preview: img,
+                preview: Arc::clone(&img),
+                draft: img,
                 lens: None,
                 notes: Vec::new(),
             },
@@ -604,6 +630,7 @@ mod tests {
             settings: DevelopSettings::default(),
             developed: Arc::clone(doc.developed()),
             preview: Arc::clone(doc.preview()),
+            draft: Arc::clone(doc.draft()),
             lens: None,
             notes: Vec::new(),
         };
