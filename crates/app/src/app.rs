@@ -531,9 +531,11 @@ impl EditorApp {
             {
                 edits.push(UiEdit::Enabled { node: row.node, on });
             }
+            // A one-parameter tool named like its parameter needs no second label.
+            let hide_label = row.params.len() == 1 && row.params.iter().all(|p| p.descriptor.label == row.name);
             ui.add_enabled_ui(row.enabled, |ui| {
                 for p in &row.params {
-                    param_widget(ui, row.node, p, edits);
+                    param_widget(ui, row.node, p, !hide_label, edits);
                 }
             });
             ui.add_space(SPACE[4]);
@@ -751,19 +753,23 @@ fn menu_item(
     }
 }
 
-fn param_widget(ui: &mut egui::Ui, node: NodeId, row: &editor::ParamRow, edits: &mut Vec<UiEdit>) {
+fn param_widget(ui: &mut egui::Ui, node: NodeId, row: &editor::ParamRow, show_label: bool, edits: &mut Vec<UiEdit>) {
     let d = &row.descriptor;
     let param = d.id.clone();
     match (&d.kind, row.value) {
         (ParamKind::Float { min, max, step, unit, .. }, ParamValue::Float(mut v)) => {
-            ui.label(RichText::new(d.label).color(ui.visuals().weak_text_color()));
+            if show_label {
+                ui.label(RichText::new(d.label).color(ui.visuals().weak_text_color()));
+            }
+            let places = decimals(*step);
+            let signed = *min < 0.0;
             let response = ui
                 .scope(|ui| {
                     ui.spacing_mut().slider_width = (ui.available_width() - 90.0).max(100.0);
                     ui.add(
                         egui::Slider::new(&mut v, *min..=*max)
                             .step_by(f64::from(*step))
-                            .fixed_decimals(decimals(*step))
+                            .custom_formatter(move |n, _| format_value(n, places, signed))
                             .suffix(unit_suffix(*unit))
                             .update_while_editing(false),
                     )
@@ -793,7 +799,9 @@ fn param_widget(ui: &mut egui::Ui, node: NodeId, row: &editor::ParamRow, edits: 
             }
         }
         (ParamKind::Choice { options, .. }, ParamValue::Choice(mut c)) => {
-            ui.label(RichText::new(d.label).color(ui.visuals().weak_text_color()));
+            if show_label {
+                ui.label(RichText::new(d.label).color(ui.visuals().weak_text_color()));
+            }
             let current = options.get(c as usize).copied().unwrap_or("");
             let before = c;
             egui::ComboBox::from_id_salt((node, d.id.as_str())).selected_text(current).show_ui(ui, |ui| {
@@ -833,6 +841,20 @@ fn decimals(step: f32) -> usize {
         2
     } else {
         3
+    }
+}
+
+/// A value with `places` decimals; with an explicit sign when the range
+/// has negative values ("+0.50", "-1.00"), and never "-0.00".
+fn format_value(n: f64, places: usize, signed: bool) -> String {
+    let text = format!("{n:.places$}");
+    let is_zero = text.trim_start_matches('-').chars().all(|c| c == '0' || c == '.');
+    if is_zero {
+        text.trim_start_matches('-').to_owned()
+    } else if signed && n > 0.0 {
+        format!("+{text}")
+    } else {
+        text
     }
 }
 
@@ -882,6 +904,15 @@ mod tests {
         assert_eq!(decimals(1.0), 0);
         assert_eq!(decimals(0.5), 1);
         assert_eq!(decimals(0.001), 3);
+    }
+
+    #[test]
+    fn values_show_a_sign_when_the_range_has_one_and_never_minus_zero() {
+        assert_eq!(format_value(0.5, 2, true), "+0.50");
+        assert_eq!(format_value(-1.0, 2, true), "-1.00");
+        assert_eq!(format_value(-0.0, 2, true), "0.00");
+        assert_eq!(format_value(-0.001, 2, true), "0.00");
+        assert_eq!(format_value(42.0, 0, false), "42");
     }
 
     #[test]
