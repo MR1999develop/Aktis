@@ -350,7 +350,7 @@ fn pack_line(ui: &mut egui::Ui, t: &Tokens, p: &Pack) {
 /// A centred dialog above the window.
 fn dialog(ctx: &egui::Context, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     let t = Tokens::of(ctx.theme());
-    egui::Area::new(Id::new(id)).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(
+    egui::Area::new(Id::unique(id)).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(
         ctx,
         |ui| {
             egui::Frame::popup(ui.style()).fill(t.bg_raised).inner_margin(Margin::same(16)).show(ui, |ui| {
