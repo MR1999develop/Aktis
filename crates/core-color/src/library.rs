@@ -1,8 +1,7 @@
 //! Finding the DCP profiles installed on this computer for a camera.
 //!
-//! Profiles are looked for in a list of folders (the editor's own, and those
-//! of Adobe Camera Raw / DNG Converter and RawTherapee when installed; see
-//! `platform::camera_profile_dirs`). File names are only a first filter: a
+//! Profiles are looked for in the editor's own `profiles` folder (see
+//! `platform::camera_profile_dirs`); other programs' folders are not searched. File names are only a first filter: a
 //! profile is offered for a camera when its `UniqueCameraModel` names it.
 
 use std::path::{Path, PathBuf};

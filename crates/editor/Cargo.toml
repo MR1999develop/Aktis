@@ -13,6 +13,7 @@ commands.workspace = true
 develop.workspace = true
 raw-io.workspace = true
 engine.workspace = true
+lens-db.workspace = true
 
 [lints]
 workspace = true

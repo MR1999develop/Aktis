@@ -53,8 +53,8 @@ pub fn lens_database() -> (Cow<'static, LensDatabase>, Vec<String>) {
     (Cow::Owned(db), problems)
 }
 
-/// Camera profiles (DCP) in the editor's `profiles` folder and in those of
-/// Adobe Camera Raw / DNG Converter and RawTherapee when installed.
+/// Camera profiles (DCP) in the editor's own `profiles` folder. Other
+/// programs' profile folders are not searched.
 #[must_use]
 pub fn profile_library() -> ProfileLibrary {
     ProfileLibrary::new(platform::camera_profile_dirs(Os::current(), APP_DIR, |k| std::env::var_os(k)))

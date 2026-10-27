@@ -20,8 +20,8 @@ pub enum ProfileChoice {
     /// illuminants by the white balance.
     #[default]
     Builtin,
-    /// A DCP camera profile, by its name ("Adobe Standard", "Camera
-    /// Neutral"), looked up among the profiles installed for the camera.
+    /// A DCP camera profile, by its name, looked up among the profiles in
+    /// the editor's own `profiles` folder for the camera.
     /// When it is missing on this computer the built-in matrices are used
     /// and a warning says so.
     Named(String),

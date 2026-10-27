@@ -14,6 +14,6 @@ pub mod document;
 pub mod view;
 pub mod worker;
 
-pub use document::{Document, NodeRow, Opened, ParamRow};
+pub use document::{DevelopedImage, Document, NodeRow, Opened, ParamRow, RawData};
 pub use view::{Rect, ViewState, Viewport, Zoom};
 pub use worker::{Event, Quality, RenderPlan, RenderRequest, Worker};

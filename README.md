@@ -53,9 +53,9 @@ quantisation happens only on output.
 - **Profiles.** By default each camera uses its own calibration matrices
   (illuminant A and D65 for about 740 cameras, from rawler's camera data),
   mixed according to the white balance as the DNG specification describes.
-  DCP profiles can be chosen by name: the editor looks in its own `profiles`
-  folder and in those of Adobe Camera Raw / DNG Converter and RawTherapee when
-  they are installed (`rne profiles photo.ARW` lists them). Matrices, forward
+  DCP profiles copied into the editor's own `profiles` folder can be chosen
+  by name (`rne profiles photo.ARW` lists them); other programs' folders are
+  not searched. Matrices, forward
   matrices, hue/saturation maps and look tables are applied; profile tone
   curves wait for tone mapping (phase 4).
 - **Lens corrections.** `data/lensfun/` holds the lensfun database for the

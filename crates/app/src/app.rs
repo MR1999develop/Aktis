@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use commands::GestureId;
-use core_model::{NodeId, ParamId, ParamValue};
+use core_model::{DevelopSettings, LensSettings, NodeId, ParamId, ParamValue};
 use editor::{Document, Event, Quality, RenderPlan, RenderRequest, ViewState, Viewport, Worker, Zoom};
 use eframe::egui::{
     self, Align, Align2, Button, Color32, CursorIcon, Id, Layout, Margin, Order, RichText, Sense, TextureOptions,
@@ -55,6 +55,7 @@ enum UiEdit {
     Set { node: NodeId, param: ParamId, value: ParamValue, in_drag: bool },
     Reset { node: NodeId, param: ParamId },
     Enabled { node: NodeId, on: bool },
+    Lens(LensSettings),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +107,8 @@ pub struct EditorApp {
     /// File being opened, to drop it from the recent list if it has gone.
     opening_path: Option<PathBuf>,
     exporting: Option<Job>,
+    /// A development in flight (lens corrections changed): ticket and settings.
+    developing: Option<(u64, DevelopSettings)>,
     texture: Option<egui::TextureHandle>,
     plan: RenderPlan,
     view: ViewState,
@@ -160,6 +163,7 @@ impl EditorApp {
             opening: None,
             opening_path: None,
             exporting: None,
+            developing: None,
             texture: None,
             plan: RenderPlan::default(),
             view: ViewState::default(),
@@ -212,6 +216,12 @@ impl EditorApp {
     fn export(&mut self, ctx: &egui::Context) {
         let (Some(doc), Some(worker)) = (&self.doc, &self.worker) else { return };
         if self.exporting.is_some() {
+            return;
+        }
+        if doc.needs_develop() {
+            // The shown image is about to change: export what the recipe says, not the old pixels.
+            self.toast =
+                Some(error_toast("Lens corrections are still being applied; export again in a moment".to_owned()));
             return;
         }
         let wanted = doc.export_path(&self.settings.export_folder(doc.path()));
@@ -318,6 +328,20 @@ impl EditorApp {
                     }
                     self.backend = Some(backend);
                 }
+                Event::Developed { ticket, result } => {
+                    if self.developing.as_ref().is_none_or(|(t, _)| *t != ticket) {
+                        continue; // a newer development replaced this one
+                    }
+                    self.developing = None;
+                    match (result, &mut self.doc) {
+                        (Ok(image), Some(doc)) => {
+                            // Refused (and asked again) when the settings changed meanwhile.
+                            doc.replace_developed(*image);
+                        }
+                        (Err(message), _) => self.toast = Some(error_toast(message)),
+                        (Ok(_), None) => {}
+                    }
+                }
                 Event::RenderFailed { message, .. } => {
                     self.toast = Some(error_toast(format!("The preview could not be made: {message}")));
                 }
@@ -368,11 +392,29 @@ impl EditorApp {
                 }
                 UiEdit::Reset { node, param } => doc.reset_param(&self.registry, node, param),
                 UiEdit::Enabled { node, on } => doc.set_enabled(&self.registry, node, on),
+                UiEdit::Lens(lens) => doc.set_lens_correction(&self.registry, lens),
             };
             if let Err(e) = result {
                 self.toast = Some(error_toast(format!("That change was refused: {e}")));
             }
         }
+    }
+
+    /// Develops the image again when its development settings changed (lens
+    /// corrections edited, or undone), one job at a time.
+    fn request_develop(&mut self) {
+        let (Some(doc), Some(worker)) = (&self.doc, &self.worker) else { return };
+        if !doc.needs_develop() {
+            return;
+        }
+        let wanted = &doc.recipe().develop;
+        if self.developing.as_ref().is_some_and(|(_, s)| s == wanted) {
+            return;
+        }
+        let Some(raw) = doc.raw() else { return };
+        self.next_ticket += 1;
+        worker.develop(self.next_ticket, Arc::clone(raw), wanted.clone());
+        self.developing = Some((self.next_ticket, wanted.clone()));
     }
 
     fn request_render(&mut self, ctx: &egui::Context) {
@@ -514,6 +556,10 @@ impl EditorApp {
                         ui.weak("Starting the GPU\u{2026}");
                     }
                 }
+                if self.developing.is_some() {
+                    ui.separator();
+                    ui.weak("Applying lens corrections\u{2026}");
+                }
                 for (job, verb) in [(&self.opening, "Opening"), (&self.exporting, "Exporting")] {
                     if let Some(job) = job {
                         ui.separator();
@@ -532,6 +578,8 @@ impl EditorApp {
     fn inspector(&self, ui: &mut egui::Ui, edits: &mut Vec<UiEdit>) {
         let Some(doc) = &self.doc else { return };
         ui.add_space(SPACE[2]);
+        self.lens_section(ui, doc, edits);
+        ui.add_space(SPACE[4]);
         ui.label(RichText::new("Adjustments").size(FONT[3]).strong());
         ui.add_space(SPACE[1]);
         for row in doc.node_rows(&self.registry) {
@@ -551,6 +599,56 @@ impl EditorApp {
                 }
             });
             ui.add_space(SPACE[4]);
+        }
+    }
+
+    /// Lens corrections (lensfun data built into the editor): on/off, what to
+    /// correct, and the lens when the file does not name it correctly.
+    fn lens_section(&self, ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdit>) {
+        let current = doc.recipe().develop.lens.clone();
+        let mut next = current.clone();
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut next.enabled, RichText::new("Lens corrections").size(FONT[3]).strong())
+                .on_hover_text("Correct distortion, chromatic aberration and vignetting from the lens database");
+            if self.developing.is_some() {
+                ui.spinner();
+            }
+        });
+        ui.add_space(SPACE[1]);
+        ui.add_enabled_ui(current.enabled, |ui| {
+            let automatic = match doc.detected_lens() {
+                Some(name) => format!("Automatic ({name})"),
+                None => "Automatic (lens not recognised)".to_owned(),
+            };
+            let selected = current.lens.clone().unwrap_or_else(|| automatic.clone());
+            egui::ComboBox::from_id_salt("lens-choice")
+                .width(ui.available_width())
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut next.lens, None, automatic);
+                    for name in doc.lens_choices() {
+                        ui.selectable_value(&mut next.lens, Some(name.clone()), name.as_str());
+                    }
+                })
+                .response
+                .on_hover_text("The lens whose data is used; Automatic reads it from the file");
+            ui.checkbox(&mut next.distortion, "Distortion");
+            ui.checkbox(&mut next.tca, "Chromatic aberration");
+            ui.checkbox(&mut next.vignetting, "Vignetting");
+            let mut auto_zoom = next.zoom.is_none();
+            if ui
+                .checkbox(&mut auto_zoom, "Fill the frame")
+                .on_hover_text("Enlarge slightly so that no empty borders remain after correcting the geometry")
+                .changed()
+            {
+                next.zoom = if auto_zoom { None } else { Some(1.0) };
+            }
+            for note in doc.develop_notes() {
+                ui.label(RichText::new(note).size(FONT[1]).weak());
+            }
+        });
+        if next != current {
+            edits.push(UiEdit::Lens(next));
         }
     }
 
@@ -738,6 +836,7 @@ impl eframe::App for EditorApp {
             self.run(command, &ctx);
         }
         self.show_toast(&ctx);
+        self.request_develop();
         self.request_render(&ctx);
         self.update_title(&ctx);
     }

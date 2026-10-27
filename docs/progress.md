@@ -61,8 +61,8 @@ Done:
   white balance's colour temperature (DNG SDK method: neutral → xy by fixed
   point, Robertson CCT, inverse-temperature mix, Bradford to D50/D65); DCP
   reader (matrices, forward matrices, HueSatMap, LookTable; checked against
-  all 161 RawTherapee profiles) and a search of installed profiles (own
-  folder, Adobe, RawTherapee) by `UniqueCameraModel`. Recipe: `ProfileChoice`.
+  all 161 RawTherapee profiles) and a search of the editor's own `profiles`
+  folder by `UniqueCameraModel`. Recipe: `ProfileChoice`.
 - Lens corrections (`lens-db`, `develop`): lensfun XML read directly (own
   small XML reader), built-in data for the major brands, newer files from the
   user's `lensfun` folder; lensfun's camera/lens lookup (strict word match,
@@ -72,6 +72,10 @@ Done:
   borders. Recipe: `LensSettings`; edits `SetCameraProfile`,
   `SetLensCorrection` with undo. `rne info | lenses | profiles`, `develop
   --profile --lens --lens-zoom --no-lens`.
+- Window: "Lens corrections" section at the top of the inspector (on/off,
+  lens chosen automatically or from the lenses that fit the camera,
+  distortion / chromatic aberration / vignetting, fill the frame); changes
+  and their undo develop the image again in the background.
 
 ## Tests and CI
 

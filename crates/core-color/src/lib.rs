@@ -4,7 +4,7 @@
 //! RGB spaces go through CIE XYZ. The camera's own RGB enters through a
 //! camera profile ([`ColorProfile`]): the camera's calibration matrices
 //! (built in for about 740 cameras, or stored in the DNG), or a DCP file
-//! ([`read_dcp`], [`ProfileLibrary`]). ICC profiles for export are handled by
+//! copied into the editor's `profiles` folder ([`read_dcp`], [`ProfileLibrary`]). ICC profiles for export are handled by
 //! a colour-management engine in the export crate, not here.
 
 mod dcp;

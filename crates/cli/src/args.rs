@@ -23,7 +23,7 @@ develop   Develops a RAW file to an sRGB JPEG. Without -o the JPEG goes next to
           --no-lens    no lens corrections
 info      Shows camera, lens, shooting data and the corrections that would apply.
 lenses    Lists the lenses of the lens database whose name contains every word.
-profiles  Lists the camera profiles (DCP) installed for the camera of a RAW file.
+profiles  Lists the camera profiles (DCP) in the editor's profiles folder for a RAW file's camera.
 gpu       Shows the GPU that would be used.";
 
 /// What to do.

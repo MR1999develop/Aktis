@@ -22,7 +22,7 @@ use core_model::{ImageF32, NodeGraph, Orientation, WorkingSpace};
 use engine::{Backend, Engine, EngineChoice, Rgb8Image};
 use tool_api::ToolRegistry;
 
-use crate::document::Opened;
+use crate::document::{DevelopedImage, Opened, RawData};
 
 /// Longer side of the preview copy made when a file is opened.
 pub const PREVIEW_SIDE: u32 = 2560;
@@ -75,6 +75,13 @@ pub enum Event {
         ticket: u64,
         /// The image, or a message for the user.
         result: Result<Box<Opened>, String>,
+    },
+    /// An image was developed again with new development settings.
+    Developed {
+        /// The ticket given to [`Worker::develop`].
+        ticket: u64,
+        /// The new image, or a message for the user.
+        result: Result<Box<DevelopedImage>, String>,
     },
     /// A render for the screen is ready.
     Rendered {
@@ -191,6 +198,22 @@ impl Worker {
         }
     }
 
+    /// Develops `raw` again with `settings` in the background (lens
+    /// corrections or profile changed). Reported as [`Event::Developed`].
+    pub fn develop(&self, ticket: u64, raw: Arc<RawData>, settings: core_model::DevelopSettings) {
+        let (tx, notify) = (self.tx.clone(), Arc::clone(&self.notify));
+        let fallback = tx.clone();
+        let spawned = thread::Builder::new().name("develop".into()).spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| develop_raw(&raw, &settings)))
+                .unwrap_or_else(|_| Err("the image could not be developed (internal error)".to_owned()));
+            let _ = tx.send(Event::Developed { ticket, result: result.map(Box::new) });
+            notify();
+        });
+        if let Err(e) = spawned {
+            let _ = fallback.send(Event::Developed { ticket, result: Err(format!("cannot start developing: {e}")) });
+        }
+    }
+
     /// Asks for a screen render. Replaces a request that has not started yet.
     pub fn render(&self, request: RenderRequest) {
         let mut slot = self.queue.slot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -288,18 +311,59 @@ fn display_name(path: &std::path::Path) -> String {
 /// makes the preview copy. Errors are user messages.
 fn open_file(path: &std::path::Path) -> Result<Opened, String> {
     let name = display_name(path);
-    let raw = raw_io::read_raw(path).map_err(|e| format!("{name} could not be opened: {e}"))?;
-    let (lens_db, mut develop_notes) = engine::lens_database();
+    let file = raw_io::read_raw(path).map_err(|e| format!("{name} could not be opened: {e}"))?;
+    let raw = Arc::new(RawData { sensor: file.sensor, capture: file.capture });
+    let image = develop_raw(&raw, &core_model::DevelopSettings::default()).map_err(|e| format!("{name}: {e}"))?;
+
+    // The lens as recognised, and the lenses that fit the camera, for the inspector.
+    let (db, _) = engine::lens_database();
+    let camera = develop::prepare::find_camera(&db, &raw.capture);
+    let detected_lens = develop::prepare::find_lens(&db, camera, &raw.capture, None).map(lens_db::Lens::full_name);
+    let mut lens_choices: Vec<String> = match camera {
+        Some(c) => {
+            let compat = db.compatible_mounts(&c.mount);
+            db.lenses()
+                .iter()
+                .filter(|l| l.has_distortion() || l.has_tca() || l.has_vignetting())
+                .filter(|l| {
+                    l.mounts
+                        .iter()
+                        .any(|m| lens_db::loose_eq(m, &c.mount) || compat.iter().any(|x| lens_db::loose_eq(m, x)))
+                })
+                .map(lens_db::Lens::full_name)
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    lens_choices.sort_by_key(|n| n.to_lowercase());
+    lens_choices.dedup();
+
+    Ok(Opened {
+        path: path.to_owned(),
+        camera: format!("{} {}", file.make, file.model).trim().to_owned(),
+        orientation: file.orientation,
+        has_camera_white_balance: file.has_camera_white_balance,
+        raw: Some(raw),
+        detected_lens,
+        lens_choices,
+        image,
+    })
+}
+
+/// Runs the development stage on `raw` with `settings` and makes the
+/// preview copy. Errors are user messages.
+fn develop_raw(raw: &RawData, settings: &core_model::DevelopSettings) -> Result<DevelopedImage, String> {
+    let (lens_db, mut notes) = engine::lens_database();
     let library = engine::profile_library();
     let result = develop::prepare::develop_capture(
         &raw.sensor,
         &raw.capture,
-        &core_model::DevelopSettings::default(),
+        settings,
         WorkingSpace::LinearRec2020,
         &lens_db,
         Some(&library),
     )
-    .map_err(|e| format!("{name} could not be developed: {e}"))?;
+    .map_err(|e| format!("could not be developed: {e}"))?;
     let lens = result.lens.correction.as_ref().and(result.lens.lens.clone());
     if let Some(lens_name) = &lens {
         let a = result.lens.applied;
@@ -309,24 +373,17 @@ fn open_file(path: &std::path::Path) -> Result<Opened, String> {
                 .filter(|(on, _)| *on)
                 .map(|(_, n)| *n)
                 .collect();
-        develop_notes.insert(0, format!("{lens_name}: {} corrected", what.join(", ")));
+        notes.insert(0, format!("{lens_name}: {} corrected", what.join(", ")));
     }
-    develop_notes.extend(result.lens.note.clone());
-    develop_notes.extend(result.profile.note.clone());
+    if settings.lens.enabled {
+        notes.extend(result.lens.note.clone());
+    }
+    notes.extend(result.profile.note.clone());
     let developed = result.image;
-    let preview = engine::downscale(&developed, PREVIEW_SIDE).map_err(|e| format!("{name}: {e}"))?;
+    let preview = engine::downscale(&developed, PREVIEW_SIDE).map_err(|e| e.to_string())?;
     let developed = Arc::new(developed);
     let preview = if preview.width() == developed.width() { Arc::clone(&developed) } else { Arc::new(preview) };
-    Ok(Opened {
-        path: path.to_owned(),
-        camera: format!("{} {}", raw.make, raw.model).trim().to_owned(),
-        orientation: raw.orientation,
-        developed,
-        preview,
-        has_camera_white_balance: raw.has_camera_white_balance,
-        lens,
-        develop_notes,
-    })
+    Ok(DevelopedImage { settings: settings.clone(), developed, preview, lens, notes })
 }
 
 /// Decides which screen render to ask for next, so that editing stays

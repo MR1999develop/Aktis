@@ -9,11 +9,39 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use commands::{Edit, EditError, EditSession, GestureId};
-use core_model::{GraphError, ImageF32, NodeId, NodeKind, Orientation, ParamId, ParamValue, Params, Recipe, ToolId};
+use core_model::{
+    CaptureInfo, DevelopSettings, GraphError, ImageF32, LensSettings, NodeId, NodeKind, Orientation, ParamId,
+    ParamValue, Params, Recipe, SensorImage, ToolId,
+};
 use tool_api::{ParamDescriptor, ToolRegistry};
 
 /// Tools placed in the graph of a newly opened image, in order, when this build has them.
 pub const STARTING_TOOLS: &[&str] = &["exposure"];
+
+/// The decoded RAW data, kept so the image can be developed again when the
+/// development settings (lens corrections, profile) change.
+#[derive(Debug)]
+pub struct RawData {
+    /// Normalised sensor values.
+    pub sensor: SensorImage,
+    /// Camera, lens, shooting data and colour calibration.
+    pub capture: CaptureInfo,
+}
+
+/// The output of the development stage for one set of settings.
+#[derive(Debug, Clone)]
+pub struct DevelopedImage {
+    /// The settings it was developed with.
+    pub settings: DevelopSettings,
+    /// Full-size developed image (linear, working space).
+    pub developed: Arc<ImageF32>,
+    /// Smaller copy for fast previews (may be the same image when small).
+    pub preview: Arc<ImageF32>,
+    /// Lens whose corrections were applied ("Sony FE 24-70mm f/2.8 GM"), if any.
+    pub lens: Option<String>,
+    /// What the development stage corrected, or why not, for the inspector.
+    pub notes: Vec<String>,
+}
 
 /// A decoded and developed image, as the open job delivers it.
 #[derive(Debug, Clone)]
@@ -24,16 +52,16 @@ pub struct Opened {
     pub camera: String,
     /// How to turn the image upright.
     pub orientation: Orientation,
-    /// Full-size developed image (linear, working space).
-    pub developed: Arc<ImageF32>,
-    /// Smaller copy for fast previews (may be the same image when small).
-    pub preview: Arc<ImageF32>,
     /// `false` when the file had no white balance.
     pub has_camera_white_balance: bool,
-    /// Lens whose corrections were applied ("Sony FE 24-70mm f/2.8 GM"), if any.
-    pub lens: Option<String>,
-    /// What the development stage corrected, or why not, for a tooltip.
-    pub develop_notes: Vec<String>,
+    /// The RAW data, to develop again; `None` when it is not kept (tests).
+    pub raw: Option<Arc<RawData>>,
+    /// Lens recognised from the file in the lens database, if any.
+    pub detected_lens: Option<String>,
+    /// Lenses of the database that fit the camera, for choosing by hand.
+    pub lens_choices: Vec<String>,
+    /// The developed image.
+    pub image: DevelopedImage,
 }
 
 /// One parameter of a node, ready to draw.
@@ -113,25 +141,25 @@ impl Document {
     /// Full-size developed image.
     #[must_use]
     pub fn developed(&self) -> &Arc<ImageF32> {
-        &self.opened.developed
+        &self.opened.image.developed
     }
 
     /// Smaller copy for previews.
     #[must_use]
     pub fn preview(&self) -> &Arc<ImageF32> {
-        &self.opened.preview
+        &self.opened.image.preview
     }
 
     /// `true` when the preview is smaller than the full image, so a full render adds detail.
     #[must_use]
     pub fn preview_is_reduced(&self) -> bool {
-        self.opened.preview.width() < self.opened.developed.width()
+        self.opened.image.preview.width() < self.opened.image.developed.width()
     }
 
     /// Width and height of the upright full-size image.
     #[must_use]
     pub fn upright_size(&self) -> (u32, u32) {
-        let (w, h) = (self.opened.developed.width(), self.opened.developed.height());
+        let (w, h) = (self.opened.image.developed.width(), self.opened.image.developed.height());
         if self.opened.orientation.swaps_axes() { (h, w) } else { (w, h) }
     }
 
@@ -141,16 +169,67 @@ impl Document {
         self.opened.has_camera_white_balance
     }
 
-    /// Lens whose corrections were applied, if any.
+    /// Lens whose corrections are applied in the shown image, if any.
     #[must_use]
     pub fn lens(&self) -> Option<&str> {
-        self.opened.lens.as_deref()
+        self.opened.image.lens.as_deref()
+    }
+
+    /// Lens recognised from the file, if any.
+    #[must_use]
+    pub fn detected_lens(&self) -> Option<&str> {
+        self.opened.detected_lens.as_deref()
+    }
+
+    /// Lenses that fit the camera, for choosing one by hand.
+    #[must_use]
+    pub fn lens_choices(&self) -> &[String] {
+        &self.opened.lens_choices
     }
 
     /// Profile and lens-correction details of the development stage.
     #[must_use]
     pub fn develop_notes(&self) -> &[String] {
-        &self.opened.develop_notes
+        &self.opened.image.notes
+    }
+
+    /// The RAW data, to develop again.
+    #[must_use]
+    pub fn raw(&self) -> Option<&Arc<RawData>> {
+        self.opened.raw.as_ref()
+    }
+
+    /// `true` when the recipe's development settings differ from those of
+    /// the shown image, so it must be developed again.
+    #[must_use]
+    pub fn needs_develop(&self) -> bool {
+        self.opened.raw.is_some() && self.opened.image.settings != self.session.recipe().develop
+    }
+
+    /// Replaces the developed image (after the development settings changed).
+    /// An image for settings that are no longer current is ignored; returns
+    /// whether it was taken.
+    pub fn replace_developed(&mut self, image: DevelopedImage) -> bool {
+        if image.settings != self.session.recipe().develop {
+            return false;
+        }
+        self.opened.image = image;
+        self.generation += 1;
+        true
+    }
+
+    /// Changes the lens corrections (one undo step). Settings equal to the
+    /// current ones change nothing.
+    ///
+    /// # Errors
+    /// [`EditError`] when the settings are invalid; nothing changes.
+    pub fn set_lens_correction(&mut self, registry: &ToolRegistry, lens: LensSettings) -> Result<(), EditError> {
+        if self.recipe().develop.lens == lens {
+            return Ok(());
+        }
+        self.session.apply(registry, Edit::SetLensCorrection(lens))?;
+        self.generation += 1;
+        Ok(())
     }
 
     /// The current recipe.
@@ -304,11 +383,17 @@ mod tests {
             path: PathBuf::from(path),
             camera: "Nikon D3S".into(),
             orientation,
-            developed: Arc::clone(&img),
-            preview: img,
             has_camera_white_balance: true,
-            lens: None,
-            develop_notes: Vec::new(),
+            raw: None,
+            detected_lens: None,
+            lens_choices: Vec::new(),
+            image: DevelopedImage {
+                settings: DevelopSettings::default(),
+                developed: Arc::clone(&img),
+                preview: img,
+                lens: None,
+                notes: Vec::new(),
+            },
         }
     }
 
@@ -417,5 +502,43 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "Missing tool");
         assert!(rows[0].params.is_empty());
+    }
+
+    #[test]
+    fn changing_lens_corrections_asks_for_a_new_development_and_undo_too() {
+        let reg = registry();
+        let mut o = opened("x.NEF", Orientation::Normal);
+        let sensor = SensorImage::new(
+            2,
+            2,
+            vec![0.0; 4],
+            core_model::CfaPattern::Bayer(core_model::BayerPattern::Rggb),
+            [1.0; 3],
+            core_model::Matrix3::IDENTITY,
+        )
+        .unwrap();
+        o.raw = Some(Arc::new(RawData { sensor, capture: CaptureInfo::default() }));
+        let mut doc = Document::new(o, &reg, 1).unwrap();
+        assert!(!doc.needs_develop());
+
+        let off = LensSettings::off();
+        doc.set_lens_correction(&reg, off.clone()).unwrap();
+        assert!(doc.needs_develop());
+        let g = doc.generation();
+        let stale = DevelopedImage {
+            settings: DevelopSettings::default(),
+            developed: Arc::clone(doc.developed()),
+            preview: Arc::clone(doc.preview()),
+            lens: None,
+            notes: Vec::new(),
+        };
+        assert!(!doc.replace_developed(stale.clone()), "an image for old settings is refused");
+        let fresh = DevelopedImage { settings: doc.recipe().develop.clone(), ..stale };
+        assert!(doc.replace_developed(fresh));
+        assert!(!doc.needs_develop() && doc.generation() > g);
+
+        assert_eq!(doc.undo().as_deref(), Some("Change lens corrections"));
+        assert!(doc.needs_develop());
+        assert_eq!(doc.recipe().develop.lens, LensSettings::default());
     }
 }

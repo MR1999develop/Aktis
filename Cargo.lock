@@ -988,6 +988,7 @@ dependencies = [
  "core-model",
  "develop",
  "engine",
+ "lens-db",
  "raw-io",
  "tool-api",
 ]
