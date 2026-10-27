@@ -12,6 +12,8 @@ members = [
     "crates/gpu",
     "crates/export",
     "crates/cli",
+    "crates/tagging",
+    "crates/tagging-onnx",
     "tools/exposure",
 ]
 
@@ -33,6 +35,8 @@ platform = { path = "crates/platform" }
 raw-io = { path = "crates/raw-io" }
 gpu = { path = "crates/gpu" }
 export = { path = "crates/export" }
+tagging = { path = "crates/tagging" }
+tagging-onnx = { path = "crates/tagging-onnx" }
 tool-exposure = { path = "tools/exposure" }
 
 [workspace.lints.rust]
