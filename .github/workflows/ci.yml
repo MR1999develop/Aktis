@@ -111,7 +111,8 @@ jobs:
       - name: Screenshot of the window with the sample open
         run: cargo test -p app --release --locked --test screenshot -- --ignored --nocapture 2>&1 | tee -a ci-out/log.txt
         env:
-          RNE_SCREENSHOT_DIR: ci-out
+          # Tests run in the crate's folder: give an absolute path.
+          RNE_SCREENSHOT_DIR: ${{ github.workspace }}/ci-out
       - name: Publish results
         if: always()
         run: bash .github/scripts/publish-results.sh real-raw ${{ job.status }}

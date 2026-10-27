@@ -167,23 +167,22 @@ pub fn install(ctx: &egui::Context) {
     });
 }
 
-/// WCAG contrast ratio of two colours (1 to 21).
-#[must_use]
-pub fn contrast(a: Color32, b: Color32) -> f32 {
-    fn channel(c: u8) -> f32 {
-        let c = f32::from(c) / 255.0;
-        if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
-    }
-    fn luminance(c: Color32) -> f32 {
-        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
-    }
-    let (la, lb) = (luminance(a), luminance(b));
-    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WCAG contrast ratio of two colours (1 to 21).
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        fn channel(c: u8) -> f32 {
+            let c = f32::from(c) / 255.0;
+            if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        }
+        fn luminance(c: Color32) -> f32 {
+            0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+        }
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
 
     #[test]
     fn text_and_controls_meet_wcag_contrast_in_both_themes() {

@@ -103,6 +103,8 @@ pub struct EditorApp {
     doc: Option<Document>,
     next_ticket: u64,
     opening: Option<Job>,
+    /// File being opened, to drop it from the recent list if it has gone.
+    opening_path: Option<PathBuf>,
     exporting: Option<Job>,
     texture: Option<egui::TextureHandle>,
     plan: RenderPlan,
@@ -156,6 +158,7 @@ impl EditorApp {
             doc: None,
             next_ticket: 0,
             opening: None,
+            opening_path: None,
             exporting: None,
             texture: None,
             plan: RenderPlan::default(),
@@ -188,6 +191,7 @@ impl EditorApp {
         let Some(worker) = &self.worker else { return };
         self.next_ticket += 1;
         let name = file_name(&path);
+        self.opening_path = Some(path.clone());
         worker.open(self.next_ticket, path);
         self.opening = Some(Job { ticket: self.next_ticket, name, started: Instant::now() });
     }
@@ -286,8 +290,16 @@ impl EditorApp {
                                 Err(e) => self.toast = Some(error_toast(format!("Cannot edit this image: {e}"))),
                             }
                         }
-                        Err(message) => self.toast = Some(error_toast(message)),
+                        Err(message) => {
+                            if let Some(path) = &self.opening_path
+                                && !path.exists()
+                            {
+                                self.settings.forget(path);
+                            }
+                            self.toast = Some(error_toast(message));
+                        }
                     }
+                    self.opening_path = None;
                 }
                 Event::Rendered { generation, quality, image, backend, gpu_failure } => {
                     if !self.plan.accepts(generation, quality) {
