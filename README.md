@@ -32,6 +32,8 @@ cargo fmt --all --check
 | `crates/gpu` | GPU engine on wgpu (Vulkan, DirectX 12, Metal); must match `render-cpu`. |
 | `crates/export` | JPEG with an embedded sRGB profile, atomic writes, non-destructive names. |
 | `crates/cli` | `rne` command: develop a RAW file to JPEG without the window. |
+| `crates/tagging` | AI tagging logic: keyword list, embeddings, zero-shot scores, learning from decisions, suggestions. |
+| `crates/tagging-onnx` | SigLIP 2 image/text encoders on ONNX Runtime (local, offline). |
 | `tools/exposure` | First tool: exposure in stops, CPU reference + WGSL kernel. |
 
 Pixel data inside the editor are linear, scene-referred `f32` in Rec.2020;
@@ -50,7 +52,10 @@ quantisation happens only on output.
 cargo run --release -p cli -- develop path/to/photo.ARW --exposure 0.5
 cargo run --release -p cli -- info path/to/photo.ARW
 cargo run --release -p cli -- gpu
+cargo run --release -p cli -- tag photo.ARW --model path/to/siglip2 --keywords keywords.txt
 ```
+
+AI tagging (semi-automatic keywords): see `docs/ai-tagging.md`.
 
 Use `--release`: the CPU development stage is slow in debug builds.
 
