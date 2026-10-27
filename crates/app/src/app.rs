@@ -27,7 +27,7 @@ use engine::{Backend, EngineChoice};
 use tool_api::ToolRegistry;
 
 use crate::actions::Command;
-use crate::graph_ui::{self, GraphClick};
+use crate::graph_ui::{self, GraphAction, GraphUi};
 use crate::history_ui::{LeftTab, TabAction, Tabs};
 use crate::inspector::{self, Drag, UiEdit};
 use crate::library_ui::{Library, LibraryAction, TaggingProgress};
@@ -125,6 +125,8 @@ pub struct EditorApp {
     tabs: Tabs,
     /// The node whose settings are shown on the right.
     selected_node: Option<NodeId>,
+    /// Node positions, panning and menus of the node graph.
+    graph: GraphUi,
     /// Levels of the image on screen.
     histogram: Option<Box<Histogram>>,
     /// "AI-tag this folder", while it runs.
@@ -191,6 +193,7 @@ impl EditorApp {
             library: Library::new(),
             tabs: Tabs::default(),
             selected_node: None,
+            graph: GraphUi::default(),
             histogram: None,
             tagging: None,
             last_render: None,
@@ -315,27 +318,24 @@ impl EditorApp {
                         Ok(opened) => {
                             let path = opened.path.clone();
                             let first = self.doc.as_ref().map_or(1, |d| d.generation() + 1);
-                            match Document::new(*opened, &self.registry, first) {
-                                Ok(doc) => {
-                                    self.settings.opened(&path);
-                                    self.plan.reset(first);
-                                    self.view.fit();
-                                    self.texture = None;
-                                    self.histogram = None;
-                                    self.drag = None;
-                                    // The first adjustment is what one edits most often.
-                                    self.selected_node = doc.node_rows(&self.registry).first().map(|r| r.node);
-                                    self.doc = Some(doc);
-                                    // The filmstrip shows the photo's folder.
-                                    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
-                                        && self.library.folder() != Some(dir)
-                                    {
-                                        self.library.show_folder(dir.to_owned(), self.worker.as_ref());
-                                    }
-                                    self.library.reveal_photo(&path);
-                                }
-                                Err(e) => self.toast = Some(error_toast(format!("Cannot edit this image: {e}"))),
+                            let doc = Document::new(*opened, first);
+                            self.settings.opened(&path);
+                            self.plan.reset(first);
+                            self.view.fit();
+                            self.texture = None;
+                            self.histogram = None;
+                            self.drag = None;
+                            // A new photo starts from the Source alone: show its settings.
+                            self.selected_node = Some(doc.recipe().graph.source());
+                            self.graph.reset();
+                            self.doc = Some(doc);
+                            // The filmstrip shows the photo's folder.
+                            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+                                && self.library.folder() != Some(dir)
+                            {
+                                self.library.show_folder(dir.to_owned(), self.worker.as_ref());
                             }
+                            self.library.reveal_photo(&path);
                         }
                         Err(message) => {
                             if let Some(path) = &self.opening_path
@@ -1083,7 +1083,7 @@ impl EditorApp {
     /// The photo, with the node graph under it when a photo is open.
     fn center(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
         let t = Tokens::of(ui.ctx().theme());
-        let mut click = None;
+        let mut actions = Vec::new();
         if let Some(doc) = &self.doc {
             egui::Panel::bottom("node-graph")
                 .resizable(true)
@@ -1091,15 +1091,56 @@ impl EditorApp {
                 .size_range(GRAPH_HEIGHT[1]..=GRAPH_HEIGHT[2])
                 .frame(Frame::NONE.fill(t.graph))
                 .show(ui, |ui| {
-                    click = graph_ui::graph(ui, &doc.recipe().graph, &self.registry, self.selected_node);
+                    actions = self.graph.show(ui, &doc.recipe().graph, &self.registry, self.selected_node);
                 });
         }
-        match click {
-            Some(GraphClick::Select(id)) => self.selected_node = Some(id),
-            Some(GraphClick::Deselect) => self.selected_node = None,
-            None => {}
-        }
+        self.apply_graph(actions);
         egui::CentralPanel::default().frame(Frame::NONE.fill(t.canvas)).show(ui, |ui| self.central(ui, commands));
+    }
+
+    /// Applies what the user did in the node graph.
+    fn apply_graph(&mut self, actions: Vec<GraphAction>) {
+        for action in actions {
+            let result = match action {
+                GraphAction::Select(id) => {
+                    self.selected_node = Some(id);
+                    Ok(())
+                }
+                GraphAction::Deselect => {
+                    self.selected_node = None;
+                    Ok(())
+                }
+                GraphAction::Add { after, tool } => {
+                    let Some(doc) = &mut self.doc else { continue };
+                    let feature = ai_models::feature_for_tool(tool.as_str());
+                    match doc.add_node(&self.registry, after, tool) {
+                        Ok(id) => {
+                            self.selected_node = Some(id);
+                            // A tool that needs AI models offers to download them.
+                            if let Some(feature) = feature {
+                                self.models.require(feature);
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(format!("The node could not be added: {e}")),
+                    }
+                }
+                GraphAction::Remove(id) => {
+                    let Some(doc) = &mut self.doc else { continue };
+                    if self.selected_node == Some(id) {
+                        self.selected_node = None;
+                    }
+                    doc.remove_node(&self.registry, id).map_err(|e| format!("The node could not be deleted: {e}"))
+                }
+                GraphAction::Enable(node, on) => {
+                    self.apply_edits(vec![UiEdit::Enabled { node, on }]);
+                    Ok(())
+                }
+            };
+            if let Err(message) = result {
+                self.toast = Some(error_toast(message));
+            }
+        }
     }
 }
 

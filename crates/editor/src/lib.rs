@@ -8,7 +8,8 @@
 //!   the plan that decides which preview to render next;
 //! - [`view`]: zoom and pan geometry of the viewer;
 //! - [`library`]: the Explorer's folder tree and the filmstrip with its filters;
-//! - [`graph_layout`]: where the node graph's nodes are drawn;
+//! - [`graph_layout`] and [`graph_view`]: where the node graph's nodes are
+//!   drawn, moved and hit;
 //! - [`thumbs`]: the filmstrip's thumbnail cache;
 //! - [`history_order`]: History-tab gestures as step orders;
 //! - [`histogram`]: levels of the displayed image.
@@ -17,6 +18,7 @@
 
 pub mod document;
 pub mod graph_layout;
+pub mod graph_view;
 pub mod histogram;
 pub mod history_order;
 pub mod library;
@@ -26,6 +28,7 @@ pub mod worker;
 
 pub use document::{DevelopedImage, Document, NodeRow, Opened, ParamRow, RawData};
 pub use graph_layout::{NodePlace, layout};
+pub use graph_view::GraphView;
 pub use histogram::Histogram;
 pub use library::{
     Filmstrip, FolderListing, FolderNode, FolderTree, RenameError, StripPhoto, file_stem, rename_target,

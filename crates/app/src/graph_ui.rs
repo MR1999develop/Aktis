@@ -1,36 +1,67 @@
-//! The node graph under the viewer (click a node to edit it on the right)
-//! and the histogram above the settings.
+//! The node graph under the viewer, and the histogram above the settings.
+//!
+//! A new photo shows only the Source. Clicking the port on the right of a
+//! node opens the list of tools; the chosen one becomes a new node after
+//! it. Nodes are dragged anywhere; dragging the background (or with the
+//! middle button anywhere) pans. Click a node to edit it on the right,
+//! right-click it to bypass or delete it.
 
-use core_model::{Node, NodeGraph, NodeId, NodeKind, PortKind};
+use core_model::{Node, NodeGraph, NodeId, NodeKind, PortKind, ToolId};
 use editor::Histogram;
+use editor::graph_view::{GraphView, NODE_SIZE, PORT_HIT};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind,
-    epaint::CubicBezierShape, pos2, vec2,
+    self, Align2, Button, Color32, CornerRadius, CursorIcon, FontId, Id, Key, Order, PointerButton, Pos2, Rect,
+    RichText, Sense, Shape, Stroke, StrokeKind, epaint::CubicBezierShape, pos2, vec2,
 };
-use tool_api::ToolRegistry;
+use tool_api::{Category, ToolRegistry};
 
 use crate::theme::{FONT, SPACE, Tokens};
 
-/// Size of a node box.
-const NODE_W: f32 = 132.0;
-const NODE_H: f32 = 46.0;
-/// Space between columns and rows of nodes.
-const GAP_X: f32 = 46.0;
-const GAP_Y: f32 = 22.0;
-/// Space around the nodes.
-const MARGIN: f32 = 18.0;
 /// Spacing of the background grid.
 const GRID: f32 = 20.0;
 /// Radius of a port.
-const PORT: f32 = 4.0;
+const PORT: f32 = 4.5;
+/// Width of the "add a node" menu.
+const ADD_MENU_WIDTH: f32 = 200.0;
 
-/// What a click in the graph asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GraphClick {
+/// What the user did in the graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphAction {
     /// Show this node's settings.
     Select(NodeId),
     /// Click on the background: show none.
     Deselect,
+    /// Add a node running `tool` after `after`.
+    Add {
+        /// Node whose output the new node takes.
+        after: NodeId,
+        /// The tool.
+        tool: ToolId,
+    },
+    /// Delete a node.
+    Remove(NodeId),
+    /// Turn a node on or off.
+    Enable(NodeId, bool),
+}
+
+/// The open "add a node" menu.
+#[derive(Debug, Clone, Copy)]
+struct AddMenu {
+    after: NodeId,
+    at: Pos2,
+    /// Opened by this frame's click: not closed by it.
+    fresh: bool,
+}
+
+/// State of the node graph panel.
+#[derive(Debug, Default)]
+pub struct GraphUi {
+    view: GraphView,
+    dragging: Option<NodeId>,
+    panning: bool,
+    add_menu: Option<AddMenu>,
+    /// The node right-clicked, for the context menu.
+    menu_node: Option<NodeId>,
 }
 
 /// The name shown on a node: its label, else the tool's name.
@@ -62,82 +93,104 @@ fn node_subtitle(node: &Node) -> &'static str {
     }
 }
 
-/// Draws the graph; returns what a click asked for.
-pub fn graph(
-    ui: &mut egui::Ui,
-    graph: &NodeGraph,
-    registry: &ToolRegistry,
-    selected: Option<NodeId>,
-) -> Option<GraphClick> {
-    let t = Tokens::of(ui.ctx().theme());
-    let places = editor::layout(graph);
-    let columns = places.iter().map(|p| p.column + 1).max().unwrap_or(1);
-    let rows = places.iter().map(|p| p.row + 1).max().unwrap_or(1);
-    #[allow(clippy::cast_precision_loss)] // a handful of columns and rows
-    let content = vec2(
-        2.0 * MARGIN + columns as f32 * (NODE_W + GAP_X) - GAP_X,
-        2.0 * MARGIN + rows as f32 * (NODE_H + GAP_Y) - GAP_Y,
-    );
-    let mut click = None;
-    egui::ScrollArea::both().id_salt("node-graph").auto_shrink([false, false]).show(ui, |ui| {
-        let size = content.max(ui.available_size());
-        let (response, painter) = ui.allocate_painter(size, Sense::click());
-        let area = response.rect;
+fn category_name(c: Category) -> &'static str {
+    match c {
+        Category::Exposure => "Exposure and tone",
+        Category::Color => "Colour",
+        Category::Details => "Details",
+        Category::Lens => "Lens",
+        Category::Geometry => "Geometry",
+        Category::Selection => "Selection",
+    }
+}
 
-        // Background grid.
+fn category_rank(c: Category) -> u8 {
+    match c {
+        Category::Exposure => 0,
+        Category::Color => 1,
+        Category::Details => 2,
+        Category::Lens => 3,
+        Category::Geometry => 4,
+        Category::Selection => 5,
+    }
+}
+
+/// The tools of this build that can be a graph node, by category then name.
+fn node_tools(registry: &ToolRegistry) -> Vec<(Category, ToolId, &'static str)> {
+    let mut tools: Vec<_> =
+        registry.iter().map(|t| t.descriptor()).map(|d| (d.category, d.id.clone(), d.name)).collect();
+    tools.sort_by(|a, b| category_rank(a.0).cmp(&category_rank(b.0)).then_with(|| a.2.cmp(b.2)));
+    tools
+}
+
+impl GraphUi {
+    /// Forgets positions and menus (another photo is open).
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Draws the graph and the menus; returns what the user did.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph: &NodeGraph,
+        registry: &ToolRegistry,
+        selected: Option<NodeId>,
+    ) -> Vec<GraphAction> {
+        let t = Tokens::of(ui.ctx().theme());
+        let mut actions = Vec::new();
+        self.view.sync(graph);
+        let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
+        let area = response.rect;
+        let origin = area.min + vec2(self.view.pan[0], self.view.pan[1]);
+        let to_screen = |p: [f32; 2]| origin + vec2(p[0], p[1]);
+        let to_graph = |q: Pos2| [q.x - origin.x, q.y - origin.y];
+
+        // Background grid, moving with the pan.
         let grid = Stroke::new(1.0, t.graph_grid);
-        let mut x = area.left() + GRID;
+        let mut x = area.left() + self.view.pan[0].rem_euclid(GRID);
         while x < area.right() {
             painter.line_segment([pos2(x, area.top()), pos2(x, area.bottom())], grid);
             x += GRID;
         }
-        let mut y = area.top() + GRID;
+        let mut y = area.top() + self.view.pan[1].rem_euclid(GRID);
         while y < area.bottom() {
             painter.line_segment([pos2(area.left(), y), pos2(area.right(), y)], grid);
             y += GRID;
         }
 
-        #[allow(clippy::cast_precision_loss)] // a handful of columns and rows
-        let rect_of = |column: usize, row: usize| {
-            Rect::from_min_size(
-                area.min + vec2(MARGIN + column as f32 * (NODE_W + GAP_X), MARGIN + row as f32 * (NODE_H + GAP_Y)),
-                vec2(NODE_W, NODE_H),
-            )
-        };
-        let rect_for = |id: NodeId| places.iter().find(|p| p.node == id).map(|p| rect_of(p.column, p.row));
-
-        // Links behind the nodes.
+        // Links behind the nodes (the hidden Output's link is not drawn).
         for link in graph.links() {
-            let (Some(from), Some(to), Some(to_node)) = (rect_for(link.from), rect_for(link.to), graph.node(link.to))
-            else {
+            let (Some(from), Some(to_node)) = (self.view.output_port(link.from), graph.node(link.to)) else {
                 continue;
             };
             let inputs = to_node.kind.inputs();
+            let Some(to) = self.view.input_port(link.to, usize::from(link.to_port), inputs.len()) else { continue };
             let kind = inputs.get(usize::from(link.to_port)).copied().unwrap_or(PortKind::Image);
-            let start = pos2(from.right(), from.center().y);
-            let end = port_pos(to, usize::from(link.to_port), inputs.len());
+            let (start, end) = (to_screen(from), to_screen(to));
             let bend = ((end.x - start.x).abs() * 0.5).max(30.0);
-            let color = port_color(&t, kind);
             painter.add(CubicBezierShape::from_points_stroke(
                 [start, start + vec2(bend, 0.0), end - vec2(bend, 0.0), end],
                 false,
                 Color32::TRANSPARENT,
-                Stroke::new(2.0, color),
+                Stroke::new(2.0, port_color(&t, kind)),
             ));
         }
 
         // Nodes.
-        let hover = response.hover_pos();
-        let mut over_node = None;
-        for place in &places {
-            let Some(node) = graph.node(place.node) else { continue };
-            let rect = rect_of(place.column, place.row);
-            let is_selected = selected == Some(node.id);
-            let hovered = hover.is_some_and(|p| rect.contains(p));
-            if hovered {
-                over_node = Some(node.id);
+        let hover = response.hover_pos().map(to_graph);
+        let hovered_node = hover.and_then(|p| self.view.node_at(p));
+        let hovered_port = hover.and_then(|p| self.view.output_port_at(graph, p));
+        let feeds_output = graph.input_link(graph.output(), 0).map(|l| l.from);
+        for (id, pos) in self.view.nodes() {
+            let Some(node) = graph.node(id) else { continue };
+            let rect = Rect::from_min_size(to_screen(pos), vec2(NODE_SIZE[0], NODE_SIZE[1]));
+            if !rect.expand(PORT_HIT).intersects(area) {
+                continue;
             }
-            let off = matches!(node.kind, NodeKind::Tool(_)) && !node.enabled;
+            let is_selected = selected == Some(id);
+            let hovered = hovered_node == Some(id) || self.dragging == Some(id);
+            let off = matches!(node.kind, NodeKind::Tool(_) | NodeKind::Mask) && !node.enabled;
             let fill = if hovered { t.bg_overlay } else { t.bg_raised };
             let stroke = if is_selected {
                 Stroke::new(2.0, t.accent)
@@ -145,15 +198,13 @@ pub fn graph(
                 Stroke::new(1.0, if hovered { t.stroke_strong } else { t.stroke_weak })
             };
             painter.rect(rect, CornerRadius::same(6), fill, stroke, StrokeKind::Inside);
-            // A coloured strip on top: what kind of node it is.
             let strip = Rect::from_min_size(rect.min + vec2(1.0, 1.0), vec2(rect.width() - 2.0, 3.0));
             painter.rect_filled(strip, CornerRadius::same(2), kind_color(&t, &node.kind));
             let title_color = if off { t.text_weak } else { t.text_strong };
-            let title = node_title(node, registry);
             painter.with_clip_rect(rect.shrink(4.0)).text(
                 rect.left_top() + vec2(10.0, 10.0),
                 Align2::LEFT_TOP,
-                title,
+                node_title(node, registry),
                 FontId::proportional(FONT[1]),
                 title_color,
             );
@@ -164,30 +215,186 @@ pub fn graph(
                 FontId::proportional(FONT[0]),
                 t.text_weak,
             );
-            // Ports.
             let inputs = node.kind.inputs();
             for (k, kind) in inputs.iter().enumerate() {
-                painter.circle_filled(port_pos(rect, k, inputs.len()), PORT, port_color(&t, *kind));
+                if let Some(p) = self.view.input_port(id, k, inputs.len()) {
+                    painter.circle_filled(to_screen(p), PORT, port_color(&t, *kind));
+                }
             }
-            if let Some(kind) = node.kind.outputs().first() {
-                painter.circle_filled(pos2(rect.right(), rect.center().y), PORT, port_color(&t, *kind));
+            if let (Some(kind), Some(p)) = (node.kind.outputs().first(), self.view.output_port(id)) {
+                let c = to_screen(p);
+                if hovered_port == Some(id) {
+                    // "+": click to add a node here.
+                    painter.circle_filled(c, PORT + 4.0, t.accent);
+                    let s = 4.0;
+                    painter.line_segment([c - vec2(s, 0.0), c + vec2(s, 0.0)], Stroke::new(2.0, t.on_accent));
+                    painter.line_segment([c - vec2(0.0, s), c + vec2(0.0, s)], Stroke::new(2.0, t.on_accent));
+                } else {
+                    painter.circle_filled(c, PORT, port_color(&t, *kind));
+                    if feeds_output == Some(id) {
+                        // The end of the chain: what is exported.
+                        painter.circle_stroke(c, PORT + 3.0, Stroke::new(1.5, t.accent));
+                    }
+                }
             }
         }
-        if over_node.is_some() {
-            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-        }
-        if response.clicked() {
-            click = Some(over_node.map_or(GraphClick::Deselect, GraphClick::Select));
-        }
-    });
-    click
-}
 
-/// Where input port `k` of `n` sits on the left edge of a node.
-fn port_pos(rect: Rect, k: usize, n: usize) -> Pos2 {
-    #[allow(clippy::cast_precision_loss)] // two or three ports
-    let y = rect.top() + rect.height() * (k + 1) as f32 / (n + 1) as f32;
-    pos2(rect.left(), y)
+        // Hints and cursors.
+        if hovered_port.is_some() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        } else if self.dragging.is_some() || self.panning {
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        } else if hovered_node.is_some() {
+            ui.ctx().set_cursor_icon(CursorIcon::Grab);
+        }
+        if self.view.nodes().count() == 1 {
+            if let Some(p) = self.view.output_port(graph.source()) {
+                painter.text(
+                    to_screen(p) + vec2(16.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    "Click the port to add a node",
+                    FontId::proportional(FONT[0]),
+                    t.text_weak,
+                );
+            }
+        }
+
+        // Dragging nodes, panning.
+        let press = ui.input(|i| i.pointer.press_origin());
+        if response.drag_started_by(PointerButton::Primary) {
+            let at = press.or(response.interact_pointer_pos()).map(to_graph);
+            match at.and_then(|p| self.view.node_at(p)) {
+                Some(id) => {
+                    self.dragging = Some(id);
+                    actions.push(GraphAction::Select(id));
+                }
+                None => self.panning = true,
+            }
+        }
+        if response.drag_started_by(PointerButton::Middle) {
+            self.panning = true;
+        }
+        if response.dragged() {
+            let d = response.drag_delta();
+            if let Some(id) = self.dragging {
+                self.view.move_node(id, [d.x, d.y]);
+            } else if self.panning {
+                self.view.pan[0] += d.x;
+                self.view.pan[1] += d.y;
+            }
+        }
+        if response.drag_stopped() {
+            self.dragging = None;
+            self.panning = false;
+        }
+
+        // Clicks: a port opens the tool list, a node is selected.
+        if response.clicked() {
+            let at = response.interact_pointer_pos();
+            let gp = at.map(to_graph);
+            if let (Some(p), Some(id)) = (at, gp.and_then(|p| self.view.output_port_at(graph, p))) {
+                self.add_menu = Some(AddMenu { after: id, at: p, fresh: true });
+            } else if let Some(id) = gp.and_then(|p| self.view.node_at(p)) {
+                actions.push(GraphAction::Select(id));
+            } else {
+                actions.push(GraphAction::Deselect);
+            }
+        }
+        if response.secondary_clicked() {
+            self.menu_node = response.interact_pointer_pos().map(to_graph).and_then(|p| self.view.node_at(p));
+        }
+        let menu_node = self.menu_node;
+        response.context_menu(|ui| {
+            let Some(id) = menu_node else {
+                if ui.button("Show the Source").clicked() {
+                    self.view.pan = [0.0, 0.0];
+                    ui.close();
+                }
+                return;
+            };
+            let Some(node) = graph.node(id) else { return };
+            ui.label(RichText::new(node_title(node, registry)).strong());
+            ui.separator();
+            if node.kind.outputs().first() == Some(&PortKind::Image) {
+                ui.menu_button("Add node after", |ui| {
+                    for (_, tool, name) in node_tools(registry) {
+                        if ui.button(name).clicked() {
+                            actions.push(GraphAction::Add { after: id, tool });
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            if matches!(node.kind, NodeKind::Tool(_) | NodeKind::Mask) {
+                let label = if node.enabled { "Bypass" } else { "Enable" };
+                if ui.button(label).clicked() {
+                    actions.push(GraphAction::Enable(id, !node.enabled));
+                    ui.close();
+                }
+                if ui.add(Button::new("Delete node")).clicked() {
+                    actions.push(GraphAction::Remove(id));
+                    ui.close();
+                }
+            }
+        });
+
+        self.add_menu(ui.ctx(), graph, registry, &mut actions);
+        actions
+    }
+
+    /// The list of tools that opens on an output port.
+    fn add_menu(
+        &mut self,
+        ctx: &egui::Context,
+        graph: &NodeGraph,
+        registry: &ToolRegistry,
+        actions: &mut Vec<GraphAction>,
+    ) {
+        let Some(menu) = self.add_menu else { return };
+        let Some(node) = graph.node(menu.after) else {
+            self.add_menu = None;
+            return;
+        };
+        let t = Tokens::of(ctx.theme());
+        let mut chosen = None;
+        let shown = egui::Area::new(Id::unique("rne-add-node"))
+            .fixed_pos(menu.at + vec2(10.0, -10.0))
+            .order(Order::Foreground)
+            .constrain(true)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_width(ADD_MENU_WIDTH);
+                    ui.label(
+                        RichText::new(format!("Add after {}", node_title(node, registry)))
+                            .size(FONT[0])
+                            .color(t.text_weak),
+                    );
+                    ui.add_space(SPACE[0]);
+                    let mut last = None;
+                    for (category, tool, name) in node_tools(registry) {
+                        if last != Some(category) {
+                            if last.is_some() {
+                                ui.separator();
+                            }
+                            ui.label(RichText::new(category_name(category)).size(FONT[0]).color(t.text_weak));
+                            last = Some(category);
+                        }
+                        let button = Button::new(name).frame(false).min_size(vec2(ADD_MENU_WIDTH, 0.0));
+                        if ui.add(button).clicked() {
+                            chosen = Some(tool);
+                        }
+                    }
+                });
+            });
+        if let Some(tool) = chosen {
+            actions.push(GraphAction::Add { after: menu.after, tool });
+            self.add_menu = None;
+        } else if ctx.input(|i| i.key_pressed(Key::Escape)) || (!menu.fresh && shown.response.clicked_elsewhere()) {
+            self.add_menu = None;
+        } else if let Some(m) = &mut self.add_menu {
+            m.fresh = false;
+        }
+    }
 }
 
 fn port_color(t: &Tokens, kind: PortKind) -> Color32 {

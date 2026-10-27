@@ -53,7 +53,7 @@ fn the_history_lists_every_step_oldest_first_with_its_value() {
     let labels: Vec<&str> = h.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(labels, ["Add serial node", "Change exposure", "Change exposure", "Change exposure"]);
     let details: Vec<&str> = h.iter().map(|i| i.detail.as_str()).collect();
-    assert_eq!(details, ["", "+0.50", "+1", "-0.25"]);
+    assert_eq!(details, ["exposure", "+0.50", "+1", "-0.25"]);
     assert_eq!(h[0].kind, EditKind::Node);
     assert_eq!(h[1].kind, EditKind::Adjust);
     assert!(h.iter().all(|i| i.skipped.is_none()));
@@ -87,7 +87,7 @@ fn reordering_changes_which_value_wins() {
     assert_eq!(exposure_of(&s, node), Some(ParamValue::Float(1.0)));
     assert_eq!(s.undo_label().as_deref(), Some("Reorder history"));
     let details: Vec<String> = s.history().into_iter().map(|i| i.detail).collect();
-    assert_eq!(details, ["", "+0.50", "-0.25", "+1"]);
+    assert_eq!(details, ["exposure", "+0.50", "-0.25", "+1"]);
 }
 
 #[test]
