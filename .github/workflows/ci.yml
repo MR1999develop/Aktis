@@ -40,6 +40,35 @@ jobs:
           name: cargo-lock
           path: Cargo.lock
 
+  # A real RAW file end to end: decode, develop, render on the (software) GPU,
+  # export. The JPEG is uploaded so it can be looked at.
+  real-raw:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Software Vulkan driver
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+      - name: Sample RAW files
+        # Nikon D3S frame from the ISS (NASA, public domain), from the rawpy test set.
+        run: |
+          curl -fsSL -o testdata/nikon-d3s.NEF https://raw.githubusercontent.com/letmaik/rawpy/main/test/iss030e122639.NEF
+          ls -l testdata
+      - name: Decode and develop every sample
+        run: cargo test -p raw-io --release -- --ignored --nocapture
+      - name: rne info / gpu / develop
+        run: |
+          mkdir -p out
+          cargo run --release -p cli -- gpu
+          cargo run --release -p cli -- info testdata/nikon-d3s.NEF
+          cargo run --release -p cli -- develop testdata/nikon-d3s.NEF --exposure 0.5 -o out/nikon-d3s.jpg
+          cargo run --release -p cli -- develop testdata/nikon-d3s.NEF --cpu -o out/nikon-d3s-cpu.jpg
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: developed-jpeg
+          path: out/
+
   # macOS is prepared but not shipped in version 1: keep it compiling.
   macos-check:
     runs-on: macos-latest
