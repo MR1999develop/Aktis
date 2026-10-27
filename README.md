@@ -154,9 +154,13 @@ RAW samples for the ignored real-file test go in `testdata/` (not committed):
 
 Left: Explorer (folders, rating/label/name/keyword filters, AI keywords)
 and filmstrip side by side, History and Metadata tabs below. Centre: the
-photo above the node graph. Right: histogram and the settings of the node
-selected in the graph. Keys in the filmstrip: arrows previous/next, 0–5
-rating, 6–9 colour label, F2 rename. Ratings, labels and keywords are kept
+photo above the node graph (a new photo has only the Source: click a
+node's output port to add a tool after it; drag nodes, drag the background
+to pan). Right: histogram and the settings of the node selected in the
+graph. Filmstrip: click, Ctrl+click and Shift+click select as in
+a photo viewer (several selected photos show as tiles in the viewer); keys:
+arrows previous/next, 0–5 rating, 6–9 colour label (on the selection), F2
+rename, Ctrl+A select all, Escape back to one photo. Ratings, labels and keywords are kept
 in `catalog.sqlite` in the data folder.
 
 ## Status

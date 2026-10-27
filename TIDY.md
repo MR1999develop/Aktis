@@ -80,3 +80,11 @@
   loaded while the window is open when tagging becomes frequent.
 - Tool bar tools (crop, perspective, level, masks, AI select, heal, clone)
   are placeholders.
+- Node positions in the graph are kept only while the photo is open; save
+  them with the recipe once recipes are saved.
+- The GPU renderer still uploads the source and reads the result back at
+  every render, and creates its buffers each time; keep the source on the
+  GPU between renders of the same image (and draw the result straight from
+  a texture, see above) if the timings in the status bar show it matters.
+- `render-cpu` clones each node's input; with the GPU unavailable this is
+  the CPU fallback's main cost.

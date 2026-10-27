@@ -247,16 +247,16 @@ impl GraphUi {
         } else if hovered_node.is_some() {
             ui.ctx().set_cursor_icon(CursorIcon::Grab);
         }
-        if self.view.nodes().count() == 1 {
-            if let Some(p) = self.view.output_port(graph.source()) {
-                painter.text(
-                    to_screen(p) + vec2(16.0, 0.0),
-                    Align2::LEFT_CENTER,
-                    "Click the port to add a node",
-                    FontId::proportional(FONT[0]),
-                    t.text_weak,
-                );
-            }
+        if self.view.nodes().count() == 1
+            && let Some(p) = self.view.output_port(graph.source())
+        {
+            painter.text(
+                to_screen(p) + vec2(16.0, 0.0),
+                Align2::LEFT_CENTER,
+                "Click the port to add a node",
+                FontId::proportional(FONT[0]),
+                t.text_weak,
+            );
         }
 
         // Dragging nodes, panning.
