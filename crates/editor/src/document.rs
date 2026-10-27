@@ -128,6 +128,11 @@ impl Document {
         &self.opened.path
     }
 
+    /// Follows the RAW file after it was renamed on disk.
+    pub fn file_renamed(&mut self, to: PathBuf) {
+        self.opened.path = to;
+    }
+
     /// File name for titles ("DSC_0001.NEF").
     #[must_use]
     pub fn file_name(&self) -> String {
@@ -454,6 +459,18 @@ mod tests {
         assert_eq!(rows.len(), 1 + denoise.len());
         assert_eq!(doc.undo_label(), None);
         assert_eq!(doc.file_name(), "DSC_1.NEF");
+    }
+
+    #[test]
+    fn a_renamed_file_keeps_its_edits() {
+        let reg = registry();
+        let mut doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), &reg, 1).unwrap();
+        let node = doc.node_rows(&reg)[0].node;
+        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(0.5), None).unwrap();
+        doc.file_renamed(PathBuf::from("a/Como.NEF"));
+        assert_eq!(doc.file_name(), "Como.NEF");
+        assert_eq!(doc.path(), Path::new("a/Como.NEF"));
+        assert_eq!(doc.history().len(), 1);
     }
 
     #[test]

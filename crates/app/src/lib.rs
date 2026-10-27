@@ -1,14 +1,22 @@
 //! The desktop window of the RAW node editor, built with egui.
 //!
 //! This crate only draws and turns gestures into calls: documents, edits,
-//! background jobs and viewer geometry live in the `editor` crate, which is
+//! background jobs, the folder tree, the filmstrip model and viewer geometry
+//! live in the `editor` crate, ratings and keywords in `catalog`; both are
 //! tested without a display.
 
 mod actions;
 mod app;
+mod graph_ui;
+mod history_ui;
+mod icons;
+mod inspector;
+mod library_ui;
 mod models_ui;
 mod settings;
+mod tagging_job;
 mod theme;
+mod toolbar;
 
 pub use app::{EditorApp, Status};
 
@@ -28,8 +36,8 @@ pub fn native_options() -> eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(APP_NAME)
             .with_app_id(APP_ID)
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([900.0, 500.0])
+            .with_inner_size([1600.0, 960.0])
+            .with_min_inner_size([1100.0, 640.0])
             .with_drag_and_drop(true),
         persist_window: true,
         ..Default::default()

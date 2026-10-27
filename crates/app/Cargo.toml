@@ -19,6 +19,10 @@ engine.workspace = true
 editor.workspace = true
 platform.workspace = true
 ai-models.workspace = true
+catalog = { workspace = true, features = ["sqlite"] }
+core-color.workspace = true
+tagging.workspace = true
+tagging-onnx.workspace = true
 eframe = { version = "0.37.0", features = ["persistence"] }
 rfd = "0.17.2"
 serde = { version = "1.0.228", features = ["derive"] }

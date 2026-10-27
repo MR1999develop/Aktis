@@ -30,7 +30,7 @@ fn window_with_a_developed_raw_file() {
     let raw = first_raw_file().expect("put a RAW file in testdata/");
 
     let mut harness =
-        Harness::builder().with_size([1280.0, 800.0]).wgpu().build_eframe(|cc| app::EditorApp::new(cc, Some(raw)));
+        Harness::builder().with_size([1600.0, 960.0]).wgpu().build_eframe(|cc| app::EditorApp::new(cc, Some(raw)));
 
     // The empty window first, while the file is opening.
     harness.step();

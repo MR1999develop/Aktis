@@ -294,6 +294,22 @@ impl Filmstrip {
         }
     }
 
+    /// Keywords of the folder's photos, with how many photos have each,
+    /// most frequent first.
+    #[must_use]
+    pub fn tag_counts(&self) -> Vec<(String, usize)> {
+        catalog::tag_counts(self.photos.iter().map(|p| &p.meta))
+    }
+
+    /// The photos "AI-tag this folder" works on: those without AI keywords
+    /// yet, or every photo when all have some (tag again).
+    #[must_use]
+    pub fn tagging_targets(&self) -> Vec<PathBuf> {
+        let untagged: Vec<PathBuf> =
+            self.photos.iter().filter(|p| p.meta.best_ai_tag().is_none()).map(|p| p.path.clone()).collect();
+        if untagged.is_empty() { self.photos.iter().map(|p| p.path.clone()).collect() } else { untagged }
+    }
+
     /// Replaces a renamed file, keeping its place.
     pub fn rename(&mut self, from: &Path, to: PathBuf) {
         if let Some(p) = self.photos.iter_mut().find(|p| p.path == from) {
@@ -301,6 +317,70 @@ impl Filmstrip {
             p.path = to;
         }
     }
+}
+
+/// Why a new file name was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenameError {
+    /// The name is empty.
+    Empty,
+    /// The name holds a character file systems refuse (`/ \ : * ? " < > |`).
+    BadCharacter(char),
+    /// Another file already has that name.
+    Exists,
+}
+
+impl std::fmt::Display for RenameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("Type a name"),
+            Self::BadCharacter(c) => write!(f, "A file name cannot contain \u{201c}{c}\u{201d}"),
+            Self::Exists => f.write_str("A file with that name already exists in this folder"),
+        }
+    }
+}
+
+impl std::error::Error for RenameError {}
+
+/// Characters refused in file names on at least one supported system.
+const FORBIDDEN_IN_NAMES: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+
+/// The new path of `from` renamed to `stem`, keeping its extension and
+/// folder. `exists` tells whether a path is taken (the file system, in the
+/// window). Renaming to the same name gives `from` back.
+///
+/// # Errors
+/// [`RenameError`] for an empty name, a forbidden character or a name
+/// already taken.
+pub fn rename_target(from: &Path, stem: &str, exists: impl Fn(&Path) -> bool) -> Result<PathBuf, RenameError> {
+    let stem = stem.trim();
+    if stem.is_empty() || stem.chars().all(|c| c == '.') {
+        return Err(RenameError::Empty);
+    }
+    if let Some(c) = stem.chars().find(|c| FORBIDDEN_IN_NAMES.contains(c) || c.is_control()) {
+        return Err(RenameError::BadCharacter(c));
+    }
+    let name = match from.extension() {
+        Some(ext) => format!("{stem}.{}", ext.to_string_lossy()),
+        None => stem.to_owned(),
+    };
+    let to = from.with_file_name(name);
+    if to == from {
+        return Ok(to);
+    }
+    // A change of case only is allowed: on Windows and macOS the old file
+    // is "found" under the new name.
+    let same_file_other_case = to.to_string_lossy().to_lowercase() == from.to_string_lossy().to_lowercase();
+    if exists(&to) && !same_file_other_case {
+        return Err(RenameError::Exists);
+    }
+    Ok(to)
+}
+
+/// The name without its extension, to edit in the Rename dialog.
+#[must_use]
+pub fn file_stem(path: &Path) -> String {
+    path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -398,5 +478,37 @@ mod tests {
         assert_eq!(names(&l.photos), vec!["A.arw", "b.NEF"]);
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(list_folder(&dir).is_err());
+    }
+
+    #[test]
+    fn renaming_keeps_the_folder_and_extension_and_refuses_bad_names() {
+        let from = Path::new("/f/DSC_0001.NEF");
+        let taken = |p: &Path| p == Path::new("/f/Taken.NEF");
+        assert_eq!(rename_target(from, " Como ", taken), Ok(PathBuf::from("/f/Como.NEF")));
+        assert_eq!(rename_target(from, "DSC_0001", taken), Ok(from.to_path_buf()));
+        assert_eq!(rename_target(from, "", taken), Err(RenameError::Empty));
+        assert_eq!(rename_target(from, "..", taken), Err(RenameError::Empty));
+        assert_eq!(rename_target(from, "a/b", taken), Err(RenameError::BadCharacter('/')));
+        assert_eq!(rename_target(from, "a?", taken), Err(RenameError::BadCharacter('?')));
+        assert_eq!(rename_target(from, "Taken", taken), Err(RenameError::Exists));
+        let everything = |_: &Path| true;
+        assert_eq!(rename_target(from, "dsc_0001", everything), Ok(PathBuf::from("/f/dsc_0001.NEF")), "case only");
+        assert_eq!(file_stem(from), "DSC_0001");
+        assert_eq!(rename_target(Path::new("/f/noext"), "x", taken), Ok(PathBuf::from("/f/x")));
+    }
+
+    #[test]
+    fn tagging_works_on_untagged_photos_first() {
+        use catalog::{Tag, TagSource};
+        let mut s = strip();
+        assert_eq!(s.tagging_targets().len(), 3);
+        let ai = |name: &str| Tag { name: name.into(), source: TagSource::Ai, confidence: Some(0.1) };
+        s.set_meta(Path::new("/f/a.NEF"), PhotoMeta { tags: vec![ai("lake")], ..PhotoMeta::default() });
+        assert_eq!(s.tagging_targets(), vec![PathBuf::from("/f/b.NEF"), PathBuf::from("/f/c.NEF")]);
+        for p in ["/f/b.NEF", "/f/c.NEF"] {
+            s.set_meta(Path::new(p), PhotoMeta { tags: vec![ai("lake")], ..PhotoMeta::default() });
+        }
+        assert_eq!(s.tagging_targets().len(), 3, "all tagged: tag again");
+        assert_eq!(s.tag_counts(), vec![("lake".to_owned(), 3)]);
     }
 }

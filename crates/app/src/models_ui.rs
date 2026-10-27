@@ -259,10 +259,7 @@ impl ModelsUi {
                     }
                 } else if !all_missing.is_empty()
                     && ui
-                        .add(
-                            Button::new(RichText::new("Download everything needed").color(t.on_accent))
-                                .fill(t.accent),
-                        )
+                        .add(Button::new(RichText::new("Download everything needed").color(t.on_accent)).fill(t.accent))
                         .on_hover_text("Every pack a tool needs; optional ones are left out")
                         .clicked()
                 {
@@ -348,7 +345,7 @@ fn pack_line(ui: &mut egui::Ui, t: &Tokens, p: &Pack) {
 }
 
 /// A centred dialog above the window.
-fn dialog(ctx: &egui::Context, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn dialog(ctx: &egui::Context, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     let t = Tokens::of(ctx.theme());
     egui::Area::new(Id::unique(id)).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(
         ctx,

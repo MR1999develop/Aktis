@@ -117,6 +117,75 @@ Design and models in `docs/ai-masks.md`.
   portraits): wheels empty between the spokes, no halos, parts of each
   person separate.
 
+## Window layout, Explorer, filmstrip, editable history: written, to be compiled and checked on Windows
+
+Layout agreed in the "Interface" chat (all text in English, dark warm greys,
+copper accent `#E2894F`):
+
+- Top: menu, then a tool bar (Crop C, Perspective K, Level L | Masks M,
+  AI Select A | Heal H, Clone S: shown disabled, "coming soon"), Undo, Redo
+  and an accent Export button.
+- Left: Explorer and filmstrip side by side; below them the History and
+  Metadata tabs (resizable).
+- Centre: the photo above the node graph (grid background, columns
+  following the links, masks under the node that uses them; click a node to
+  edit it, click the background to deselect).
+- Right: histogram (RGB and luminance, clipped black/white shares) above the
+  settings of the selected node only; nothing selected → "No node
+  selected / Select a node in the graph to edit its settings here."
+- Bottom: status line (folder and photo count, camera, size, zoom, GPU).
+
+Pieces:
+
+- `catalog` (new crate): ratings 0–5, colour labels (Red, Yellow, Green,
+  Blue, Purple; no heart), keywords from the AI (with confidence) or the
+  user, in SQLite (`%LOCALAPPDATA%\raw-node-editor\catalog.sqlite`, WAL,
+  layout version checked). Filters as in a photo viewer: rating is a
+  multi-select of exact values (All, 0★ … 5★, not "at least"), label
+  multi-select with "None", name text, keywords; the model is pure and
+  tested, the SQLite store behind the default `sqlite` feature.
+- `commands`: history editing. `EditSession::rewrite_history(order)` keeps
+  the steps at `order` and replays them from the base recipe, remapping the
+  ids of nodes created by replayed steps; a step that no longer applies
+  stays in the list with its reason (`HistoryItem::skipped`), never dropped
+  silently; the rewrite is one undo step. `history()` lists label, value
+  ("+0.50") and kind of each step.
+- `raw-io`: `read_thumbnail` (embedded preview, upright, ≤ 320 px for the
+  filmstrip; no sensor decoding) and `PhotoInfo` (shutter, aperture, ISO,
+  focal length, bias, date, GPS, lens, artist, copyright) for the Metadata
+  tab.
+- `editor`: folder tree (`FolderTree`, listed on demand), `list_folder`
+  (RAW files and visible sub-folders in natural order), `Filmstrip` with
+  filters and next/previous, thumbnail cache (`ThumbCache`, least recently
+  used out, the worker asked only when the wanted list changes), graph
+  layout, histogram, history gestures (`history_order::moved/without`),
+  rename validation (`rename_target`). The worker lists folders and makes
+  thumbnails on 3 threads (newest request replaces the queue).
+- `platform`: Explorer roots (Pictures, then the drives on Windows; home,
+  `/media`, `/mnt`, `/` on Ubuntu; `/Volumes` on macOS), "open with the
+  default app".
+- `app`: Explorer (folder tree, Refresh, rating chips, label swatches, name
+  filter, "Showing N of M", AI tag chips with counts, "● ON-DEVICE", "AI-tag
+  this folder (N)" with progress and Stop); filmstrip (172 px column, 3:2
+  thumbnails, "★ N" badge, "AI · keyword" badge, colour square, name,
+  clickable stars where the active star clears the rating, context menu:
+  Rename F2, Batch Rename…, New/Clone Variant, Export ▶, Edit With ▶,
+  Open With ▶, Show in Explorer, Rating ▶, Color Tag ▶, Remove Variant —
+  the ones not built yet are disabled with "Coming soon"); keys when no
+  text field has focus: arrows previous/next, 0–5 rating, 6–9 labels, F2
+  rename; History tab (Original row, drag the grip to move a step, tick
+  steps and "Delete N", skipped steps greyed and struck through with the
+  reason); Metadata tab (camera data, rating, label, keywords with add and
+  remove, Rename…); AI tagging in the background with SigLIP 2
+  (`data/keywords/default.txt`, or `keywords.txt` in the data folder in
+  Lightroom format), keywords stored in the catalog; File ▸ Show folder…;
+  the last folder is opened again at start-up.
+
+Not compiled here (no crates.io in the development container): the egui code
+of `app` and the SQLite store of `catalog`. The pure parts (catalog model,
+history rewrite, library, thumbnails cache, graph layout, rename) are
+tested offline.
+
 ## Tests and CI
 
 GitHub Actions (`.github/workflows/ci.yml`) on every push:

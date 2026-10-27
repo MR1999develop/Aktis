@@ -1,29 +1,42 @@
-//! The main window: menu, viewer, inspector, status bar and toasts.
+//! The main window.
+//!
+//! Layout: menu and tool bar on top; on the left the Explorer and the
+//! filmstrip side by side, with the History and Metadata tabs below; in the
+//! middle the photo above the node graph; on the right the histogram above
+//! the settings of the node selected in the graph; a status line at the
+//! bottom.
 //!
 //! Each frame: read the worker's events, handle dropped files and
 //! shortcuts, draw, then apply what the user did (collected as values while
 //! drawing) and ask for the next render. Nothing slow runs here: decoding,
-//! rendering and writing happen in [`editor::Worker`].
+//! rendering, folder listings and thumbnails happen in [`editor::Worker`],
+//! AI keywords in a [`TaggingJob`].
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use commands::GestureId;
-use core_model::{DevelopSettings, LensSettings, NodeId, NodeKind, ParamId, ParamValue};
-use editor::{Document, Event, Quality, RenderPlan, RenderRequest, ViewState, Viewport, Worker, Zoom};
+use core_model::{DevelopSettings, NodeId, NodeKind};
+use editor::{Document, Event, Histogram, Quality, RenderPlan, RenderRequest, ViewState, Viewport, Worker, Zoom};
 use eframe::egui::{
-    self, Align, Align2, Button, Color32, CursorIcon, Id, Layout, Margin, Order, RichText, Sense, TextureOptions,
+    self, Align, Align2, Button, Color32, CursorIcon, Frame, Id, Layout, Margin, Order, RichText, Sense, TextureOptions,
 };
 use engine::{Backend, EngineChoice};
-use tool_api::{ParamKind, ToolRegistry, Unit};
+use tool_api::ToolRegistry;
 
 use crate::actions::Command;
+use crate::graph_ui::{self, GraphClick};
+use crate::history_ui::{LeftTab, TabAction, Tabs};
+use crate::inspector::{self, Drag, UiEdit};
+use crate::library_ui::{Library, LibraryAction, TaggingProgress};
 use crate::models_ui::ModelsUi;
 use crate::settings::{STORAGE_KEY, Settings, ThemeChoice};
+use crate::tagging_job::{Progress, TaggingJob};
 use crate::theme::{
-    self, FONT, INSPECTOR_WIDTH, SPACE, SPINNER_DELAY_SECONDS, TOAST_ERROR_SECONDS, TOAST_SECONDS, Tokens,
+    self, FILMSTRIP_WIDTH, FONT, GRAPH_HEIGHT, HISTOGRAM_HEIGHT, INSPECTOR_WIDTH, LEFT_WIDTH, SPACE,
+    SPINNER_DELAY_SECONDS, TABS_HEIGHT, TOAST_ERROR_SECONDS, TOAST_SECONDS, Tokens,
 };
+use crate::toolbar::{self, BarState};
 use crate::{APP_NAME, VERSION};
 
 /// Zoom factor per point of mouse-wheel scrolling (one notch ≈ 50 points ≈ ×1.25).
@@ -38,25 +51,6 @@ struct Job {
     ticket: u64,
     name: String,
     started: Instant,
-}
-
-/// An ongoing slider drag: its changes form one undo step.
-#[derive(Debug, Clone)]
-struct Drag {
-    node: NodeId,
-    param: ParamId,
-    gesture: GestureId,
-}
-
-/// What the user did in the inspector, applied after drawing.
-#[derive(Debug, Clone)]
-enum UiEdit {
-    BeginDrag { node: NodeId, param: ParamId },
-    EndDrag,
-    Set { node: NodeId, param: ParamId, value: ParamValue, in_drag: bool },
-    Reset { node: NodeId, param: ParamId },
-    Enabled { node: NodeId, on: bool },
-    Lens(LensSettings),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +117,16 @@ pub struct EditorApp {
     /// Downloads of the AI models: the dialog and the "AI models" window.
     models: ModelsUi,
     title: String,
+    /// Explorer, filmstrip and catalog.
+    library: Library,
+    /// History and Metadata.
+    tabs: Tabs,
+    /// The node whose settings are shown on the right.
+    selected_node: Option<NodeId>,
+    /// Levels of the image on screen.
+    histogram: Option<Box<Histogram>>,
+    /// "AI-tag this folder", while it runs.
+    tagging: Option<TaggingJob>,
 }
 
 impl std::fmt::Debug for EditorApp {
@@ -180,7 +184,18 @@ impl EditorApp {
             node_problem: None,
             models: ModelsUi::new(),
             title: String::new(),
+            library: Library::new(),
+            tabs: Tabs::default(),
+            selected_node: None,
+            histogram: None,
+            tagging: None,
         };
+        if let Some(problem) = app.library.catalog_problem.take() {
+            app.toast = Some(error_toast(problem));
+        }
+        if let Some(dir) = app.settings.library_dir.clone().filter(|d| d.is_dir()) {
+            app.library.show_folder(dir, app.worker.as_ref());
+        }
         if let Some(path) = open {
             app.open(path);
         }
@@ -301,8 +316,18 @@ impl EditorApp {
                                     self.plan.reset(first);
                                     self.view.fit();
                                     self.texture = None;
+                                    self.histogram = None;
                                     self.drag = None;
+                                    // The first adjustment is what one edits most often.
+                                    self.selected_node = doc.node_rows(&self.registry).first().map(|r| r.node);
                                     self.doc = Some(doc);
+                                    // The filmstrip shows the photo's folder.
+                                    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+                                        && self.library.folder() != Some(dir)
+                                    {
+                                        self.library.show_folder(dir.to_owned(), self.worker.as_ref());
+                                    }
+                                    self.library.reveal_photo(&path);
                                 }
                                 Err(e) => self.toast = Some(error_toast(format!("Cannot edit this image: {e}"))),
                             }
@@ -318,10 +343,11 @@ impl EditorApp {
                     }
                     self.opening_path = None;
                 }
-                Event::Rendered { generation, quality, image, backend, gpu_failure, node_problems } => {
+                Event::Rendered { generation, quality, image, backend, gpu_failure, node_problems, histogram } => {
                     if !self.plan.accepts(generation, quality) {
                         continue;
                     }
+                    self.histogram = Some(histogram);
                     let size = [image.width as usize, image.height as usize];
                     let color = egui::ColorImage::from_rgb(size, &image.pixels);
                     let options = TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
@@ -374,6 +400,12 @@ impl EditorApp {
                         Err(message) => error_toast(format!("Export failed: {message}")),
                     });
                 }
+                Event::FolderListed { dir, result } => {
+                    if let Some(message) = self.library.on_listed(dir, result) {
+                        self.toast = Some(error_toast(message));
+                    }
+                }
+                Event::Thumbnail { path, result } => self.library.on_thumbnail(ctx, path, result),
             }
         }
     }
@@ -425,6 +457,135 @@ impl EditorApp {
             if let Err(e) = result {
                 self.toast = Some(error_toast(format!("That change was refused: {e}")));
             }
+        }
+    }
+
+    /// Applies what the Explorer and the filmstrip asked for.
+    fn apply_library(&mut self, actions: Vec<LibraryAction>, ctx: &egui::Context) {
+        for action in actions {
+            match action {
+                LibraryAction::Open(path) => {
+                    let already = self.doc.as_ref().is_some_and(|d| d.path() == path);
+                    let pending = self.opening_path.as_ref() == Some(&path);
+                    if !already && !pending {
+                        self.open(path);
+                    }
+                }
+                LibraryAction::Export => self.export(ctx),
+                LibraryAction::ExportTo => self.export_to(ctx),
+                LibraryAction::Renamed { from, to } => {
+                    if let Some(doc) = &mut self.doc
+                        && doc.path() == from
+                    {
+                        doc.file_renamed(to.clone());
+                    }
+                    follow_rename(&mut self.settings.recent, &from, &to);
+                }
+                LibraryAction::TagFolder => self.start_tagging(ctx),
+                LibraryAction::StopTagging => {
+                    if let Some(job) = &self.tagging {
+                        job.cancel();
+                    }
+                }
+                LibraryAction::Error(message) => self.toast = Some(error_toast(message)),
+            }
+        }
+    }
+
+    /// Applies what the History and Metadata tabs asked for.
+    fn apply_tabs(&mut self, actions: Vec<TabAction>) {
+        let Some(path) = self.doc.as_ref().map(|d| d.path().to_owned()) else { return };
+        for action in actions {
+            let result = match action {
+                TabAction::Rewrite(order) => {
+                    let Some(doc) = &mut self.doc else { continue };
+                    self.drag = None;
+                    match doc.rewrite_history(&self.registry, &order) {
+                        Ok(report) if !report.skipped.is_empty() => {
+                            let n = report.skipped.len();
+                            let steps = if n == 1 {
+                                "1 later step no longer applies"
+                            } else {
+                                "Some later steps no longer apply"
+                            };
+                            self.toast = Some(info_toast(format!("{steps}; shown greyed in the History")));
+                            Ok(())
+                        }
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(format!("The history could not be changed: {e}")),
+                    }
+                }
+                TabAction::Rate(r) => self.library.set_rating(std::slice::from_ref(&path), r),
+                TabAction::Label(l) => self.library.set_label(std::slice::from_ref(&path), l),
+                TabAction::AddTag(name) => self.library.add_user_tag(&path, &name),
+                TabAction::RemoveTag(name) => self.library.remove_tag(&path, &name),
+                TabAction::Rename => {
+                    self.library.begin_rename(path.clone());
+                    Ok(())
+                }
+            };
+            if let Err(message) = result {
+                self.toast = Some(error_toast(message));
+            }
+        }
+    }
+
+    /// Starts "AI-tag this folder", after the model download if needed.
+    fn start_tagging(&mut self, ctx: &egui::Context) {
+        if self.tagging.is_some() || !self.models.require(ai_models::Feature::Tagging) {
+            return; // running, or the download dialog is up
+        }
+        let photos = self.library.strip.tagging_targets();
+        if photos.is_empty() {
+            return;
+        }
+        let repaint = ctx.clone();
+        match TaggingJob::start(photos, move || repaint.request_repaint()) {
+            Ok(job) => self.tagging = Some(job),
+            Err(e) => self.toast = Some(error_toast(format!("AI keywords could not start: {e}"))),
+        }
+    }
+
+    /// Stores the keywords the tagging job found; tells when it ends.
+    fn poll_tagging(&mut self) {
+        let Some(job) = &mut self.tagging else { return };
+        let mut finished = false;
+        let mut failure = None;
+        for progress in job.poll() {
+            match progress {
+                Progress::Tagged { path, tags } => {
+                    if let Err(e) = self.library.set_ai_tags(&path, &tags) {
+                        failure = Some(format!("Keywords could not be saved: {e}"));
+                    }
+                }
+                Progress::Skipped { .. } => {}
+                Progress::Failed(message) => failure = Some(message),
+                Progress::Finished => finished = true,
+            }
+        }
+        let (tagged, skipped, first_skip) = (job.tagged, job.done - job.tagged, job.first_skip.clone());
+        if finished {
+            self.tagging = None;
+            if failure.is_none() {
+                let photos = if tagged == 1 { "1 photo".to_owned() } else { format!("{tagged} photos") };
+                self.toast = Some(match first_skip {
+                    Some(first) if skipped > 0 => {
+                        error_toast(format!("AI keywords added to {photos}; {skipped} could not be read ({first})"))
+                    }
+                    _ => info_toast(format!("AI keywords added to {photos}")),
+                });
+            }
+        }
+        if let Some(message) = failure {
+            self.toast = Some(error_toast(message));
+        }
+    }
+
+    /// Forgets the selected node when it is gone (history rewritten, undo).
+    fn check_selection(&mut self) {
+        let exists = |id: NodeId| self.doc.as_ref().is_some_and(|d| d.recipe().graph.node(id).is_some());
+        if self.selected_node.is_some_and(|id| !exists(id)) {
+            self.selected_node = None;
         }
     }
 
@@ -506,6 +667,7 @@ impl EditorApp {
         let mut open_recent = None;
         let mut theme_choice = self.settings.theme;
         let mut open_models = false;
+        let mut open_folder = false;
 
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -521,6 +683,10 @@ impl EditorApp {
                         }
                     }
                 });
+                if ui.button("Show folder\u{2026}").on_hover_text("Show a folder's photos in the filmstrip").clicked() {
+                    open_folder = true;
+                    ui.close();
+                }
                 ui.separator();
                 let why =
                     if has_doc { exporting.then_some("An export is running") } else { Some("Open an image first") };
@@ -566,6 +732,15 @@ impl EditorApp {
         if open_models {
             self.models.open_manager();
         }
+        if open_folder {
+            let mut dialog = rfd::FileDialog::new().set_title("Show a folder");
+            if let Some(dir) = self.library.folder().or(self.settings.open_dir.as_deref()) {
+                dialog = dialog.set_directory(dir);
+            }
+            if let Some(dir) = dialog.pick_folder() {
+                self.library.show_folder(dir, self.worker.as_ref());
+            }
+        }
         if theme_choice != self.settings.theme {
             self.settings.theme = theme_choice;
             ui.ctx().set_theme(theme_preference(theme_choice));
@@ -578,6 +753,18 @@ impl EditorApp {
     fn status_bar(&self, ui: &mut egui::Ui) {
         let t = Tokens::of(ui.ctx().theme());
         ui.horizontal(|ui| {
+            if let Some(folder) = self.library.folder() {
+                let shown = self.library.strip.visible().len();
+                let total = self.library.strip.photos.len();
+                let count =
+                    if shown == total { format!("{total} photos") } else { format!("{shown} of {total} photos") };
+                ui.label(
+                    RichText::new(format!("{} \u{b7} {count}", editor::library::folder_name(folder)))
+                        .color(t.text_weak),
+                )
+                .on_hover_text(folder.display().to_string());
+                ui.separator();
+            }
             if let Some(doc) = &self.doc {
                 ui.label(doc.camera());
                 ui.separator();
@@ -633,83 +820,6 @@ impl EditorApp {
                 }
             });
         });
-    }
-
-    fn inspector(&self, ui: &mut egui::Ui, edits: &mut Vec<UiEdit>) {
-        let Some(doc) = &self.doc else { return };
-        ui.add_space(SPACE[2]);
-        self.lens_section(ui, doc, edits);
-        ui.add_space(SPACE[4]);
-        ui.label(RichText::new("Adjustments").size(FONT[3]).strong());
-        ui.add_space(SPACE[1]);
-        for row in doc.node_rows(&self.registry) {
-            let mut on = row.enabled;
-            if ui
-                .checkbox(&mut on, RichText::new(row.name).strong())
-                .on_hover_text("Turn this adjustment on or off")
-                .changed()
-            {
-                edits.push(UiEdit::Enabled { node: row.node, on });
-            }
-            // A one-parameter tool named like its parameter needs no second label.
-            let hide_label = row.params.len() == 1 && row.params.iter().all(|p| p.descriptor.label == row.name);
-            ui.add_enabled_ui(row.enabled, |ui| {
-                for p in &row.params {
-                    param_widget(ui, row.node, p, !hide_label, edits);
-                }
-            });
-            ui.add_space(SPACE[4]);
-        }
-    }
-
-    /// Lens corrections (lensfun data built into the editor): on/off, what to
-    /// correct, and the lens when the file does not name it correctly.
-    fn lens_section(&self, ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdit>) {
-        let current = doc.recipe().develop.lens.clone();
-        let mut next = current.clone();
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut next.enabled, RichText::new("Lens corrections").size(FONT[3]).strong())
-                .on_hover_text("Correct distortion, chromatic aberration and vignetting from the lens database");
-            if self.developing.is_some() {
-                ui.spinner();
-            }
-        });
-        ui.add_space(SPACE[1]);
-        ui.add_enabled_ui(current.enabled, |ui| {
-            let automatic = match doc.detected_lens() {
-                Some(name) => format!("Automatic ({name})"),
-                None => "Automatic (lens not recognised)".to_owned(),
-            };
-            let selected = current.lens.clone().unwrap_or_else(|| automatic.clone());
-            egui::ComboBox::from_id_salt("lens-choice")
-                .width(ui.available_width())
-                .selected_text(selected)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut next.lens, None, automatic);
-                    for name in doc.lens_choices() {
-                        ui.selectable_value(&mut next.lens, Some(name.clone()), name.as_str());
-                    }
-                })
-                .response
-                .on_hover_text("The lens whose data is used; Automatic reads it from the file");
-            ui.checkbox(&mut next.distortion, "Distortion");
-            ui.checkbox(&mut next.tca, "Chromatic aberration");
-            ui.checkbox(&mut next.vignetting, "Vignetting");
-            let mut auto_zoom = next.zoom.is_none();
-            if ui
-                .checkbox(&mut auto_zoom, "Fill the frame")
-                .on_hover_text("Enlarge slightly so that no empty borders remain after correcting the geometry")
-                .changed()
-            {
-                next.zoom = if auto_zoom { None } else { Some(1.0) };
-            }
-            for note in doc.develop_notes() {
-                ui.label(RichText::new(note).size(FONT[1]).weak());
-            }
-        });
-        if next != current {
-            edits.push(UiEdit::Lens(next));
-        }
     }
 
     fn central(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
@@ -803,7 +913,7 @@ impl EditorApp {
             ui.add_space(SPACE[0]);
             ui.label(RichText::new(format!("Drag a file here, or press {shortcut}")).color(t.text_weak));
             ui.add_space(SPACE[3]);
-            let button = Button::new(RichText::new("Open\u{2026}").color(Color32::WHITE)).fill(t.accent);
+            let button = Button::new(RichText::new("Open\u{2026}").color(t.on_accent)).fill(t.accent);
             if ui.add(button).clicked() {
                 commands.push(Command::Open);
             }
@@ -869,31 +979,144 @@ impl EditorApp {
     }
 }
 
+impl EditorApp {
+    /// Explorer and filmstrip side by side, History and Metadata below.
+    fn left_panel(&mut self, ui: &mut egui::Ui, library: &mut Vec<LibraryAction>, tabs: &mut Vec<TabAction>) {
+        let t = Tokens::of(ui.ctx().theme());
+        egui::Panel::bottom("left-tabs")
+            .resizable(true)
+            .default_size(TABS_HEIGHT[0])
+            .size_range(TABS_HEIGHT[1]..=TABS_HEIGHT[2])
+            .frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(8, 4)))
+            .show(ui, |ui| {
+                let path = self.doc.as_ref().map(|d| d.path().to_owned());
+                let meta = (self.tabs.tab == LeftTab::Metadata)
+                    .then(|| path.as_deref().map(|p| self.library.catalog_meta(p)))
+                    .flatten();
+                tabs.extend(self.tabs.show(ui, self.doc.as_ref(), meta.as_ref()));
+            });
+        egui::Panel::right("filmstrip")
+            .resizable(false)
+            .exact_size(FILMSTRIP_WIDTH)
+            .frame(Frame::NONE.fill(t.bar).inner_margin(Margin::symmetric(6, 6)))
+            .show(ui, |ui| {
+                let current = self.doc.as_ref().map(|d| d.path().to_owned());
+                self.library.filmstrip(ui, current.as_deref(), library);
+            });
+        egui::CentralPanel::default().frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(8, 4))).show(
+            ui,
+            |ui| {
+                let progress = self.tagging.as_ref().map(|j| TaggingProgress { done: j.done, total: j.total });
+                self.library.explorer(ui, self.worker.as_ref(), progress, library);
+            },
+        );
+    }
+
+    /// The histogram above the settings of the selected node.
+    fn right_panel(&self, ui: &mut egui::Ui, edits: &mut Vec<UiEdit>) {
+        let t = Tokens::of(ui.ctx().theme());
+        graph_ui::section_title(ui, "Histogram");
+        graph_ui::histogram(ui, self.histogram.as_deref(), HISTOGRAM_HEIGHT);
+        ui.add_space(SPACE[1]);
+        ui.separator();
+        egui::ScrollArea::vertical().id_salt("node-settings").auto_shrink([false, false]).show(ui, |ui| {
+            match &self.doc {
+                None => {
+                    ui.add_space(SPACE[4]);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new("No photo open").size(FONT[3]).strong());
+                        ui.label(
+                            RichText::new("Choose one in the filmstrip, or drop a RAW file here.").color(t.text_weak),
+                        );
+                    });
+                }
+                Some(doc) => {
+                    let folder = self.settings.export_folder(doc.path());
+                    let cx = inspector::Context {
+                        registry: &self.registry,
+                        selected: self.selected_node,
+                        developing: self.developing.is_some(),
+                        export_folder: &folder,
+                    };
+                    inspector::settings(ui, doc, cx, edits);
+                }
+            }
+        });
+    }
+
+    /// The photo, with the node graph under it when a photo is open.
+    fn center(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+        let t = Tokens::of(ui.ctx().theme());
+        let mut click = None;
+        if let Some(doc) = &self.doc {
+            egui::Panel::bottom("node-graph")
+                .resizable(true)
+                .default_size(GRAPH_HEIGHT[0])
+                .size_range(GRAPH_HEIGHT[1]..=GRAPH_HEIGHT[2])
+                .frame(Frame::NONE.fill(t.graph))
+                .show(ui, |ui| {
+                    click = graph_ui::graph(ui, &doc.recipe().graph, &self.registry, self.selected_node);
+                });
+        }
+        match click {
+            Some(GraphClick::Select(id)) => self.selected_node = Some(id),
+            Some(GraphClick::Deselect) => self.selected_node = None,
+            None => {}
+        }
+        egui::CentralPanel::default().frame(Frame::NONE.fill(t.canvas)).show(ui, |ui| self.central(ui, commands));
+    }
+}
+
 impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let t = Tokens::of(ctx.theme());
         self.handle_events(&ctx);
         self.handle_dropped_files(&ctx);
+        self.poll_tagging();
         let mut commands = Self::consume_shortcuts(&ctx);
         let mut edits = Vec::new();
+        let mut library = Vec::new();
+        let mut tabs = Vec::new();
+        let current = self.doc.as_ref().map(|d| d.path().to_owned());
+        self.library.keyboard(&ctx, current.as_deref(), &mut library);
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui, &mut commands));
+        let bar = BarState {
+            has_doc: self.doc.is_some(),
+            undo: self.doc.as_ref().and_then(Document::undo_label).map(|l| lowercase_first(&l)),
+            redo: self.doc.as_ref().and_then(Document::redo_label).map(|l| lowercase_first(&l)),
+            exporting: self.exporting.is_some(),
+        };
+        egui::Panel::top("toolbar")
+            .frame(Frame::NONE.fill(t.bar).inner_margin(Margin::symmetric(8, 4)))
+            .show(ui, |ui| toolbar::toolbar(ui, &bar, &mut commands));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        if self.doc.is_some() {
-            egui::Panel::right("inspector")
-                .resizable(true)
-                .default_size(INSPECTOR_WIDTH[0])
-                .size_range(INSPECTOR_WIDTH[1]..=INSPECTOR_WIDTH[2])
-                .show(ui, |ui| self.inspector(ui, &mut edits));
-        }
-        let canvas = Tokens::of(ctx.theme()).canvas;
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(canvas))
-            .show(ui, |ui| self.central(ui, &mut commands));
+        egui::Panel::left("library")
+            .resizable(true)
+            .default_size(LEFT_WIDTH[0])
+            .size_range(LEFT_WIDTH[1]..=LEFT_WIDTH[2])
+            .frame(Frame::NONE.fill(t.bg))
+            .show(ui, |ui| self.left_panel(ui, &mut library, &mut tabs));
+        egui::Panel::right("inspector")
+            .resizable(true)
+            .default_size(INSPECTOR_WIDTH[0])
+            .size_range(INSPECTOR_WIDTH[1]..=INSPECTOR_WIDTH[2])
+            .frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(10, 4)))
+            .show(ui, |ui| self.right_panel(ui, &mut edits));
+        egui::CentralPanel::default().frame(Frame::NONE.fill(t.canvas)).show(ui, |ui| self.center(ui, &mut commands));
+        self.library.rename_dialog(&ctx, &mut library);
 
         self.apply_edits(edits);
+        self.apply_tabs(tabs);
+        self.apply_library(library, &ctx);
         for command in commands {
             self.run(command, &ctx);
+        }
+        self.check_selection();
+        self.library.request_thumbnails(self.worker.as_ref());
+        if let Some(dir) = self.library.folder() {
+            self.settings.library_dir = Some(dir.to_owned());
         }
         self.show_toast(&ctx);
         if self.models.show(&ctx) {
@@ -931,111 +1154,6 @@ fn menu_item(
     }
 }
 
-fn param_widget(ui: &mut egui::Ui, node: NodeId, row: &editor::ParamRow, show_label: bool, edits: &mut Vec<UiEdit>) {
-    let d = &row.descriptor;
-    let param = d.id.clone();
-    match (&d.kind, row.value) {
-        (ParamKind::Float { min, max, step, unit, .. }, ParamValue::Float(mut v)) => {
-            if show_label {
-                ui.label(RichText::new(d.label).color(ui.visuals().weak_text_color()));
-            }
-            let places = decimals(*step);
-            let signed = *min < 0.0;
-            let response = ui
-                .scope(|ui| {
-                    ui.spacing_mut().slider_width = (ui.available_width() - 90.0).max(100.0);
-                    ui.add(
-                        egui::Slider::new(&mut v, *min..=*max)
-                            .step_by(f64::from(*step))
-                            .custom_formatter(move |n, _| format_value(n, places, signed))
-                            .suffix(unit_suffix(*unit))
-                            .update_while_editing(false),
-                    )
-                })
-                .inner
-                .on_hover_text("Drag, or click the number to type a value. Right-click to reset.");
-            if response.drag_started() {
-                edits.push(UiEdit::BeginDrag { node, param: param.clone() });
-            }
-            if response.changed() {
-                let in_drag = response.dragged() || response.drag_started();
-                edits.push(UiEdit::Set { node, param: param.clone(), value: ParamValue::Float(v), in_drag });
-            }
-            if response.drag_stopped() {
-                edits.push(UiEdit::EndDrag);
-            }
-            response.context_menu(|ui| {
-                if ui.button("Reset to default").clicked() {
-                    edits.push(UiEdit::Reset { node, param: param.clone() });
-                    ui.close();
-                }
-            });
-        }
-        (ParamKind::Bool { .. }, ParamValue::Bool(mut b)) => {
-            if ui.checkbox(&mut b, d.label).changed() {
-                edits.push(UiEdit::Set { node, param, value: ParamValue::Bool(b), in_drag: false });
-            }
-        }
-        (ParamKind::Choice { options, .. }, ParamValue::Choice(mut c)) => {
-            if show_label {
-                ui.label(RichText::new(d.label).color(ui.visuals().weak_text_color()));
-            }
-            let current = options.get(c as usize).copied().unwrap_or("");
-            let before = c;
-            egui::ComboBox::from_id_salt((node, d.id.as_str())).selected_text(current).show_ui(ui, |ui| {
-                for (i, option) in (0_u32..).zip(options.iter()) {
-                    ui.selectable_value(&mut c, i, *option);
-                }
-            });
-            if c != before {
-                edits.push(UiEdit::Set { node, param, value: ParamValue::Choice(c), in_drag: false });
-            }
-        }
-        _ => {
-            ui.weak(format!("{}: unsupported value", d.label));
-        }
-    }
-    ui.add_space(SPACE[1]);
-}
-
-/// Text after a value: " EV", " %", "°", " K".
-fn unit_suffix(unit: Unit) -> &'static str {
-    match unit {
-        Unit::None => "",
-        Unit::Stops => " EV",
-        Unit::Percent => " %",
-        Unit::Degrees => "\u{b0}",
-        Unit::Kelvin => " K",
-    }
-}
-
-/// Decimals shown for a parameter whose step is `step`.
-fn decimals(step: f32) -> usize {
-    if step >= 1.0 {
-        0
-    } else if step >= 0.1 {
-        1
-    } else if step >= 0.01 {
-        2
-    } else {
-        3
-    }
-}
-
-/// A value with `places` decimals; with an explicit sign when the range
-/// has negative values ("+0.50", "-1.00"), and never "-0.00".
-fn format_value(n: f64, places: usize, signed: bool) -> String {
-    let text = format!("{n:.places$}");
-    let is_zero = text.trim_start_matches('-').chars().all(|c| c == '0' || c == '.');
-    if is_zero {
-        text.trim_start_matches('-').to_owned()
-    } else if signed && n > 0.0 {
-        format!("+{text}")
-    } else {
-        text
-    }
-}
-
 fn lowercase_first(s: &str) -> String {
     let mut chars = s.chars();
     chars.next().map_or_else(String::new, |c| c.to_lowercase().chain(chars).collect())
@@ -1051,6 +1169,22 @@ fn error_toast(text: String) -> Toast {
         kind: ToastKind::Error,
         action: None,
         deadline: Instant::now() + Duration::from_secs_f32(TOAST_ERROR_SECONDS),
+    }
+}
+
+fn info_toast(text: String) -> Toast {
+    Toast {
+        text,
+        kind: ToastKind::Info,
+        action: None,
+        deadline: Instant::now() + Duration::from_secs_f32(TOAST_SECONDS),
+    }
+}
+
+/// Replaces a renamed file in a list of paths, keeping its place.
+fn follow_rename(paths: &mut [PathBuf], from: &Path, to: &Path) {
+    for p in paths.iter_mut().filter(|p| p.as_path() == from) {
+        to.clone_into(p);
     }
 }
 
@@ -1075,27 +1209,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn units_and_decimals_follow_the_descriptor() {
-        assert_eq!(unit_suffix(Unit::Stops), " EV");
-        assert_eq!(unit_suffix(Unit::None), "");
-        assert_eq!(decimals(0.01), 2);
-        assert_eq!(decimals(1.0), 0);
-        assert_eq!(decimals(0.5), 1);
-        assert_eq!(decimals(0.001), 3);
-    }
-
-    #[test]
-    fn values_show_a_sign_when_the_range_has_one_and_never_minus_zero() {
-        assert_eq!(format_value(0.5, 2, true), "+0.50");
-        assert_eq!(format_value(-1.0, 2, true), "-1.00");
-        assert_eq!(format_value(-0.0, 2, true), "0.00");
-        assert_eq!(format_value(-0.001, 2, true), "0.00");
-        assert_eq!(format_value(42.0, 0, false), "42");
-    }
-
-    #[test]
     fn undo_labels_read_naturally_in_menus() {
         assert_eq!(lowercase_first("Change exposure"), "change exposure");
         assert_eq!(lowercase_first(""), "");
+    }
+
+    #[test]
+    fn a_renamed_file_keeps_its_place_in_the_recent_list() {
+        let mut recent = vec![PathBuf::from("a/1.NEF"), PathBuf::from("a/2.NEF")];
+        follow_rename(&mut recent, Path::new("a/2.NEF"), Path::new("a/Como.NEF"));
+        assert_eq!(recent, vec![PathBuf::from("a/1.NEF"), PathBuf::from("a/Como.NEF")]);
     }
 }

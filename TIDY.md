@@ -65,3 +65,18 @@
   or SHA-256 yet: pin them once downloaded.
 - Downloads use the system's `curl` and `tar` (Windows 10 and later have
   both); an in-process HTTP client would avoid depending on them.
+- Filmstrip thumbnails are made from the embedded JPEG each time a folder
+  is shown; keep them in a disk cache (keyed by path, size and date) once
+  folders of thousands of photos are common.
+- `ThumbCache` finds the least recently used entry by scanning (300
+  entries); use a proper LRU list if the capacity grows.
+- The Explorer lists drive letters A–Z with `Path::is_dir` at start-up; a
+  disconnected network drive can make that slow. List drives in the worker.
+- Renaming a file does not rename side files yet (none exist; when recipes
+  are saved next to the RAW, rename them together).
+- The Rename dialog is drawn as a centred area, not a modal: clicks behind
+  it still reach the window. Use `egui::Modal` once the other dialogs move too.
+- AI tagging loads SigLIP 2 at each "AI-tag this folder"; keep the encoders
+  loaded while the window is open when tagging becomes frequent.
+- Tool bar tools (crop, perspective, level, masks, AI select, heal, clone)
+  are placeholders.

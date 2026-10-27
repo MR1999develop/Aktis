@@ -53,8 +53,9 @@ cargo fmt --all --check
 | `crates/gpu` | GPU engine on wgpu (Vulkan, DirectX 12, Metal); must match `render-cpu`. |
 | `crates/export` | JPEG with an embedded sRGB profile, atomic writes, non-destructive names. |
 | `crates/engine` | Shared by window and command line: built-in tools, GPU render with CPU fallback, preview copy, display pixels, JPEG export. |
-| `crates/editor` | The editor without the window: documents and undo, background jobs (open, preview, export), viewer zoom and pan. |
-| `crates/app` | The desktop window (egui): menu, viewer, inspector, status bar. |
+| `crates/editor` | The editor without the window: documents and undo, background jobs (open, preview, export, folder listings, thumbnails), viewer zoom and pan, folder tree and filmstrip model, graph layout, histogram. |
+| `crates/catalog` | Ratings, colour labels and keywords of each photo (SQLite) and the Explorer's filters. |
+| `crates/app` | The desktop window (egui): tool bar, Explorer, filmstrip, History and Metadata tabs, viewer, node graph, histogram, node settings, status bar. |
 | `crates/lens-db` | Lensfun database reader, camera/lens lookup, distortion/TCA/vignetting maths. |
 | `crates/masks` | Mask nodes → mask images: AI rasters refined by colour, brush strokes, add/subtract/intersect, feather, raster cache. |
 | `crates/ai-segment` | AI selection (subject, objects, people, hair/skin/clothes/face features) with ONNX Runtime loaded at run time; model catalog. |
@@ -148,6 +149,15 @@ Use `--release`: the CPU development stage is slow in debug builds.
 
 RAW samples for the ignored real-file test go in `testdata/` (not committed):
 `cargo test -p raw-io --release -- --ignored --nocapture`.
+
+## The window
+
+Left: Explorer (folders, rating/label/name/keyword filters, AI keywords)
+and filmstrip side by side, History and Metadata tabs below. Centre: the
+photo above the node graph. Right: histogram and the settings of the node
+selected in the graph. Keys in the filmstrip: arrows previous/next, 0–5
+rating, 6–9 colour label, F2 rename. Ratings, labels and keywords are kept
+in `catalog.sqlite` in the data folder.
 
 ## Status
 

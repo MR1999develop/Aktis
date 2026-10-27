@@ -1,4 +1,5 @@
-//! What the app remembers between sessions: theme, folders, recent files.
+//! What the app remembers between sessions: theme, folders, recent files,
+//! the folder shown in the filmstrip.
 //!
 //! Saved by eframe's storage (a RON file in the system's settings folder).
 //! Every field has a default and unknown or missing fields are ignored, so
@@ -38,6 +39,8 @@ pub struct Settings {
     pub export_dir: Option<PathBuf>,
     /// Recently opened files, newest first.
     pub recent: Vec<PathBuf>,
+    /// Folder shown in the filmstrip, opened again at start-up.
+    pub library_dir: Option<PathBuf>,
 }
 
 impl Settings {
