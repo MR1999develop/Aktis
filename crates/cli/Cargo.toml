@@ -19,6 +19,12 @@ gpu.workspace = true
 engine.workspace = true
 lens-db.workspace = true
 tool-exposure.workspace = true
+core-color.workspace = true
+masks.workspace = true
+platform.workspace = true
+ai-segment.workspace = true
+render-cpu.workspace = true
+export.workspace = true
 
 [lints]
 workspace = true

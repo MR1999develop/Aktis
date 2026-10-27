@@ -107,3 +107,38 @@ fn missing_tools_pass_through_on_the_gpu_too() {
     assert_eq!(r.missing_tools, vec![curves]);
     assert_eq!(r.image, src);
 }
+
+#[test]
+fn a_masked_node_matches_the_cpu_reference_and_reports_the_same_missing_rasters() {
+    use core_model::{AiTarget, MaskComponent, MaskDef, MaskImage, MaskOp, MaskSource, ModelId, RasterKey};
+
+    let Some(gpu) = renderer() else { return };
+    let reg = registry();
+    let src = test_image(97, 61);
+
+    // Exposure +2 through a mask made of a soft raster (refined on the image)
+    // and a component that has not been computed yet.
+    let mut recipe = recipe(&reg, 2.0, 0.0, false);
+    let first = recipe.graph.links().find(|l| l.from == recipe.graph.source()).expect("source feeds a node").to;
+    let rasters = masks::MemoryRasters::new();
+    let key = RasterKey::from_bytes([3; 16]);
+    let values: Vec<f32> = (0..12).map(|i| (i % 4) as f32 / 3.0).collect();
+    rasters.insert(key, MaskImage::from_values(4, 3, values).expect("4×3 raster"));
+    let model = ModelId::new("test_model").expect("id");
+    let mut computed = MaskComponent::ai("Computed", MaskOp::Add, AiTarget::Subject, model.clone());
+    if let MaskSource::Ai(ai) = &mut computed.source {
+        ai.raster = Some(key);
+    }
+    let pending = MaskComponent::ai("Pending", MaskOp::Add, AiTarget::Subject, model);
+    let def = MaskDef { components: vec![computed, pending], feather: 0.02, ..MaskDef::default() };
+    let mut s = EditSession::new(recipe);
+    s.apply(&reg, Edit::AddMask { to: first, def }).expect("add mask");
+    recipe = s.recipe().clone();
+
+    let on_gpu = gpu.render_with_masks(&recipe.graph, &reg, &src, &rasters).expect("gpu render");
+    let on_cpu = render_cpu::render_with_masks(&recipe.graph, &reg, &src, &rasters).expect("cpu render");
+    assert_close(&on_gpu.image, &on_cpu.image);
+    assert_eq!(on_gpu.missing_masks, on_cpu.missing_masks);
+    assert_eq!(on_gpu.missing_masks.len(), 1);
+    assert_ne!(on_gpu.image, src, "the mask let some of the exposure through");
+}

@@ -9,8 +9,8 @@
 use std::fmt;
 
 use core_model::{
-    GraphError, LensSettings, Link, NodeGraph, NodeId, NodeKind, ParamId, ParamValue, Params, ProfileChoice, Recipe,
-    ToolId, WhiteBalance,
+    GraphError, LensSettings, Link, MaskDef, NodeGraph, NodeId, NodeKind, ParamId, ParamValue, Params, PortKind,
+    ProfileChoice, Recipe, ToolId, WhiteBalance,
 };
 use tool_api::ToolRegistry;
 
@@ -70,6 +70,23 @@ pub enum Edit {
     SetCameraProfile(ProfileChoice),
     /// Changes the lens corrections of the development stage.
     SetLensCorrection(LensSettings),
+    /// Adds a mask node and connects it to the key input of a tool node, so
+    /// the tool acts only inside the mask. A mask already on that input is
+    /// disconnected (its node stays in the graph).
+    AddMask {
+        /// The tool node to restrict.
+        to: NodeId,
+        /// What the new mask selects.
+        def: MaskDef,
+    },
+    /// Replaces the definition of a mask node (a new click, another
+    /// component, feather, invert …). Feather and opacity are clamped.
+    SetMask {
+        /// The mask node.
+        node: NodeId,
+        /// The new definition.
+        def: MaskDef,
+    },
 }
 
 impl Edit {
@@ -88,6 +105,8 @@ impl Edit {
             Self::SetWhiteBalance(_) => "Change white balance".to_owned(),
             Self::SetCameraProfile(_) => "Change camera profile".to_owned(),
             Self::SetLensCorrection(_) => "Change lens corrections".to_owned(),
+            Self::AddMask { .. } => "Add mask".to_owned(),
+            Self::SetMask { .. } => "Change mask".to_owned(),
         }
     }
 }
@@ -109,6 +128,10 @@ pub enum EditError {
     InvalidProfileName,
     /// The lens correction zoom is outside 0.25–4, or a chosen lens name is empty.
     InvalidLensSettings,
+    /// The node exists but is not a mask node.
+    NotAMaskNode(NodeId),
+    /// The node has no key (mask) input.
+    NoMaskInput(NodeId),
 }
 
 impl fmt::Display for EditError {
@@ -123,6 +146,8 @@ impl fmt::Display for EditError {
             Self::InvalidLensSettings => {
                 write!(f, "lens zoom must be between 0.25 and 4, and a chosen lens needs a name")
             }
+            Self::NotAMaskNode(id) => write!(f, "node {id} is not a mask node"),
+            Self::NoMaskInput(id) => write!(f, "node {id} cannot take a mask"),
         }
     }
 }
@@ -163,6 +188,10 @@ enum Undo {
     WhiteBalance(WhiteBalance),
     Profile(ProfileChoice),
     Lens(LensSettings),
+    Mask {
+        node: NodeId,
+        previous: MaskDef,
+    },
     /// Structural edits keep the whole previous graph: graphs are small and
     /// this restores ids and links exactly.
     Graph(Box<NodeGraph>),
@@ -262,6 +291,13 @@ impl EditSession {
             Undo::WhiteBalance(wb) => self.recipe.develop.white_balance = *wb,
             Undo::Profile(p) => self.recipe.develop.profile = p.clone(),
             Undo::Lens(l) => self.recipe.develop.lens = l.clone(),
+            Undo::Mask { node, previous } => {
+                if let Some(mut n) = self.recipe.graph.node_mut(*node)
+                    && let Some(def) = n.mask()
+                {
+                    *def = previous.clone();
+                }
+            }
             Undo::Graph(g) => self.recipe.graph = (**g).clone(),
         }
         self.undone.push(step);
@@ -345,6 +381,20 @@ impl EditSession {
                 }
                 Ok(Edit::SetLensCorrection(lens))
             }
+            Edit::AddMask { to, def } => {
+                let node = self.recipe.graph.node(to).ok_or(GraphError::UnknownNode(to))?;
+                if !node.kind.inputs().contains(&PortKind::Mask) {
+                    return Err(EditError::NoMaskInput(to));
+                }
+                Ok(Edit::AddMask { to, def: def.sanitized() })
+            }
+            Edit::SetMask { node, def } => {
+                let n = self.recipe.graph.node(node).ok_or(GraphError::UnknownNode(node))?;
+                if n.kind != NodeKind::Mask {
+                    return Err(EditError::NotAMaskNode(node));
+                }
+                Ok(Edit::SetMask { node, def: def.sanitized() })
+            }
             other => Ok(other),
         }
     }
@@ -388,6 +438,25 @@ impl EditSession {
                 let previous = std::mem::replace(&mut self.recipe.develop.lens, l.clone());
                 Ok(Undo::Lens(previous))
             }
+            Edit::SetMask { node, def } => {
+                let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
+                let slot = n.mask().ok_or(EditError::NotAMaskNode(*node))?;
+                let previous = std::mem::replace(slot, def.clone());
+                Ok(Undo::Mask { node: *node, previous })
+            }
+            Edit::AddMask { to, def } => {
+                let before = graph.clone();
+                let mut next = before.clone();
+                let mask = next.add_mask_node(def.clone());
+                let port = next
+                    .node(*to)
+                    .and_then(|n| n.kind.inputs().iter().position(|k| *k == PortKind::Mask))
+                    .and_then(|p| u8::try_from(p).ok())
+                    .ok_or(EditError::NoMaskInput(*to))?;
+                next.connect(Link { from: mask, from_port: 0, to: *to, to_port: port })?;
+                *graph = next;
+                Ok(Undo::Graph(Box::new(before)))
+            }
             Edit::InsertSerial { .. } | Edit::RemoveNode { .. } | Edit::Connect(_) | Edit::Disconnect { .. } => {
                 // Work on a copy and publish it only on success: the strong guarantee.
                 let before = graph.clone();
@@ -419,5 +488,5 @@ fn same_param(a: &Edit, b: &Edit) -> bool {
         (a, b),
         (Edit::SetParam { node: n1, param: p1, .. }, Edit::SetParam { node: n2, param: p2, .. })
             if n1 == n2 && p1 == p2
-    )
+    ) || matches!((a, b), (Edit::SetMask { node: n1, .. }, Edit::SetMask { node: n2, .. }) if n1 == n2)
 }

@@ -11,6 +11,7 @@ mod capture;
 mod graph;
 mod ids;
 mod image;
+mod mask;
 mod math;
 mod orientation;
 mod params;
@@ -19,8 +20,12 @@ mod sensor;
 
 pub use capture::{CalibratedMatrix, CaptureInfo, Illuminant};
 pub use graph::{GraphError, Link, Node, NodeGraph, NodeKind, NodeMut, PortKind};
-pub use ids::{IdError, NodeId, ParamId, ToolId};
+pub use ids::{IdError, ModelId, NodeId, ParamId, ToolId};
 pub use image::{ImageError, ImageF32, MAX_PIXELS, Rgba, WorkingSpace};
+pub use mask::{
+    AiMask, AiTarget, BodyPart, BrushMask, BrushStroke, MAX_BRUSH_RADIUS, MAX_FEATHER, MaskComponent, MaskDef,
+    MaskImage, MaskOp, MaskSource, NormPoint, NormRect, PromptPoint, RasterKey,
+};
 pub use math::Matrix3;
 pub use orientation::Orientation;
 pub use params::{ParamValue, Params};

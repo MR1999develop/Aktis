@@ -76,6 +76,34 @@ Done:
   lens chosen automatically or from the lenses that fit the camera,
   distortion / chromatic aberration / vignetting, fill the frame); changes
   and their undo develop the image again in the background.
+## AI selection and masks: done (command line); mask panel in the window to do
+
+Design and models in `docs/ai-masks.md`.
+
+- `core-model`: `MaskImage`, `MaskDef` with components (add, subtract,
+  intersect) that are AI selections or brush strokes; AI prompts in
+  normalised coordinates (subject, clicks, box, person part); raster keys,
+  `ModelId`, `BodyPart`; `NodeKind::Mask` with a key output; orientation
+  inverse and point mapping.
+- `commands`: `AddMask` (mask node on a tool's key input) and `SetMask`,
+  undoable, merged within a gesture.
+- `masks`: rasters scaled to the render; refinement by colour (uncertain
+  areas judged against object and background colours, colour guided filter);
+  brush strokes; feather, combination; stable FNV-1a keys; raster cache on disk.
+- `render-cpu`, `gpu`: tools blend through their key input; GPU = CPU with
+  masks is tested.
+- `ai-segment`: ONNX Runtime loaded at run time (DirectML, CUDA,
+  ROCm/MIGraphX, OpenVINO, Core ML, CPU); BiRefNet (subject); Segment
+  Anything 2.1 Large (clicks, boxes; a second pass on a crop for small
+  objects); YOLOX-S (people and COCO classes → one component per person);
+  MediaPipe multiclass + BlazeFace + face mesh (hair, face skin, body skin,
+  clothes, accessories, eyebrows, sclera, irises, lips, teeth); catalog with
+  SHA-256.
+- `cli`: `rne mask`, `rne models`, `rne develop … --subject`; `--add`,
+  `--subtract`, `--intersect`, `--parts`, `--brush`, `--erase`; PPM input.
+- Checked by eye on test photos (dog and bicycle, truck, people at a bus,
+  portraits): wheels empty between the spokes, no halos, parts of each
+  person separate.
 
 ## Tests and CI
 

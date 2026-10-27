@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 use crate::ids::{NodeId, ToolId};
+use crate::mask::MaskDef;
 use crate::params::Params;
 
 /// What travels on a link.
@@ -33,6 +34,10 @@ pub enum NodeKind {
         /// Number of image inputs, at least 2.
         inputs: u8,
     },
+    /// Builds a mask (AI selection, and later brush, gradients, colour range)
+    /// and offers it on its key output. Its definition is the node's
+    /// [`Node::mask`]. It reads the developed image itself, so it has no input.
+    Mask,
 }
 
 impl NodeKind {
@@ -40,7 +45,7 @@ impl NodeKind {
     #[must_use]
     pub fn inputs(&self) -> Vec<PortKind> {
         match self {
-            Self::Source => vec![],
+            Self::Source | Self::Mask => vec![],
             Self::Output => vec![PortKind::Image],
             Self::Tool(_) => vec![PortKind::Image, PortKind::Mask],
             Self::Parallel { inputs } => vec![PortKind::Image; usize::from(*inputs)],
@@ -53,6 +58,7 @@ impl NodeKind {
         match self {
             Self::Output => vec![],
             Self::Source | Self::Tool(_) | Self::Parallel { .. } => vec![PortKind::Image],
+            Self::Mask => vec![PortKind::Mask],
         }
     }
 }
@@ -70,6 +76,8 @@ pub struct Node {
     pub enabled: bool,
     /// Name shown above the node; empty means "use the tool's name".
     pub label: String,
+    /// The mask definition; `Some` exactly for [`NodeKind::Mask`] nodes.
+    pub mask: Option<MaskDef>,
 }
 
 /// A connection from an output port to an input port.
@@ -146,7 +154,7 @@ impl NodeGraph {
         let output = NodeId(1);
         let mut nodes = BTreeMap::new();
         for (id, kind) in [(source, NodeKind::Source), (output, NodeKind::Output)] {
-            nodes.insert(id, Node { id, kind, params: Params::new(), enabled: true, label: String::new() });
+            nodes.insert(id, Node { id, kind, params: Params::new(), enabled: true, label: String::new(), mask: None });
         }
         let mut links = BTreeSet::new();
         links.insert(Link { from: source, from_port: 0, to: output, to_port: 0 });
@@ -202,12 +210,29 @@ impl NodeGraph {
         match kind {
             NodeKind::Source | NodeKind::Output => return Err(GraphError::ProtectedNode(NodeId(self.next_id))),
             NodeKind::Parallel { inputs } if inputs < 2 => return Err(GraphError::TooFewInputs),
-            NodeKind::Tool(_) | NodeKind::Parallel { .. } => {}
+            NodeKind::Tool(_) | NodeKind::Parallel { .. } | NodeKind::Mask => {}
         }
+        let mask = (kind == NodeKind::Mask).then(MaskDef::default);
         let id = NodeId(self.next_id);
         self.next_id += 1;
-        self.nodes.insert(id, Node { id, kind, params, enabled: true, label: String::new() });
+        self.nodes.insert(id, Node { id, kind, params, enabled: true, label: String::new(), mask });
         Ok(id)
+    }
+
+    /// Adds a mask node with the given definition and no links; returns its id.
+    pub fn add_mask_node(&mut self, def: MaskDef) -> NodeId {
+        let id = NodeId(self.next_id);
+        self.next_id += 1;
+        let node = Node {
+            id,
+            kind: NodeKind::Mask,
+            params: Params::new(),
+            enabled: true,
+            label: String::new(),
+            mask: Some(def),
+        };
+        self.nodes.insert(id, node);
+        id
     }
 
     /// Adds a tool node right after `after` on its image output, the way
@@ -215,11 +240,14 @@ impl NodeGraph {
     /// new node's output instead.
     ///
     /// # Errors
-    /// [`GraphError::UnknownNode`] or [`GraphError::ProtectedNode`] when `after` is the Output.
+    /// [`GraphError::UnknownNode`], [`GraphError::ProtectedNode`] when `after`
+    /// is the Output, [`GraphError::PortKindMismatch`] when `after` gives a mask.
     pub fn insert_serial(&mut self, after: NodeId, tool: ToolId, params: Params) -> Result<NodeId, GraphError> {
         let after_kind = &self.nodes.get(&after).ok_or(GraphError::UnknownNode(after))?.kind;
-        if after_kind.outputs().is_empty() {
-            return Err(GraphError::ProtectedNode(after));
+        match after_kind.outputs().first() {
+            None => return Err(GraphError::ProtectedNode(after)),
+            Some(PortKind::Mask) => return Err(GraphError::PortKindMismatch),
+            Some(PortKind::Image) => {}
         }
         let id = self.add_node(NodeKind::Tool(tool), params)?;
         let downstream: Vec<Link> =
@@ -367,6 +395,11 @@ impl NodeMut<'_> {
     pub fn set_label(&mut self, label: String) -> String {
         std::mem::replace(&mut self.0.label, label)
     }
+
+    /// The mask definition of a mask node; `None` for other kinds.
+    pub fn mask(&mut self) -> Option<&mut MaskDef> {
+        self.0.mask.as_mut()
+    }
 }
 
 #[cfg(test)]
@@ -447,6 +480,42 @@ mod tests {
         let mut g = NodeGraph::new();
         g.disconnect(g.output(), 0);
         assert_eq!(g.evaluation_order(), Err(GraphError::OutputNotConnected));
+    }
+
+    #[test]
+    fn a_mask_node_feeds_the_key_input_of_a_tool_and_is_evaluated_before_it() {
+        let mut g = NodeGraph::new();
+        let a = g.insert_serial(g.source(), exposure(), Params::new()).expect("insert");
+        let m = g.add_mask_node(MaskDef::default());
+        assert_eq!(g.node(m).and_then(|n| n.mask.clone()), Some(MaskDef::default()));
+        assert_eq!(g.connect(Link { from: m, from_port: 0, to: a, to_port: 0 }), Err(GraphError::PortKindMismatch));
+        g.connect(Link { from: m, from_port: 0, to: a, to_port: 1 }).expect("mask link");
+        let order = g.evaluation_order().expect("order");
+        let pos = |id| order.iter().position(|n| *n == id).expect("present");
+        assert!(pos(m) < pos(a));
+        assert_eq!(g.insert_serial(m, exposure(), Params::new()), Err(GraphError::PortKindMismatch));
+    }
+
+    #[test]
+    fn removing_a_mask_node_frees_the_key_input_and_keeps_the_chain() {
+        let mut g = NodeGraph::new();
+        let a = g.insert_serial(g.source(), exposure(), Params::new()).expect("insert");
+        let m = g.add_node(NodeKind::Mask, Params::new()).expect("add mask");
+        assert!(g.node(m).is_some_and(|n| n.mask.is_some()));
+        g.connect(Link { from: m, from_port: 0, to: a, to_port: 1 }).expect("mask link");
+        g.remove_node(m).expect("remove");
+        assert_eq!(g.input_link(a, 1), None);
+        assert_eq!(g.evaluation_order(), Ok(vec![g.source(), a, g.output()]));
+    }
+
+    #[test]
+    fn only_mask_nodes_have_a_mask_definition() {
+        let mut g = NodeGraph::new();
+        let a = g.insert_serial(g.source(), exposure(), Params::new()).expect("insert");
+        assert!(g.node_mut(a).expect("exists").mask().is_none());
+        let m = g.add_mask_node(MaskDef::default());
+        g.node_mut(m).expect("exists").mask().expect("mask node").invert = true;
+        assert!(g.node(m).and_then(|n| n.mask.as_ref()).is_some_and(|d| d.invert));
     }
 
     #[test]

@@ -127,6 +127,26 @@ pub fn lensfun_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) ->
     config_dir(os, app, env).map(|d| d.join("lensfun"))
 }
 
+/// Folder for large data that can be downloaded again (AI models, caches),
+/// following each system's convention: `%LOCALAPPDATA%\<app>` on Windows (not
+/// roamed between machines), `$XDG_DATA_HOME/<app>` or `~/.local/share/<app>`
+/// on Linux, `~/Library/Application Support/<app>` on macOS.
+///
+/// `env` looks up environment variables, as in [`config_dir`]. Returns `None`
+/// when the variables a system needs are missing or relative.
+#[must_use]
+pub fn data_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let absolute = |v: OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
+    let base = match os {
+        Os::Windows => env("LOCALAPPDATA").and_then(absolute)?,
+        Os::Linux => env("XDG_DATA_HOME")
+            .and_then(absolute)
+            .or_else(|| env("HOME").and_then(absolute).map(|h| h.join(".local").join("share")))?,
+        Os::MacOs => env("HOME").and_then(absolute)?.join("Library").join("Application Support"),
+    };
+    Some(base.join(app))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +231,33 @@ mod tests {
         assert_eq!(command_key_name(Os::Windows), "Ctrl");
         assert_eq!(command_key_name(Os::Linux), "Ctrl");
         assert_eq!(command_key_name(Os::MacOs), "Cmd");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn data_dir_follows_xdg_data_then_home_on_linux_and_library_on_macos() {
+        let with_xdg = data_dir(Os::Linux, "rne", env(&[("XDG_DATA_HOME", "/data"), ("HOME", "/home/m")]));
+        assert_eq!(with_xdg, Some(PathBuf::from("/data/rne")));
+        let home_only = data_dir(Os::Linux, "rne", env(&[("HOME", "/home/m")]));
+        assert_eq!(home_only, Some(PathBuf::from("/home/m/.local/share/rne")));
+        let mac = data_dir(Os::MacOs, "rne", env(&[("HOME", "/Users/m")]));
+        assert_eq!(mac, Some(PathBuf::from("/Users/m/Library/Application Support/rne")));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn data_dir_uses_local_appdata_on_windows() {
+        let local = r"C:\Users\m\AppData\Local";
+        assert_eq!(
+            data_dir(Os::Windows, "rne", env(&[("LOCALAPPDATA", local), ("APPDATA", r"C:\x")])),
+            Some(PathBuf::from(r"C:\Users\m\AppData\Local\rne"))
+        );
+    }
+
+    #[test]
+    fn data_dir_is_none_without_the_needed_variables() {
+        assert_eq!(data_dir(Os::Windows, "rne", env(&[])), None);
+        assert_eq!(data_dir(Os::Linux, "rne", env(&[])), None);
+        assert_eq!(data_dir(Os::MacOs, "rne", env(&[])), None);
     }
 }

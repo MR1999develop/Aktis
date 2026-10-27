@@ -194,3 +194,65 @@ fn nothing_to_undo_or_redo_returns_none() {
     assert_eq!(s.undo(), None);
     assert_eq!(s.redo(), None);
 }
+
+fn subject_mask() -> core_model::MaskDef {
+    let model = core_model::ModelId::new("birefnet_general").expect("valid id");
+    let component =
+        core_model::MaskComponent::ai("Subject", core_model::MaskOp::Add, core_model::AiTarget::Subject, model);
+    core_model::MaskDef { components: vec![component], ..core_model::MaskDef::default() }
+}
+
+/// The mask node feeding `node`'s key input.
+fn mask_of(s: &EditSession, node: NodeId) -> Option<NodeId> {
+    s.recipe().graph.input_link(node, 1).map(|l| l.from)
+}
+
+#[test]
+fn adding_a_mask_connects_a_new_mask_node_to_the_key_input_and_undo_removes_it() {
+    let reg = registry();
+    let (mut s, node) = session_with_exposure(&reg);
+    let before = s.recipe().graph.clone();
+    s.apply(&reg, Edit::AddMask { to: node, def: subject_mask() }).expect("add mask");
+    let mask = mask_of(&s, node).expect("key input fed");
+    assert_eq!(s.recipe().graph.node(mask).and_then(|n| n.mask.clone()), Some(subject_mask()));
+    assert_eq!(s.undo_label().as_deref(), Some("Add mask"));
+    s.undo();
+    assert_eq!(s.recipe().graph, before);
+    s.redo();
+    assert_eq!(mask_of(&s, node), Some(mask), "redo restores the same node id");
+}
+
+#[test]
+fn a_mask_can_only_go_on_a_node_with_a_key_input() {
+    let reg = registry();
+    let (mut s, _) = session_with_exposure(&reg);
+    let output = s.recipe().graph.output();
+    let before = s.recipe().graph.clone();
+    assert_eq!(s.apply(&reg, Edit::AddMask { to: output, def: subject_mask() }), Err(EditError::NoMaskInput(output)));
+    assert_eq!(s.recipe().graph, before);
+    assert_eq!(s.undo_label().as_deref(), Some("Add serial node"), "no step recorded");
+}
+
+#[test]
+fn changing_a_mask_is_undoable_clamped_and_merged_within_a_gesture() {
+    let reg = registry();
+    let (mut s, node) = session_with_exposure(&reg);
+    s.apply(&reg, Edit::AddMask { to: node, def: subject_mask() }).expect("add mask");
+    let mask = mask_of(&s, node).expect("fed");
+    let def_of = |s: &EditSession| s.recipe().graph.node(mask).and_then(|n| n.mask.clone()).expect("mask node");
+
+    let gesture = s.begin_gesture();
+    for feather in [0.01, 0.02, 0.5] {
+        let def = core_model::MaskDef { feather, ..subject_mask() };
+        s.apply_in_gesture(&reg, Edit::SetMask { node: mask, def }, Some(gesture)).expect("set");
+    }
+    assert!((def_of(&s).feather - core_model::MAX_FEATHER).abs() < 1e-6, "clamped");
+    assert_eq!(s.undo().as_deref(), Some("Change mask"));
+    assert_eq!(def_of(&s), subject_mask(), "one undo step for the whole drag");
+
+    assert_eq!(
+        s.apply(&reg, Edit::SetMask { node, def: subject_mask() }),
+        Err(EditError::NotAMaskNode(node)),
+        "a tool node has no mask definition"
+    );
+}
