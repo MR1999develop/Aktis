@@ -770,15 +770,12 @@ impl EditorApp {
                 }
                 LibraryAction::Command(command) => self.run(command, ctx),
                 LibraryAction::ApplyPreset(photos, index) => self.apply_preset(index, &photos),
-                LibraryAction::SavePreset(photo) => match self.recipe_for(&photo) {
-                    Some(recipe) => {
-                        let settings = self.brush_settings();
-                        self.presets.open_save(&recipe, &self.registry, false, None, settings);
-                    }
-                    None => {
-                        self.toast = Some(info_toast(format!("{} has no adjustments to save yet", file_name(&photo))));
-                    }
-                },
+                LibraryAction::SavePreset(photo) => {
+                    // A photo never edited opens the window too (its white balance can be saved).
+                    let recipe = self.recipe_for(&photo).unwrap_or_default();
+                    let settings = self.brush_settings();
+                    self.presets.open_save(&recipe, &self.registry, false, None, settings);
+                }
                 LibraryAction::TagFolder => self.start_tagging(ctx),
                 LibraryAction::StopTagging => {
                     if let Some(job) = &self.tagging {
