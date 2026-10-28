@@ -1074,7 +1074,14 @@ impl EditorApp {
                 let meta = (self.tabs.tab == LeftTab::Metadata)
                     .then(|| path.as_deref().map(|p| self.library.catalog_meta(p)))
                     .flatten();
-                tabs.extend(self.tabs.show(ui, self.doc.as_ref(), meta.as_ref()));
+                // The panel keeps the height the user dragged it to: the tabs
+                // draw inside that rectangle (clipped), and it is reserved whole,
+                // so neither a short nor a long tab resizes the panel.
+                let rect = ui.available_rect_before_wrap();
+                let mut inside = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                inside.set_clip_rect(rect.intersect(ui.clip_rect()));
+                tabs.extend(self.tabs.show(&mut inside, self.doc.as_ref(), meta.as_ref()));
+                ui.allocate_rect(rect, Sense::hover());
             });
         egui::Panel::right("filmstrip")
             .resizable(false)
