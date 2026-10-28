@@ -176,3 +176,8 @@
   the Pan cursor (H) with right-click Navigator, the Loupe (P) and Shift +
   wheel zooming every photo shown are not done; Space held pans and the
   wheel steps through the zoom levels.
+- Custom lenses: a photo never edited opens developed with the default
+  lens settings, then again with its custom lens (two developments); give
+  `Worker::open` the starting settings. Applying a custom lens to several
+  selected photos from the filmstrip, Capture One's Sharpness Falloff and
+  Purple Fringing, and a manual chromatic aberration are not offered.
