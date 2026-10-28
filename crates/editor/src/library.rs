@@ -486,9 +486,36 @@ pub fn file_stem(path: &Path) -> String {
     path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned())
 }
 
+/// Widest a filmstrip card grows before the filmstrip makes another column.
+pub const MAX_CARD_WIDTH: f32 = 240.0;
+
+/// Columns and card width of a filmstrip `width` points wide, with `gap`
+/// between cards: one column whose card grows with the strip up to
+/// [`MAX_CARD_WIDTH`], then as many columns as keep every card at most
+/// that wide (as Capture One's browser does).
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // small counts
+pub fn filmstrip_columns(width: f32, gap: f32) -> (usize, f32) {
+    let width = width.max(1.0);
+    let columns = (((width + gap) / (MAX_CARD_WIDTH + gap)).ceil() as usize).max(1);
+    let card = (width - gap * (columns - 1) as f32) / columns as f32;
+    (columns, card)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    #[test]
+    fn the_filmstrip_grows_then_makes_columns() {
+        assert_eq!(filmstrip_columns(160.0, 6.0), (1, 160.0));
+        assert_eq!(filmstrip_columns(MAX_CARD_WIDTH, 6.0).0, 1);
+        let (c, w) = filmstrip_columns(300.0, 6.0);
+        assert_eq!(c, 2);
+        assert!((w - 147.0).abs() < 1e-4);
+        let (c, w) = filmstrip_columns(1200.0, 6.0);
+        assert!(c >= 5 && w <= MAX_CARD_WIDTH, "{c} {w}");
+    }
+
     use super::*;
     use catalog::ColorLabel;
 

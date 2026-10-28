@@ -183,9 +183,9 @@ pub const RADIUS_CONTROL: u8 = 4;
 pub const RADIUS_WINDOW: u8 = 8;
 /// Width of the right panel (histogram and node settings): default, minimum, maximum.
 pub const INSPECTOR_WIDTH: [f32; 3] = [330., 280., 460.];
-/// Width of the left panel (Explorer and filmstrip): default, minimum, maximum.
-pub const LEFT_WIDTH: [f32; 3] = [420., 340., 640.];
-/// Width of the filmstrip column inside the left panel.
+/// Width of the left panel (Explorer, with History and Metadata under it): default, minimum, maximum.
+pub const LEFT_WIDTH: [f32; 3] = [250., 180., 480.];
+/// Narrowest filmstrip (and its first width); it can be dragged wider.
 pub const FILMSTRIP_WIDTH: f32 = 172.0;
 /// Height of the node graph under the viewer: default, minimum, maximum.
 pub const GRAPH_HEIGHT: [f32; 3] = [190., 120., 420.];

@@ -1312,14 +1312,6 @@ impl EditorApp {
                 tabs.extend(self.tabs.show(&mut inside, self.doc.as_ref(), meta.as_ref()));
                 ui.allocate_rect(rect, Sense::hover());
             });
-        egui::Panel::right("filmstrip")
-            .resizable(false)
-            .exact_size(FILMSTRIP_WIDTH)
-            .frame(Frame::NONE.fill(t.bar).inner_margin(Margin::symmetric(6, 6)))
-            .show(ui, |ui| {
-                let current = self.doc.as_ref().map(|d| d.path().to_owned());
-                self.library.filmstrip(ui, current.as_deref(), library);
-            });
         egui::CentralPanel::default().frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(8, 4))).show(
             ui,
             |ui| {
@@ -1683,6 +1675,18 @@ impl eframe::App for EditorApp {
             .size_range(LEFT_WIDTH[1]..=LEFT_WIDTH[2])
             .frame(Frame::NONE.fill(t.bg))
             .show(ui, |ui| self.left_panel(ui, &mut library, &mut tabs));
+        // The filmstrip, right of the Explorer: drag its right edge to widen
+        // it; the thumbnails grow, then line up in columns.
+        let max_strip = (ctx.content_rect().width() * 0.75).max(FILMSTRIP_WIDTH);
+        egui::Panel::left("filmstrip")
+            .resizable(true)
+            .default_size(FILMSTRIP_WIDTH)
+            .size_range(FILMSTRIP_WIDTH..=max_strip)
+            .frame(Frame::NONE.fill(t.bar).inner_margin(Margin::symmetric(6, 6)))
+            .show(ui, |ui| {
+                let current = self.doc.as_ref().map(|d| d.path().to_owned());
+                self.library.filmstrip(ui, current.as_deref(), &mut library);
+            });
         let scope = egui::Panel::right("inspector")
             .resizable(true)
             .default_size(INSPECTOR_WIDTH[0])

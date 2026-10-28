@@ -687,7 +687,9 @@ impl Library {
             ui.add(Label::new(RichText::new(text).color(t.text_weak)).wrap());
             return;
         }
-        let card_w = ui.available_width();
+        // Cards grow with the strip, then the strip makes more columns.
+        let gap = ui.spacing().item_spacing.x;
+        let (columns, card_w) = editor::library::filmstrip_columns(ui.available_width(), gap);
         let thumb_h = ((card_w - 2.0 * CARD_PAD) / THUMB_ASPECT).max(20.0);
         let card_h = CARD_PAD + thumb_h + 4.0 + 2.0 * CARD_LINE + CARD_PAD;
         let row_step = card_h + ui.spacing().item_spacing.y;
@@ -695,30 +697,35 @@ impl Library {
         let mut area = egui::ScrollArea::vertical().id_salt("filmstrip").auto_shrink([false, false]);
         if let Some(target) = self.scroll_to.take()
             && let Some(pos) = visible.iter().position(|&i| self.strip.photos[i].path == target)
-            && !(self.shown_rows.start < pos && pos + 1 < self.shown_rows.end)
+            && !(self.shown_rows.start < pos / columns && pos / columns + 1 < self.shown_rows.end)
         {
             // One card above the target stays in view.
             #[allow(clippy::cast_precision_loss)] // row counts
-            let offset = pos.saturating_sub(1) as f32 * row_step;
+            let offset = (pos / columns).saturating_sub(1) as f32 * row_step;
             area = area.vertical_scroll_offset(offset);
         }
 
         let mut card_actions = Vec::new();
         let several = self.strip.selection().len() > 1;
         let Self { strip, thumbs, wanted, shown_rows, .. } = self;
-        area.show_rows(ui, card_h, visible.len(), |ui, rows| {
-            let first = rows.start.saturating_sub(PREFETCH_ROWS);
-            let last = (rows.end + PREFETCH_ROWS).min(visible.len());
+        let row_count = visible.len().div_ceil(columns);
+        area.show_rows(ui, card_h, row_count, |ui, rows| {
+            let first = rows.start.saturating_sub(PREFETCH_ROWS) * columns;
+            let last = ((rows.end + PREFETCH_ROWS) * columns).min(visible.len());
             wanted.extend(visible[first..last].iter().map(|&i| strip.photos[i].path.clone()));
             *shown_rows = rows.clone();
             for row in rows {
-                let photo = &strip.photos[visible[row]];
-                let state = CardState {
-                    open: current == Some(photo.path.as_path()),
-                    selected: strip.is_selected(&photo.path),
-                    several,
-                };
-                card(ui, &t, photo, thumbs.get(&photo.path), state, card_h, &mut card_actions);
+                ui.horizontal(|ui| {
+                    for &index in visible.iter().skip(row * columns).take(columns) {
+                        let photo = &strip.photos[index];
+                        let state = CardState {
+                            open: current == Some(photo.path.as_path()),
+                            selected: strip.is_selected(&photo.path),
+                            several,
+                        };
+                        card(ui, &t, photo, thumbs.get(&photo.path), state, [card_w, card_h], &mut card_actions);
+                    }
+                });
             }
         });
         // The overview of a multiple selection shows its thumbnails too.
@@ -1008,11 +1015,12 @@ fn card(
     photo: &StripPhoto,
     thumb: Option<&ThumbState<TextureHandle>>,
     state: CardState,
-    height: f32,
+    size: [f32; 2],
     actions: &mut Vec<CardAction>,
 ) {
     let is_open = state.open;
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
+    let height = size[1];
+    let (rect, response) = ui.allocate_exact_size(vec2(size[0], height), Sense::click());
     let hover = match thumb {
         Some(ThumbState::Failed(why)) => format!("{}\nNo preview: {why}", photo.path.display()),
         _ => photo.path.display().to_string(),
