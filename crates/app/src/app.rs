@@ -197,6 +197,8 @@ pub struct EditorApp {
     confirm_delete: Option<VariantInfo>,
     /// Presets and style brushes, and the Save Preset window.
     presets: PresetsUi,
+    /// Closing was refused once because the edit could not be saved.
+    close_refused: bool,
 }
 
 impl std::fmt::Debug for EditorApp {
@@ -280,6 +282,7 @@ impl EditorApp {
             dirty_since: None,
             confirm_delete: None,
             presets: PresetsUi::default(),
+            close_refused: false,
         };
         app.reload_presets();
         if let Some(problem) = app.library.catalog_problem.take() {
@@ -403,7 +406,11 @@ impl EditorApp {
 
     /// Exports `photos` with the remembered export settings.
     fn start_export(&mut self, photos: Vec<PathBuf>, ctx: &egui::Context) {
-        if photos.is_empty() || self.exporting.is_some() {
+        if photos.is_empty() {
+            return;
+        }
+        if self.exporting.is_some() {
+            self.toast = Some(info_toast("An export is running; wait for it to finish or stop it".to_owned()));
             return;
         }
         let Some(worker) = &self.worker else { return };
@@ -425,8 +432,9 @@ impl EditorApp {
             Command::Export => self.open_export_dialog(self.export_targets()),
             Command::ExportAgain => self.start_export(self.export_targets(), ctx),
             Command::Quit => {
-                self.save_edit(true);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                if self.save_before_closing() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
             Command::NewVariant => self.add_variant(false),
             Command::CloneVariant => self.add_variant(true),
@@ -470,8 +478,11 @@ impl EditorApp {
                     self.opening = None;
                     match result {
                         Ok(opened) => {
-                            // The photo being left is saved first.
-                            self.save_edit(true);
+                            // The photo being left is saved first; if it cannot be, it stays open.
+                            if !self.save_edit(true) {
+                                self.opening_path = None;
+                                continue;
+                            }
                             let path = opened.path.clone();
                             let first = self.doc.as_ref().map_or(1, |d| d.generation() + 1);
                             let reopened = match self.library.shown_variant(&path) {
@@ -900,6 +911,8 @@ impl EditorApp {
         // Show the Source's settings, as for a new photo.
         self.selected_node = Some(doc.recipe().graph.source());
         self.graph.restore(view);
+        // A style brush armed on the photo being left is not carried over.
+        self.mask_ui.disarm();
         self.variants = self.library.variants(doc.path());
         self.doc = Some(doc);
         self.variant = Some(state);
@@ -908,6 +921,20 @@ impl EditorApp {
         if let Some(text) = notice {
             self.toast = Some(info_toast(text));
         }
+    }
+
+    /// Saves the open variant before the window closes. When the catalog
+    /// refuses, the window stays open the first time (the error is shown)
+    /// and closes without saving if the user asks again.
+    fn save_before_closing(&mut self) -> bool {
+        if self.save_edit(true) || self.close_refused {
+            return true;
+        }
+        self.close_refused = true;
+        self.toast = Some(error_toast(
+            "The edit could not be saved, so the window stays open. Close it again to quit without saving.".to_owned(),
+        ));
+        false
     }
 
     /// Writes the open variant to the catalog when it changed, with a
@@ -1006,7 +1033,17 @@ impl EditorApp {
         if !self.save_edit(true) {
             return;
         }
-        let number = next_variant_number(&self.variant_list());
+        // Numbered after what the catalog really holds, so no stored variant is replaced.
+        let Some(path) = self.doc.as_ref().map(|d| d.path().to_owned()) else { return };
+        let stored = match self.library.try_variants(&path) {
+            Ok(list) => list,
+            Err(e) => {
+                self.toast = Some(error_toast(format!("No variant can be added: the catalog cannot be read ({e})")));
+                return;
+            }
+        };
+        let open = self.variant.as_ref().map(|s| s.info.clone());
+        let number = next_variant_number(&variants::variant_list(&stored, open.as_ref()));
         let Some(doc) = &self.doc else { return };
         let path = doc.path().to_owned();
         let first = doc.generation() + 1;
@@ -1071,14 +1108,25 @@ impl EditorApp {
             return; // another variant is open now
         }
         let Some(next) = variants::after_delete(&self.variant_list(), deleted.number) else { return };
+        // The neighbour is read first: if it cannot be, nothing is deleted.
+        let stored = match self.library.load_variant(&path, next) {
+            Ok(stored) => stored,
+            Err(e) => {
+                self.toast = Some(error_toast(format!("The variant could not be deleted: {e}")));
+                return;
+            }
+        };
         if let Err(e) = self.library.delete_variant(&path, deleted.number) {
             self.toast = Some(error_toast(format!("The variant could not be deleted: {e}")));
             return;
         }
-        // Nothing left to save of it.
-        self.variant = None;
-        self.switch_variant(next);
-        if self.variant.is_some() {
+        let Some(doc) = &self.doc else { return };
+        let (opened, first) = (doc.opened().clone(), doc.generation() + 1);
+        let reopened = variants::reopen(opened, first, &self.registry, next, stored);
+        self.install(reopened, true, false);
+        if let Err(e) = self.library.set_current_variant(&path, next) {
+            self.toast = Some(error_toast(format!("The variant could not be chosen: {e}")));
+        } else {
             self.toast = Some(info_toast(format!("Deleted {}", deleted.name)));
         }
     }
@@ -2129,6 +2177,9 @@ impl EditorApp {
         if self.tool == self.prev_tool {
             return;
         }
+        if self.tool != Some(ViewerTool::Masks) {
+            self.mask_ui.disarm();
+        }
         if self.prev_tool == Some(ViewerTool::Crop) && self.tool != Some(ViewerTool::Crop) {
             let next = self.tool;
             self.leave_crop(true);
@@ -2360,7 +2411,9 @@ impl eframe::App for EditorApp {
         self.check_selection();
         // Closing the window: save the open variant while the screen still shows it.
         if ctx.input(|i| i.viewport().close_requested()) {
-            self.save_edit(true);
+            if !self.save_before_closing() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
         } else {
             self.autosave(&ctx);
         }

@@ -347,6 +347,17 @@ impl Library {
         self.catalog.as_ref().and_then(|c| c.variants(path).ok()).unwrap_or_default()
     }
 
+    /// The variants stored for `path`, or why the catalog cannot be read.
+    ///
+    /// # Errors
+    /// A message when the catalog cannot be read.
+    pub fn try_variants(&self, path: &Path) -> Result<Vec<VariantInfo>, String> {
+        match &self.catalog {
+            Some(c) => c.variants(path).map_err(|e| e.to_string()),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// The variant shown for `path` and its stored edit (variant 1 and
     /// nothing for a photo never edited).
     ///

@@ -301,7 +301,9 @@ impl MaskUi {
                                 self.style_brush_picker(ui, &t, brushes, edits);
                                 ui.separator();
                             }
-                            if let Some(armed) = &self.armed {
+                            if tool == ViewerTool::Masks
+                                && let Some(armed) = &self.armed
+                            {
                                 ui.label(RichText::new(format!("Paint to add \u{201c}{}\u{201d}", armed.name)).strong());
                                 ui.label("Size");
                                 let mut size = self.brush.radius * 100.0;
