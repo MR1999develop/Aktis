@@ -169,6 +169,9 @@ fn info(path: &Path) -> Result<(), BoxError> {
         if raw.has_camera_white_balance { "" } else { " (none in file)" }
     );
     println!("  orientation  {:?}", raw.orientation);
+    for note in &raw.notes {
+        println!("  file note    {note}");
+    }
     let illuminants: Vec<String> = c.color_matrices.iter().map(|m| format!("{:?}", m.illuminant)).collect();
     println!(
         "  profile      built-in matrices ({})",

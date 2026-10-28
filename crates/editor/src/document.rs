@@ -23,6 +23,9 @@ pub struct RawData {
     pub sensor: SensorImage,
     /// Camera, lens, shooting data and colour calibration.
     pub capture: CaptureInfo,
+    /// What the RAW reader noted (DNG gain maps applied, opcodes skipped),
+    /// shown with the development notes.
+    pub file_notes: Vec<String>,
 }
 
 /// The output of the development stage for one set of settings.
@@ -672,7 +675,7 @@ mod tests {
             core_model::Matrix3::IDENTITY,
         )
         .unwrap();
-        o.raw = Some(Arc::new(RawData { sensor, capture: CaptureInfo::default() }));
+        o.raw = Some(Arc::new(RawData { sensor, capture: CaptureInfo::default(), file_notes: Vec::new() }));
         let mut doc = Document::with_tools(o, &reg, STARTING, 1).unwrap();
         assert!(!doc.needs_develop());
 

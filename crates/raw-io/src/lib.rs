@@ -6,6 +6,10 @@
 //! to the area the camera declares as valid. Shooting data (lens, focal
 //! length, aperture) and the camera's colour matrices for every calibration
 //! illuminant are read too, for lens corrections and camera profiles.
+//!
+//! DNG files may carry opcode lists, which the decoder ignores; the GainMap
+//! opcodes (lens shading of phone cameras) are read from the file here and
+//! applied to the normalised mosaic, other opcodes are reported in notes.
 
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -22,7 +26,9 @@ use rawler::rawimage::RawPhotometricInterpretation;
 use rawler::rawsource::RawSource;
 
 mod info;
+mod opcodes;
 mod thumbnail;
+mod tiff;
 
 pub use info::PhotoInfo;
 pub use thumbnail::{Thumbnail, orient_rgb8, read_thumbnail};
@@ -115,6 +121,9 @@ pub struct RawFile {
     pub capture: CaptureInfo,
     /// Exposure, date, GPS and rating for the Metadata panel.
     pub info: PhotoInfo,
+    /// What reading did beyond decoding, or could not do, for the user
+    /// ("lens shading corrected with the DNG gain maps", DNG opcodes not applied).
+    pub notes: Vec<String>,
 }
 
 /// Reads and decodes a RAW or DNG file.
@@ -140,7 +149,10 @@ pub fn read_raw(path: &Path) -> Result<RawFile, RawIoError> {
     }))
     .ok()
     .flatten();
-    let mut file = convert(&raw, metadata.as_ref())?;
+    // The decoder does not apply DNG opcodes: read them from the file itself
+    // (only the IFD tables and the lists; any file that is not a DNG gives nothing).
+    let opcodes = std::fs::File::open(path).map(opcodes::read_opcodes).unwrap_or_default();
+    let mut file = convert(&raw, metadata.as_ref(), &opcodes)?;
     file.info = metadata.as_ref().map(info::from_metadata).unwrap_or_default();
     Ok(file)
 }
@@ -161,7 +173,11 @@ pub fn read_info(path: &Path) -> Result<PhotoInfo, RawIoError> {
     .map_err(|_| RawIoError::DecoderCrashed)?
 }
 
-fn convert(raw: &rawler::RawImage, metadata: Option<&RawMetadata>) -> Result<RawFile, RawIoError> {
+fn convert(
+    raw: &rawler::RawImage,
+    metadata: Option<&RawMetadata>,
+    opcodes: &opcodes::DngOpcodes,
+) -> Result<RawFile, RawIoError> {
     let area = valid_area(raw.width, raw.height, rect(raw.crop_area), rect(raw.active_area));
     let (cfa, cpp) = match &raw.photometric {
         RawPhotometricInterpretation::BlackIsZero => return Err(RawIoError::Monochrome),
@@ -176,11 +192,12 @@ fn convert(raw: &rawler::RawImage, metadata: Option<&RawMetadata>) -> Result<Raw
     };
 
     let levels = Levels::new(&raw.blacklevel.as_bayer_array(), &raw.whitelevel.as_bayer_array(), cpp, raw)?;
-    let data = match &raw.data {
+    let mut data = match &raw.data {
         RawImageData::Integer(v) => scale(v, raw.width, cpp, area, &levels, |s| f32::from(*s)),
         RawImageData::Float(v) => scale(v, raw.width, cpp, area, &levels, |s| *s),
     }
     .ok_or_else(|| RawIoError::Decode("pixel data shorter than declared".to_owned()))?;
+    let notes = apply_gain_maps(&mut data, cpp, area, gain_map_placement(raw, area), opcodes);
 
     let has_wb = raw.wb_coeffs[..3].iter().all(|m| m.is_finite() && *m > 0.0);
     let wb = if has_wb { [raw.wb_coeffs[0], raw.wb_coeffs[1], raw.wb_coeffs[2]] } else { [1.0; 3] };
@@ -204,7 +221,49 @@ fn convert(raw: &rawler::RawImage, metadata: Option<&RawMetadata>) -> Result<Raw
         has_camera_white_balance: has_wb,
         capture,
         info: PhotoInfo::default(),
+        notes,
     })
+}
+
+/// Where the kept `area` sits in the image DNG opcodes refer to: the frame
+/// cut to its active area (the whole frame without one). `None` when the
+/// area starts outside it.
+fn gain_map_placement(raw: &rawler::RawImage, area: Area) -> Option<opcodes::Placement> {
+    let frame = Area { x: 0, y: 0, w: raw.width, h: raw.height };
+    let stage = rect(raw.active_area).filter(|a| fits(a, raw.width, raw.height)).unwrap_or(frame);
+    Some(opcodes::Placement {
+        x: area.x.checked_sub(stage.x)?,
+        y: area.y.checked_sub(stage.y)?,
+        width: stage.w,
+        height: stage.h,
+    })
+}
+
+/// Applies the DNG gain maps to the normalised pixels of `area`; returns
+/// the notes for the user (the opcodes' own, plus what happened here).
+fn apply_gain_maps(
+    data: &mut [f32],
+    cpp: usize,
+    area: Area,
+    placement: Option<opcodes::Placement>,
+    opcodes: &opcodes::DngOpcodes,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !opcodes.gain_maps.is_empty() {
+        match placement {
+            Some(at) => {
+                for map in &opcodes.gain_maps {
+                    map.apply(data, area.w, area.h, cpp, at);
+                }
+                notes.push("lens shading corrected with the DNG gain maps".to_owned());
+            }
+            None => {
+                notes.push("the DNG gain maps (lens shading) do not match the image and were not applied".to_owned())
+            }
+        }
+    }
+    notes.extend(opcodes.notes.iter().cloned());
+    notes
 }
 
 /// Shooting data and colour calibration of the file.
@@ -271,8 +330,13 @@ fn rect(r: Option<rawler::imgop::Rect>) -> Option<Area> {
 /// The area to keep: the camera's default crop, else the active area, else
 /// the whole frame. An area that does not fit in the frame is ignored.
 fn valid_area(width: usize, height: usize, crop: Option<Area>, active: Option<Area>) -> Area {
-    let fits = |a: &Area| a.w > 0 && a.h > 0 && a.x + a.w <= width && a.y + a.h <= height;
+    let fits = |a: &Area| fits(a, width, height);
     crop.filter(fits).or(active.filter(fits)).unwrap_or(Area { x: 0, y: 0, w: width, h: height })
+}
+
+/// Whether `a` is a non-empty rectangle inside a `width × height` frame.
+fn fits(a: &Area, width: usize, height: usize) -> bool {
+    a.w > 0 && a.h > 0 && a.x + a.w <= width && a.y + a.h <= height
 }
 
 /// Our CFA description from the decoder's: colour index (0 R, 1 G, 2 B) at
@@ -509,6 +573,44 @@ mod tests {
         assert_eq!(orientation_from_exif(3), Orientation::Rotate180);
         assert_eq!(orientation_from_exif(0), Orientation::Normal);
         assert_eq!(orientation_from_exif(42), Orientation::Normal);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn dng_gain_maps_are_applied_where_the_kept_area_sits_and_reported() {
+        use opcodes::tests::{dng, gain_map_params, list};
+        // One gain of 2 on the even rows and columns of the active area (the R of an RGGB mosaic).
+        let gain = gain_map_params([0, 0, 0, 0, 0, 1, 1, 1], (1, 1), (1.0, 1.0), (0.0, 0.0), &[2.0], 1);
+        let mut red = gain.clone();
+        red[24..32].copy_from_slice(&[0, 0, 0, 2, 0, 0, 0, 2]); // row and column pitch 2
+        let lists = vec![
+            (tiff::tag::OPCODE_LIST2, tiff::tests::Value::Undefined(list(&[(9, 0, red)]))),
+            (tiff::tag::OPCODE_LIST3, tiff::tests::Value::Undefined(list(&[(1, 0, vec![0; 4])]))),
+        ];
+        let found = opcodes::read_opcodes(std::io::Cursor::new(dng(true, lists)));
+        assert_eq!(found.gain_maps.len(), 1);
+
+        // The default crop starts one photosite into the 6×6 active area.
+        let area = Area { x: 3, y: 3, w: 4, h: 4 };
+        let at = opcodes::Placement { x: 1, y: 1, width: 6, height: 6 };
+        let mut data = vec![0.25_f32; 16];
+        let notes = apply_gain_maps(&mut data, 1, area, Some(at), &found);
+        for (i, v) in data.iter().enumerate() {
+            let red_site = (i / 4) % 2 == 1 && (i % 4) % 2 == 1;
+            assert!((v - if red_site { 0.5 } else { 0.25 }).abs() < 1e-6, "pixel {i}: {v}");
+        }
+        assert_eq!(
+            notes,
+            [
+                "lens shading corrected with the DNG gain maps",
+                "DNG opcode WarpRectilinear (OpcodeList3) is not supported and was not applied",
+            ]
+        );
+
+        let mut untouched = vec![0.25_f32; 16];
+        let notes = apply_gain_maps(&mut untouched, 1, area, None, &found);
+        assert!(untouched.iter().all(|v| (v - 0.25).abs() < 1e-6));
+        assert!(notes[0].contains("were not applied"), "{notes:?}");
     }
 
     #[test]
