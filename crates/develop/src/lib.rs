@@ -3,15 +3,18 @@
 //! Order (fixed by the sensor's physics and the optics): white balance on the
 //! raw mosaic, demosaic, lens corrections in camera RGB (vignetting, then
 //! distortion and lateral chromatic aberration, which move each colour
-//! channel differently), camera profile into the working space. This is the
-//! reference implementation; quality demosaicing (and X-Trans) moves to the
-//! GPU engine in phase 3, tested against this one.
+//! channel differently), camera profile into the working space. Bayer
+//! sensors are demosaiced bilinearly, X-Trans sensors with an edge-aware
+//! green and colour differences ([`xtrans`]). This is the reference
+//! implementation; quality demosaicing moves to the GPU engine in phase 3,
+//! tested against this one.
 //!
 //! [`prepare`] chooses the profile and the lens correction for an image from
 //! its shooting data; [`develop_with`] applies them.
 
 mod lens;
 pub mod prepare;
+mod xtrans;
 
 use std::fmt;
 
@@ -22,8 +25,6 @@ use lens_db::LensCorrection;
 /// Why the development stage could not run.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DevelopError {
-    /// The sensor uses a layout this build cannot demosaic yet (X-Trans).
-    UnsupportedCfa,
     /// The camera colour matrix cannot be inverted.
     DegenerateCameraMatrix,
     /// The camera profile cannot be used.
@@ -37,7 +38,6 @@ pub enum DevelopError {
 impl fmt::Display for DevelopError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedCfa => write!(f, "this sensor layout (X-Trans) is not supported yet"),
             Self::DegenerateCameraMatrix => write!(f, "the camera colour matrix in the file is not usable"),
             Self::Profile(e) => write!(f, "camera profile: {e}"),
             Self::LensSizeMismatch => write!(f, "the lens correction was prepared for another image size"),
@@ -69,7 +69,7 @@ pub struct DevelopInputs<'a> {
 /// own colour matrix and no lens correction.
 ///
 /// # Errors
-/// [`DevelopError`] for X-Trans sensors (not yet supported) or an unusable colour matrix.
+/// [`DevelopError`] for an unusable colour matrix.
 pub fn develop(
     sensor: &SensorImage,
     settings: &DevelopSettings,
@@ -82,8 +82,8 @@ pub fn develop(
 /// profile and lens corrections.
 ///
 /// # Errors
-/// [`DevelopError`] for X-Trans sensors (not yet supported), an unusable
-/// colour matrix or profile, or a lens correction for another image size.
+/// [`DevelopError`] for an unusable colour matrix or profile, or a lens
+/// correction for another image size.
 pub fn develop_with(
     sensor: &SensorImage,
     settings: &DevelopSettings,
@@ -119,7 +119,12 @@ pub fn develop_with(
             out
         }
         CfaPattern::LinearRgb => data.chunks_exact(3).map(|c| [c[0] * wb[0], c[1] * wb[1], c[2] * wb[2]]).collect(),
-        CfaPattern::XTrans(_) => return Err(DevelopError::UnsupportedCfa),
+        CfaPattern::XTrans(pattern) => {
+            // White balance on the mosaic here too; the 6×6 tile starts at the image's corner.
+            let channel = |x: usize, y: usize| usize::from(pattern[y % 6][x % 6]);
+            let balanced: Vec<f32> = data.iter().enumerate().map(|(i, v)| v * wb[channel(i % w, i / w)]).collect();
+            xtrans::demosaic(&balanced, w, h, pattern)
+        }
     };
 
     // Lens corrections, in camera RGB where each channel is still one colour.
@@ -286,14 +291,29 @@ mod tests {
         assert!(p[1][..3].iter().all(|v| (v - 0.25).abs() < 1e-4), "{:?}", p[1]);
     }
 
+    /// The X-Trans tile of Fujifilm cameras, 0 R, 1 G, 2 B.
+    const X_TRANS: [[u8; 6]; 6] = [
+        [1, 1, 0, 1, 1, 2],
+        [1, 1, 2, 1, 1, 0],
+        [2, 0, 1, 0, 2, 1],
+        [1, 1, 2, 1, 1, 0],
+        [1, 1, 0, 1, 1, 2],
+        [0, 2, 1, 2, 0, 1],
+    ];
+
     #[test]
-    fn x_trans_is_reported_as_not_supported_yet() {
-        let s = SensorImage::new(6, 6, vec![0.0; 36], CfaPattern::XTrans([[1; 6]; 6]), [1.0; 3], Matrix3::IDENTITY)
+    fn x_trans_sensors_develop_with_white_balance_on_the_mosaic() {
+        // The camera saw a grey card as R 0.25, G 0.5, B 1.0 and recorded multipliers 2, 1, 0.5.
+        let (w, h) = (13_u32, 11_u32);
+        let values = [0.25, 0.5, 1.0];
+        let data = (0..(w * h) as usize)
+            .map(|i| values[usize::from(X_TRANS[i / w as usize % 6][i % w as usize % 6])])
+            .collect();
+        let s = SensorImage::new(w, h, data, CfaPattern::XTrans(X_TRANS), [2.0, 1.0, 0.5], Matrix3::IDENTITY)
             .expect("valid sensor");
-        assert_eq!(
-            develop(&s, &DevelopSettings::default(), WorkingSpace::LinearRec2020),
-            Err(DevelopError::UnsupportedCfa)
-        );
+        let img = develop(&s, &DevelopSettings::default(), WorkingSpace::LinearSrgb).expect("develops");
+        assert_eq!((img.width(), img.height()), (w, h));
+        assert_all_close(&img, [0.5; 3], 1e-4);
     }
 
     fn vignetting_lens() -> lens_db::LensDatabase {
