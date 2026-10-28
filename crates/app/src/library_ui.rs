@@ -570,9 +570,12 @@ impl Library {
             return;
         }
         let pressed = |key: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key));
-        // Previous / next: the selection becomes that photo alone.
+        // Previous / next: the selection becomes that photo alone; not while
+        // the pointer is over a colour wheel, whose arrows change it.
+        let wheel_keys = crate::color_ui::arrows_taken(ctx);
         for (key, step) in [(Key::ArrowDown, 1), (Key::ArrowRight, 1), (Key::ArrowUp, -1), (Key::ArrowLeft, -1)] {
-            if pressed(key)
+            if !wheel_keys
+                && pressed(key)
                 && let Some(next) = self.strip.neighbour(current, step).map(Path::to_owned)
             {
                 self.strip.select_only(&next);

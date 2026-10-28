@@ -8,8 +8,10 @@
 //!   the uniformity sliders).
 //! - **Colour balance**: Master, 3-Way and a tab per tone band. A band is a
 //!   colour wheel (drag the puck: its direction is the hue, its distance
-//!   the amount) with the lightness on an arc on the right and, for the
-//!   master, the saturation on an arc on the left; double-click resets.
+//!   the amount) with the amount on an arc on the left and the lightness on
+//!   an arc on the right, locked in the master, as in Capture One; arrows
+//!   over a wheel turn the hue and change the amount, a double-click
+//!   centres the puck. Reset clears every wheel, Ctrl+click only this tab.
 //! - **Black & white**: the switch, the six colour sensitivities and the
 //!   split tones.
 //! - **Clarity** (method, clarity, structure), **Dehaze** (amount and
@@ -269,8 +271,11 @@ struct Band {
     hue: String,
     amount: String,
     lightness: String,
-    /// Only the master has a saturation.
-    saturation: Option<String>,
+    /// The lightness can be changed (not in the master, as in Capture One).
+    lightness_enabled: bool,
+    /// Kept only to be reset: the master's lightness and saturation of
+    /// recipes made before the master followed Capture One.
+    legacy: Vec<String>,
 }
 
 impl Band {
@@ -280,7 +285,8 @@ impl Band {
             hue: color_balance::MASTER_HUE.to_owned(),
             amount: color_balance::MASTER_AMOUNT.to_owned(),
             lightness: color_balance::MASTER_LIGHTNESS.to_owned(),
-            saturation: Some(color_balance::MASTER_SATURATION.to_owned()),
+            lightness_enabled: false,
+            legacy: vec![color_balance::MASTER_SATURATION.to_owned()],
         }
     }
 
@@ -290,13 +296,14 @@ impl Band {
             hue: color_balance::hue_id(z),
             amount: color_balance::amount_id(z),
             lightness: color_balance::lightness_id(z),
-            saturation: None,
+            lightness_enabled: true,
+            legacy: Vec::new(),
         }
     }
 
     fn ids(&self) -> Vec<String> {
         let mut ids = vec![self.hue.clone(), self.amount.clone(), self.lightness.clone()];
-        ids.extend(self.saturation.clone());
+        ids.extend(self.legacy.iter().cloned());
         ids
     }
 }
@@ -308,12 +315,15 @@ enum WheelPart {
     None,
     Puck,
     Lightness,
-    Saturation,
+    Amount,
 }
 
-/// One colour-balance wheel `size` points wide: the puck on the hue wheel,
-/// the lightness on an arc on the right and, when the band has one, the
-/// saturation on an arc on the left.
+/// One colour-balance wheel `size` points wide, laid out as in Capture One:
+/// the puck on the hue wheel (direction = hue, distance = amount), the
+/// amount again on an arc on the left and the lightness on an arc on the
+/// right (shown but locked in the master). With the pointer over the wheel
+/// ←/→ turn the hue and ↑/↓ change the amount (Shift: ten times); a
+/// double-click on the wheel puts the puck back in the centre.
 fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
     let node = row.node;
@@ -324,17 +334,20 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
     let radius = size / 2.0 - gap - 5.0;
     let arc_radius = radius + gap;
     let (hue, amount, light) = (float(row, &band.hue), float(row, &band.amount), float(row, &band.lightness));
-    let amount_max = bounds(row, &band.amount)[1].max(1.0);
+    let amount_range = bounds(row, &band.amount);
+    let amount_max = amount_range[1].max(1.0);
     let light_range = bounds(row, &band.lightness);
-    let saturation = band.saturation.as_deref().map(|id| (id, float(row, id), bounds(row, id)));
 
     // Drawing.
     hue_wheel(&painter, center, radius);
     painter.circle_stroke(center, radius, Stroke::new(1.0, t.stroke_strong));
-    value_arc(&painter, center, arc_radius, Arc::RIGHT, light_range, light, 0.0, LIGHTNESS_STRIP);
-    if let Some((_, s, range)) = saturation {
-        let colors = [hue_color(hue, 0.0, HUE_VALUE), hue_color(hue, 1.0, HUE_VALUE)];
-        value_arc(&painter, center, arc_radius, Arc::LEFT, range, s, 0.0, colors);
+    let amount_colors = [hue_color(hue, 0.0, HUE_VALUE), hue_color(hue, 1.0, HUE_VALUE)];
+    value_arc(&painter, center, arc_radius, Arc::LEFT, amount_range, amount, 0.0, amount_colors);
+    if band.lightness_enabled {
+        value_arc(&painter, center, arc_radius, Arc::RIGHT, light_range, light, 0.0, LIGHTNESS_STRIP);
+    } else {
+        let dim = [t.stroke_weak, t.stroke_weak];
+        value_arc(&painter, center, arc_radius, Arc::RIGHT, light_range, light, 0.0, dim);
     }
     let puck = screen(center, radius, color_wheel::wheel_offset(hue, amount / amount_max));
     painter.line_segment([center, puck], Stroke::new(1.0, WHEEL_HANDLE[0]));
@@ -346,10 +359,10 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
         let d = o[0].hypot(o[1]);
         if d <= 1.05 {
             WheelPart::Puck
-        } else if d * radius <= arc_radius + 10.0 && Arc::RIGHT.covers(o, 10.0) {
+        } else if d * radius <= arc_radius + 10.0 && band.lightness_enabled && Arc::RIGHT.covers(o, 10.0) {
             WheelPart::Lightness
-        } else if d * radius <= arc_radius + 10.0 && saturation.is_some() && Arc::LEFT.covers(o, 10.0) {
-            WheelPart::Saturation
+        } else if d * radius <= arc_radius + 10.0 && Arc::LEFT.covers(o, 10.0) {
+            WheelPart::Amount
         } else {
             WheelPart::None
         }
@@ -357,7 +370,7 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
     let key_of = |part: WheelPart| match part {
         WheelPart::Puck => Some(pid(&band.hue)),
         WheelPart::Lightness => Some(pid(&band.lightness)),
-        WheelPart::Saturation => saturation.map(|(id, ..)| pid(id)),
+        WheelPart::Amount => Some(pid(&band.amount)),
         WheelPart::None => None,
     };
     let values_at = |part: WheelPart, p: Pos2| -> Vec<(ParamId, ParamValue)> {
@@ -373,9 +386,9 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
             WheelPart::Lightness => {
                 vec![(pid(&band.lightness), ParamValue::Float(Arc::RIGHT.value_at(o, light_range).round()))]
             }
-            WheelPart::Saturation => saturation
-                .map(|(id, _, range)| vec![(pid(id), ParamValue::Float(Arc::LEFT.value_at(o, range).round()))])
-                .unwrap_or_default(),
+            WheelPart::Amount => {
+                vec![(pid(&band.amount), ParamValue::Float(Arc::LEFT.value_at(o, amount_range).round()))]
+            }
             WheelPart::None => Vec::new(),
         }
     };
@@ -404,10 +417,10 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
         let part = part_at(p);
         if response.double_clicked() {
             let ids: Vec<String> = match part {
-                WheelPart::Puck => vec![band.hue.clone(), band.amount.clone()],
+                // Anywhere on the wheel: the puck back in the centre.
+                WheelPart::Puck | WheelPart::None => vec![band.hue.clone(), band.amount.clone()],
                 WheelPart::Lightness => vec![band.lightness.clone()],
-                WheelPart::Saturation => band.saturation.clone().into_iter().collect(),
-                WheelPart::None => Vec::new(),
+                WheelPart::Amount => vec![band.amount.clone()],
             };
             edits.extend(ids.iter().map(|id| UiEdit::Reset { node, param: pid(id) }));
         } else if response.clicked()
@@ -416,14 +429,61 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
             edits.push(UiEdit::SetMany { node, key, values: values_at(part, p), in_drag: false });
         }
     }
-    let tip = if saturation.is_some() {
+
+    // Keys while the pointer is over the wheel, as in Capture One.
+    if response.hovered() {
+        take_arrows(ui.ctx());
+    }
+    if response.hovered() && !ui.ctx().egui_wants_keyboard_input() {
+        let shift = ui.input(|i| i.modifiers.shift);
+        let (left, right, up, down) = ui.input_mut(|i| {
+            let mut key =
+                |k: egui::Key| i.consume_key(egui::Modifiers::NONE, k) || i.consume_key(egui::Modifiers::SHIFT, k);
+            (key(egui::Key::ArrowLeft), key(egui::Key::ArrowRight), key(egui::Key::ArrowUp), key(egui::Key::ArrowDown))
+        });
+        let step = if shift { 10.0 } else { 1.0 };
+        let turn = f32::from(u8::from(right)) - f32::from(u8::from(left));
+        let more = f32::from(u8::from(up)) - f32::from(u8::from(down));
+        if turn != 0.0 {
+            let h = (hue + turn * step).rem_euclid(360.0);
+            edits.push(UiEdit::Set { node, param: pid(&band.hue), value: ParamValue::Float(h), in_drag: false });
+        }
+        if more != 0.0 {
+            let a = (amount + more * step).clamp(amount_range[0], amount_range[1]);
+            edits.push(UiEdit::Set { node, param: pid(&band.amount), value: ParamValue::Float(a), in_drag: false });
+        }
+    }
+
+    let tip = if band.lightness_enabled {
         "Drag the puck: its direction is the hue, its distance the amount. \
-         Lightness on the right arc, saturation on the left. Double-click resets."
+         Amount on the left arc, lightness on the right. \
+         ←/→ hue, ↑/↓ amount (Shift: ×10). Double-click centres the puck."
     } else {
-        "Drag the puck: its direction is the hue, its distance the amount. \
-         Lightness on the arc. Double-click resets."
+        "Drag the puck: its direction is the hue, its distance the amount (also on the left arc). \
+         ←/→ hue, ↑/↓ amount (Shift: ×10). Double-click centres the puck. \
+         The master has no lightness, as in Capture One."
     };
     response.on_hover_text(tip);
+}
+
+/// Where a colour wheel under the pointer says it wants the arrow keys.
+fn arrows_id() -> Id {
+    Id::unique("rne-wheel-arrows")
+}
+
+/// A colour wheel under the pointer keeps the arrow keys for the next frame.
+fn take_arrows(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(arrows_id(), true));
+}
+
+/// `true` when a colour wheel was under the pointer at the last frame: the
+/// arrows are its, not the filmstrip's. Clears the claim.
+pub fn arrows_taken(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| {
+        let taken = d.get_temp::<bool>(arrows_id()).unwrap_or(false);
+        d.insert_temp(arrows_id(), false);
+        taken
+    })
 }
 
 /// The values of a band in one line.
@@ -457,8 +517,8 @@ pub fn color_balance(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) 
                 });
             }
         });
-        let all: Vec<String> = (0..color_balance::ZONES.len()).flat_map(|z| Band::zone(z).ids()).collect();
-        reset_button(ui, node, "Reset 3-Way", &all, edits);
+        let three: Vec<String> = (0..color_balance::ZONES.len()).flat_map(|z| Band::zone(z).ids()).collect();
+        balance_reset(ui, node, &three, edits);
         return;
     }
     let band = if tab == 0 { Band::master() } else { Band::zone(tab - 2) };
@@ -469,11 +529,32 @@ pub fn color_balance(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) 
     slider(ui, row, &band.hue, None, &hue_stops(0.0, 360.0, 0.8), edits);
     let amount = [hue_color(hue, 0.0, HUE_VALUE), hue_color(hue, 1.0, HUE_VALUE)];
     slider(ui, row, &band.amount, None, &amount, edits);
-    slider(ui, row, &band.lightness, None, &LIGHTNESS_STRIP, edits);
-    if let Some(id) = &band.saturation {
-        slider(ui, row, id, None, &amount, edits);
+    if band.lightness_enabled {
+        slider(ui, row, &band.lightness, None, &LIGHTNESS_STRIP, edits);
     }
-    reset_button(ui, node, &format!("Reset {}", band.name), &band.ids(), edits);
+    balance_reset(ui, node, &band.ids(), edits);
+}
+
+/// Reset as in Capture One: every wheel (master, shadows, midtones,
+/// highlights); with Ctrl (⌘ on macOS) only `this_tab`, the 3-Way tab
+/// leaving the master alone.
+fn balance_reset(ui: &mut egui::Ui, node: NodeId, this_tab: &[String], edits: &mut Vec<UiEdit>) {
+    let clicked = ui
+        .small_button("Reset")
+        .on_hover_text("Every colour wheel back to neutral; Ctrl+click: only this tab")
+        .clicked();
+    if clicked {
+        let only_tab = ui.input(|i| i.modifiers.command);
+        let ids: Vec<String> = if only_tab {
+            this_tab.to_vec()
+        } else {
+            std::iter::once(Band::master())
+                .chain((0..color_balance::ZONES.len()).map(Band::zone))
+                .flat_map(|b| b.ids())
+                .collect()
+        };
+        edits.extend(ids.iter().map(|id| UiEdit::Reset { node, param: pid(id) }));
+    }
 }
 
 // ---------------------------------------------------------------------------
