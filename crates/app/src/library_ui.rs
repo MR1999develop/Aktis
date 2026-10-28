@@ -63,6 +63,8 @@ pub enum LibraryAction {
     Command(Command),
     /// Apply preset number `.1` (in the order of [`Library::set_presets`]) to these photos.
     ApplyPreset(Vec<PathBuf>, usize),
+    /// Save a preset from this photo's edit.
+    SavePreset(PathBuf),
     /// Start "AI-tag this folder".
     TagFolder,
     /// Stop it.
@@ -105,6 +107,7 @@ enum CardAction {
     ExportAgain(PathBuf),
     Command(Command),
     ApplyPreset(PathBuf, usize),
+    SavePreset(PathBuf),
 }
 
 /// The Rename dialog.
@@ -906,6 +909,7 @@ impl Library {
                 CardAction::ExportAgain(p) => actions.push(LibraryAction::ExportAgain(self.strip.targets(&p))),
                 CardAction::Command(c) => actions.push(LibraryAction::Command(c)),
                 CardAction::ApplyPreset(p, i) => actions.push(LibraryAction::ApplyPreset(self.strip.targets(&p), i)),
+                CardAction::SavePreset(p) => actions.push(LibraryAction::SavePreset(p)),
                 // On a card of a multiple selection, stars and menus act on all of it.
                 CardAction::Rate(p, r) => {
                     let targets = self.strip.targets(&p);
@@ -1362,6 +1366,11 @@ fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState<'_>, action
             }
         }
     });
+    // The same window as Image ▸ Presets ▸ Save preset…, from this photo's edit.
+    if ui.button("Save Preset\u{2026}").on_hover_text("Save this photo's adjustments as a preset").clicked() {
+        actions.push(CardAction::SavePreset(path.clone()));
+        ui.close();
+    }
     ui.separator();
     ui.menu_button(format!("Export{group}"), |ui| {
         let keys = |c: Command| ui.ctx().format_shortcut(&c.shortcuts()[0]);

@@ -724,6 +724,15 @@ impl EditorApp {
                 }
                 LibraryAction::Command(command) => self.run(command, ctx),
                 LibraryAction::ApplyPreset(photos, index) => self.apply_preset(index, &photos),
+                LibraryAction::SavePreset(photo) => match self.recipe_for(&photo) {
+                    Some(recipe) => {
+                        let settings = self.brush_settings();
+                        self.presets.open_save(&recipe, &self.registry, false, None, settings);
+                    }
+                    None => {
+                        self.toast = Some(info_toast(format!("{} has no adjustments to save yet", file_name(&photo))));
+                    }
+                },
                 LibraryAction::TagFolder => self.start_tagging(ctx),
                 LibraryAction::StopTagging => {
                     if let Some(job) = &self.tagging {
@@ -2047,6 +2056,17 @@ impl EditorApp {
         }
     }
 
+    /// The Masks tool's current brush, as a style brush would keep it.
+    fn brush_settings(&self) -> editor::presets::BrushSettings {
+        let b = self.mask_ui.brush;
+        editor::presets::BrushSettings {
+            radius: b.radius,
+            hardness: b.hardness,
+            opacity: b.opacity,
+            edge_aware: b.edge_aware,
+        }
+    }
+
     /// Does what a preset menu asked for.
     fn preset_action(&mut self, action: PresetAction) {
         match action {
@@ -2056,14 +2076,8 @@ impl EditorApp {
             }
             PresetAction::Arm(index) => self.arm_style_brush(index),
             PresetAction::Save(brush) => {
+                let settings = self.brush_settings();
                 let Some(doc) = &self.doc else { return };
-                let b = self.mask_ui.brush;
-                let settings = editor::presets::BrushSettings {
-                    radius: b.radius,
-                    hardness: b.hardness,
-                    opacity: b.opacity,
-                    edge_aware: b.edge_aware,
-                };
                 self.presets.open_save(doc.recipe(), &self.registry, brush, self.selected_node, settings);
             }
             PresetAction::ShowFolder => match crate::presets_ui::ensure_folder(self.settings.presets_folder()) {
