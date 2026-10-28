@@ -272,7 +272,10 @@ tested offline.
   node's mask; the models run in the background; AI masks now render in
   the window from the shared raster cache.
 - Edit ▸ Preferences…: theme, viewer background (interface, white as in
-  Capture One, greys, black), export folder.
+  Capture One, greys, black), presets folder (the export folder is chosen
+  in the Export window).
+- Filmstrip on its own resizable left panel: thumbnails grow with it up to
+  240 px, then more columns.
 - Panels like Capture One's for the colour and detail nodes
   (`app::color_ui`): Colour editor (Basic chips; Advanced and Skin Tone
   ranges as wedges on a hue wheel, dragged or picked on the photo; skin
@@ -281,6 +284,22 @@ tested offline.
   sensitivity, split tones), Clarity, Dehaze (shadow tone Auto or picked)
   and Vignetting. Wheel geometry in `editor::color_wheel`; new pickers
   `PickKind::ColorRange` and `PickKind::ShadowTone`.
+- Presets (Capture One's styles): Image ▸ Presets ▸ Save preset… chooses
+  what goes in (white balance, profile, lens corrections, geometry, each
+  adjustment node; masks never); Apply (also on the filmstrip's card menu)
+  sets the open photo or every selected photo, one undo step
+  (`Edit::ApplyStyle`: each tool sets the photo's unmasked node of that
+  tool, or is added before the output). Photos not open are changed in
+  the catalog. No universal preset format exists (Lightroom: XMP `crs:`,
+  Capture One: `.costyle`): ours are versioned JSON files (`.rnepreset`,
+  `.rnebrush`, `recipe_store::preset`) in a folder chosen in Preferences
+  (default `Presets` in the data folder), sub-folders being groups.
+- Style brushes (Capture One's): built-in Light & Contrast, Color and
+  Enhancements brushes, plus saved ones (Image ▸ Style brushes ▸ Save
+  style brush… from the selected node). Choosing one (Image menu or the
+  Masks tool's bar) arms the brush with its size/hardness/flow; the first
+  stroke adds its nodes, named after the brush, behind one new mask
+  (`Edit::AddStyleBrush`) and selects them, so further strokes extend it.
 ## Heal and Clone (spot retouching): written, to be compiled and checked on Windows
 
 - `tool-adjust::retouch`: a graph node holding up to 16 spots as plain
