@@ -276,9 +276,25 @@ fn lens_section(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
             Some(name) => format!("Automatic ({name})"),
             None => "Automatic (lens not recognised)".to_owned(),
         };
-        let selected = current.lens.clone().unwrap_or_else(|| automatic.clone());
+        // A custom lens in use shows by its name.
+        let custom = current.custom.as_deref().and_then(|n| cx.custom_lenses.named(n));
+        let selected = match custom {
+            Some(c) if c.settings == current => format!("\u{2605} {}", c.name),
+            Some(c) => format!("\u{2605} {} (modified)", c.name),
+            None => current.lens.clone().unwrap_or_else(|| automatic.clone()),
+        };
         let customs = cx.custom_lenses.by_name();
-        match lens_chooser(ui, doc, &selected, &automatic, current.lens.as_deref(), &customs, exif_lens) {
+        let custom_name = custom.map(|c| c.name.as_str());
+        let database = current.lens.as_deref();
+        let menu = LensMenu {
+            selected: &selected,
+            automatic: &automatic,
+            chosen: database,
+            custom_chosen: custom_name,
+            customs: &customs,
+            exif_lens,
+        };
+        match lens_chooser(ui, doc, &menu) {
             Some(LensPick::Database(lens)) => next.lens = lens,
             Some(LensPick::Custom(settings)) => next = settings,
             None => {}
@@ -336,14 +352,7 @@ fn custom_lens_row(
 ) {
     let custom = current.custom.as_deref().and_then(|n| customs.named(n));
     if let Some(c) = custom {
-        let modified = c.settings != *current;
-        let text = if modified {
-            format!("Custom lens \u{201c}{}\u{201d} (modified)", c.name)
-        } else {
-            format!("Custom lens \u{201c}{}\u{201d}", c.name)
-        };
-        ui.label(RichText::new(text).size(FONT[1]).color(t.text_weak))
-            .on_hover_text(format!("For photos taken with {}", c.exif_lens));
+        ui.label(RichText::new(format!("Custom lens for {}", c.exif_lens)).size(FONT[1]).color(t.text_weak));
     }
     ui.horizontal(|ui| {
         let why = if exif_lens.is_none() { Some("The file does not name its lens") } else { None };
@@ -425,15 +434,8 @@ fn released(
 /// show only the fitting ones; the custom lenses come first, those for the
 /// photo's lens (`exif_lens`) at the top. `chosen` is the database lens
 /// chosen now (`None` = Automatic).
-fn lens_chooser(
-    ui: &mut egui::Ui,
-    doc: &Document,
-    selected: &str,
-    automatic: &str,
-    chosen: Option<&str>,
-    customs: &[&CustomLens],
-    exif_lens: Option<&str>,
-) -> Option<LensPick> {
+fn lens_chooser(ui: &mut egui::Ui, doc: &Document, menu: &LensMenu<'_>) -> Option<LensPick> {
+    let LensMenu { selected, automatic, chosen, custom_chosen, customs, exif_lens } = *menu;
     let mut pick = None;
     let t = Tokens::of(ui.ctx().theme());
     let search_id = egui::Id::unique("rne-lens-search");
@@ -457,11 +459,11 @@ fn lens_chooser(
             }
             ui.checkbox(&mut only, "Only lenses that fit this camera");
             ui.separator();
-            let words: Vec<String> = search.split_whitespace().map(str::to_lowercase).collect();
+            let words: Vec<String> = search.split_whitespace().map(editor::lenses::searchable).collect();
             let mut mine: Vec<&&CustomLens> = customs
                 .iter()
                 .filter(|c| {
-                    let hay = format!("{} {}", c.name, c.exif_lens).to_lowercase();
+                    let hay = editor::lenses::searchable(&format!("{} {}", c.name, c.exif_lens));
                     words.iter().all(|w| hay.contains(w.as_str()))
                 })
                 .filter(|c| !only || exif_lens.is_some_and(|k| c.fits(k)))
@@ -471,7 +473,8 @@ fn lens_chooser(
                 ui.label(RichText::new("Custom lenses").size(FONT[0]).strong().color(t.text_weak));
                 for c in mine {
                     let label = format!("\u{2605} {}", c.name);
-                    if ui.selectable_label(false, label).on_hover_text(format!("For {}", c.exif_lens)).clicked() {
+                    let is = custom_chosen.is_some_and(|n| n.eq_ignore_ascii_case(&c.name));
+                    if ui.selectable_label(is, label).on_hover_text(format!("For {}", c.exif_lens)).clicked() {
                         pick = Some(LensPick::Custom(c.settings.clone()));
                         ui.close();
                     }
@@ -482,7 +485,18 @@ fn lens_chooser(
                 pick = Some(LensPick::Database(None));
                 ui.close();
             }
-            let found = editor::lenses::filter(doc.lens_choices(), &search, only);
+            let mut found = editor::lenses::filter(doc.lens_choices(), &search, only);
+            if found.is_empty() && only {
+                // Nothing that fits: the lenses of other mounts (adapted lenses).
+                found = editor::lenses::filter(doc.lens_choices(), &search, false);
+                if !found.is_empty() {
+                    ui.label(
+                        RichText::new("No lens that fits this camera matches; lenses of other mounts:")
+                            .size(FONT[0])
+                            .color(t.text_weak),
+                    );
+                }
+            }
             if found.is_empty() {
                 ui.label(RichText::new("No lens matches.").color(t.text_weak));
             }
@@ -510,6 +524,23 @@ fn lens_chooser(
         d.insert_temp(only_id, only);
     });
     pick
+}
+
+/// What the lens chooser shows.
+#[derive(Clone, Copy)]
+struct LensMenu<'a> {
+    /// The text of the closed chooser.
+    selected: &'a str,
+    /// The entry that reads the lens from the file.
+    automatic: &'a str,
+    /// The database lens chosen now (`None` = Automatic).
+    chosen: Option<&'a str>,
+    /// The custom lens in use, by name.
+    custom_chosen: Option<&'a str>,
+    /// Every custom lens.
+    customs: &'a [&'a CustomLens],
+    /// The photo's lens as the file names it.
+    exif_lens: Option<&'a str>,
 }
 
 /// What was chosen in the lens chooser.

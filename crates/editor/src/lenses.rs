@@ -49,19 +49,30 @@ pub fn lens_choices(db: &LensDatabase, camera: Option<&Camera>) -> Vec<LensChoic
     out
 }
 
-/// The choices whose name (or mounts) contain every word of `text`, case
-/// apart; only compatible ones when `compatible_only`.
+/// The choices whose name (or mounts) contain every word of `text`, as
+/// people type lens names: case, `/` and the decimal comma apart ("FE
+/// 24-70mm F2.8" finds "Sony FE 24-70mm f/2.8 GM"). Only compatible ones
+/// when `compatible_only` and some choice is compatible (without a known
+/// camera none is, and the tick would hide every lens).
 #[must_use]
 pub fn filter<'a>(choices: &'a [LensChoice], text: &str, compatible_only: bool) -> Vec<&'a LensChoice> {
-    let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
+    let words: Vec<String> = text.split_whitespace().map(searchable).filter(|w| !w.is_empty()).collect();
+    let only = compatible_only && choices.iter().any(|c| c.compatible);
     choices
         .iter()
-        .filter(|c| !compatible_only || c.compatible)
+        .filter(|c| !only || c.compatible)
         .filter(|c| {
-            let hay = format!("{} {}", c.name, c.mounts).to_lowercase();
+            let hay = searchable(&format!("{} {} {}", c.name, c.maker, c.mounts));
             words.iter().all(|w| hay.contains(w.as_str()))
         })
         .collect()
+}
+
+/// `text` as the search compares it: lower case, without `/`, with `.`
+/// for a decimal comma.
+#[must_use]
+pub fn searchable(text: &str) -> String {
+    text.to_lowercase().replace('/', "").replace(',', ".")
 }
 
 /// `choices` (as [`filter`] returns them) in groups with a title: the
@@ -102,6 +113,12 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].maker, "Canon");
         assert!(filter(&all, "50 canon", true).is_empty());
+        // As the files and people write it.
+        assert_eq!(filter(&all, "FE 24-70mm F2.8", true).len(), 1);
+        assert_eq!(filter(&all, "f/1,4 art", false).len(), 1);
+        // Without a camera nothing is compatible: the tick hides nothing.
+        let unknown: Vec<LensChoice> = all.iter().map(|c| LensChoice { compatible: false, ..c.clone() }).collect();
+        assert_eq!(filter(&unknown, "50", true).len(), 1);
         let g = groups(&filter(&all, "", false));
         assert_eq!(g.len(), 2);
         assert_eq!(g[0].0, "Fits this camera");
