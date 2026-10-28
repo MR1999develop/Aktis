@@ -100,6 +100,14 @@ impl VariantState {
         Self { clean: Some((doc.generation(), view.clone())), ..Self::unsaved(number, variant_name(number)) }
     }
 
+    /// Makes the next save write the variant when nothing is stored for it
+    /// yet (before another variant is added, so this one stays in the list).
+    pub fn ensure_stored(&mut self) {
+        if self.stored.is_none() && self.read_only.is_none() {
+            self.clean = None;
+        }
+    }
+
     /// `true` when the edit or the node positions changed since the last
     /// load or save (always `false` for a read-only variant).
     #[must_use]
@@ -179,6 +187,13 @@ fn newer_notice(format: u32, shown: bool) -> String {
     )
 }
 
+/// `view` with every node of the document placed, as the graph panel
+/// places them when it first draws: so drawing it is not a change.
+fn placed(mut view: GraphView, doc: &Document) -> GraphView {
+    view.sync(&doc.recipe().graph);
+    view
+}
+
 /// Builds the document of variant `number` of a photo from what the
 /// catalog has for it (`stored`; `None` for a variant never saved).
 #[must_use]
@@ -191,7 +206,7 @@ pub fn reopen(
 ) -> Reopened {
     let Some(stored) = stored else {
         let doc = Document::new(opened, first_generation);
-        let view = GraphView::default();
+        let view = placed(GraphView::default(), &doc);
         let state = VariantState::untouched(number, &doc, &view);
         return Reopened { doc, view, state, notice: None };
     };
@@ -204,7 +219,7 @@ pub fn reopen(
         Ok(variant) => {
             let had_history = variant.history.is_some();
             let (doc, kept) = Document::restored(opened, first_generation, registry, variant.recipe, variant.history);
-            let view = variant.layout.as_ref().map(GraphView::from_layout).unwrap_or_default();
+            let view = placed(variant.layout.as_ref().map(GraphView::from_layout).unwrap_or_default(), &doc);
             let notice = (had_history && !kept).then(|| {
                 "The undo history of this photo could not be restored in this version; its edits are kept.".to_owned()
             });
@@ -232,7 +247,7 @@ pub fn reopen(
                      variant to edit the photo."
                 ),
             };
-            let view = GraphView::default();
+            let view = placed(GraphView::default(), &doc);
             let state = VariantState {
                 info: stored.info,
                 read_only: Some(why.clone()),
@@ -328,8 +343,10 @@ mod tests {
     #[test]
     fn a_photo_never_edited_writes_nothing_until_it_changes() {
         let reg = registry();
-        let r = reopen(opened(), 1, &reg, 1, None);
+        let mut r = reopen(opened(), 1, &reg, 1, None);
         assert!(r.notice.is_none() && !r.doc.is_read_only());
+        // The graph panel draws it.
+        r.view.sync(&r.doc.recipe().graph);
         assert_eq!(r.state.info, VariantInfo { number: 1, name: "Variant 1".into(), format: FORMAT_VERSION });
         assert!(!r.state.is_dirty(&r.doc, &r.view));
         assert!(r.state.to_save(&r.doc, &r.view, Some(&shown())).is_empty());
@@ -425,6 +442,18 @@ mod tests {
         assert!(r.doc.is_read_only());
         assert!(r.notice.unwrap().contains("damaged"));
         assert!(r.state.to_save(&r.doc, &r.view, Some(&shown())).is_empty());
+    }
+
+    #[test]
+    fn an_untouched_variant_is_written_before_another_is_added() {
+        let reg = registry();
+        let mut r = reopen(opened(), 1, &reg, 1, None);
+        r.state.ensure_stored();
+        let save = r.state.to_save(&r.doc, &r.view, None);
+        assert!(save.data.is_some());
+        r.state.saved(&r.doc, &r.view, save);
+        r.state.ensure_stored();
+        assert!(r.state.to_save(&r.doc, &r.view, None).is_empty(), "stored once is enough");
     }
 
     #[test]

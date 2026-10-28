@@ -80,8 +80,10 @@
   entries); use a proper LRU list if the capacity grows.
 - The Explorer lists drive letters A–Z with `Path::is_dir` at start-up; a
   disconnected network drive can make that slow. List drives in the worker.
-- Renaming a file does not rename side files yet (none exist; when recipes
-  are saved next to the RAW, rename them together).
+- Edits live only in the catalog (no sidecar files), keyed by path like
+  ratings: renaming in the editor moves them; a file renamed or moved
+  outside the editor loses its edits until a "relink" or a content key
+  (size + date + hash) is added.
 - Dialogs (`app::dialog`: Rename, AI models) are drawn as a centred area,
   not a modal: clicks behind them still reach the window. Move them all to
   `egui::Modal` together, keeping `dialog_buttons` for the buttons.
@@ -99,8 +101,19 @@
 - The window's minimum size is 1100 × 640; the design guidelines ask for a
   layout that works at 1024 × 600 (about 960 × 520 usable). Check the
   Explorer, graph and inspector at that size and lower the minimum.
-- Node positions in the graph are kept only while the photo is open; save
-  them with the recipe once recipes are saved.
+- Saving an edit makes its preview JPEG (downscale + encode of the image
+  on screen, tens of milliseconds for a full-size render) on the window's
+  thread, and the filmstrip reads preview blobs from the catalog there too
+  when its thumbnail list changes; move both to the worker if it shows.
+- A variant left before its first render keeps the preview it had (or the
+  camera's) until its next change; store a "preview stale" flag in the
+  catalog if that turns out to matter.
+- A replaced preview briefly shows "…" in its filmstrip card (the old
+  texture is forgotten before the new one is decoded).
+- Variants are named "Variant N"; renaming them, and showing every variant
+  as its own filmstrip card as Capture One can, are not offered yet.
+- Undoing a history rewrite (reorder/delete in the History tab) is not
+  saved: after reopening, the rewritten steps are the history.
 - The GPU renderer still uploads the source and reads the result back at
   every render, and creates its buffers each time; keep the source on the
   GPU between renders of the same image (and draw the result straight from

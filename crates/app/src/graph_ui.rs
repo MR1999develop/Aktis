@@ -126,9 +126,16 @@ fn node_tools(registry: &ToolRegistry) -> Vec<(Category, ToolId, &'static str)> 
 }
 
 impl GraphUi {
-    /// Forgets positions and menus (another photo is open).
-    pub fn reset(&mut self) {
-        *self = Self::default();
+    /// Node positions, pan and zoom (saved with the edit).
+    #[must_use]
+    pub fn view(&self) -> &GraphView {
+        &self.view
+    }
+
+    /// Shows another photo or variant: its saved node positions, pan and
+    /// zoom, no drag or menu in progress.
+    pub fn restore(&mut self, view: GraphView) {
+        *self = Self { view, ..Self::default() };
     }
 
     /// Draws the graph and the menus; returns what the user did.
