@@ -178,6 +178,7 @@ version = "0.1.0"
 dependencies = [
  "ai-segment",
  "platform",
+ "scunet-onnx",
 ]
 
 [[package]]
@@ -257,6 +258,7 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "ai-models",
+ "ai-segment",
  "catalog",
  "commands",
  "core-color",
@@ -265,12 +267,14 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "engine",
+ "masks",
  "platform",
  "raw-io",
  "rfd",
  "serde",
  "tagging",
  "tagging-onnx",
+ "tool-adjust",
  "tool-api",
 ]
 
@@ -1140,14 +1144,19 @@ dependencies = [
 name = "editor"
 version = "0.1.0"
 dependencies = [
+ "ai-segment",
  "catalog",
  "commands",
+ "core-color",
  "core-model",
  "develop",
  "engine",
  "lens-db",
+ "masks",
+ "platform",
  "raw-io",
  "recipe-store",
+ "tool-adjust",
  "tool-api",
 ]
 
@@ -1343,6 +1352,7 @@ dependencies = [
  "masks",
  "platform",
  "render-cpu",
+ "tool-adjust",
  "tool-api",
  "tool-denoise-ai",
  "tool-exposure",
@@ -1850,6 +1860,7 @@ dependencies = [
  "masks",
  "pollster 0.4.0",
  "render-cpu",
+ "tool-adjust",
  "tool-api",
  "tool-exposure",
  "wgpu",
@@ -4741,6 +4752,15 @@ name = "toml_write"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
+
+[[package]]
+name = "tool-adjust"
+version = "0.1.0"
+dependencies = [
+ "core-color",
+ "core-model",
+ "tool-api",
+]
 
 [[package]]
 name = "tool-api"
