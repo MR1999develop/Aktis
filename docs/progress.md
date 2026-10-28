@@ -24,7 +24,7 @@ Done:
 - `core-color`: sRGB curve, Rec.2020/sRGB matrices, camera → working matrix.
 - `develop`: white balance on the mosaic, bilinear Bayer demosaic with
   mirrored borders, camera matrix; linear RGB files (Linear DNG, Apple
-  ProRAW) skip demosaicing (X-Trans reported as not supported yet).
+  ProRAW) skip demosaicing; X-Trans demosaic (see "RAW formats" below).
 - `core-model`: EXIF orientation applied exactly (pixels moved, not resampled).
 - `tools/exposure`: CPU reference and WGSL per-pixel kernel.
 - `render-cpu`: graph evaluation, missing tools passed through and reported,
@@ -219,6 +219,25 @@ tested offline.
     24 MP photo, delaying the next previews);
   - the status bar's GPU label shows the time of the last render and of its
     display conversion.
+
+## RAW formats: X-Trans, DNG gain maps: written, to be compiled and checked on Windows
+
+- `develop`: X-Trans demosaic on the CPU (`develop::xtrans`): white balance
+  on the mosaic, green everywhere from the nearest greens along four
+  directions weighted against the green difference along each (edges are
+  followed, not crossed), then red and blue as green plus the
+  distance-weighted mean of colour minus green in the 3×3 (else 5×5).
+  Mirrored borders read the channel of the photosite actually read. About
+  1.2 s for 26 MP on two cores. Tested: flat colour exact, ramps smooth,
+  same pixels at any 6×6 crop phase, tiny images.
+- `raw-io`: rawler 0.8.0 does not apply DNG opcodes, so a small TIFF reader
+  finds the raw IFD's opcode lists and applies GainMap (OpcodeList2) to the
+  normalised mosaic, in active-area coordinates offset by the default crop
+  (Pixel and other phone DNGs no longer have dark corners). Other opcodes
+  are skipped; required ones are reported in `RawFile::notes`, shown in
+  the inspector's development notes and by `rne info`.
+- Open dialog: ARI, DCS, FFF, ORI, QTK and RAW added; README lists the
+  supported cameras and rawler 0.8.0's known limits per brand.
 
 ## Tests and CI
 

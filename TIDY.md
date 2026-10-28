@@ -2,8 +2,12 @@
 
 - `render-cpu::render` clones each node's image; fine for the reference
   renderer, but with the GPU unavailable it is the CPU fallback's main cost.
-- `develop` bilinear demosaic is preview quality; replace with a quality
-  algorithm on the GPU (phase 3) and keep this one as the test reference.
+- `develop` bilinear (Bayer) and gradient-weighted (X-Trans) demosaics are
+  preview quality; replace with quality algorithms on the GPU (phase 3,
+  Markesteijn or similar for X-Trans) and keep these as the test reference.
+- DNG opcodes other than GainMap (WarpRectilinear, FixBadPixels, MapTable …)
+  are only reported; GainMap is applied on the CPU in `raw-io` at open time.
+  When rawler gains opcode support (after 0.8.0), compare and drop ours.
 - `commands::EditSession` drops the oldest step with `Vec::remove(0)`;
   switch to `VecDeque` if profiling ever shows it.
 - `render_cpu::to_srgb8` and `engine::downscale` run on one thread; a

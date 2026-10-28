@@ -448,7 +448,7 @@ fn display_name(path: &std::path::Path) -> String {
 fn open_file(path: &std::path::Path) -> Result<Opened, String> {
     let name = display_name(path);
     let file = raw_io::read_raw(path).map_err(|e| format!("{name} could not be opened: {e}"))?;
-    let raw = Arc::new(RawData { sensor: file.sensor, capture: file.capture });
+    let raw = Arc::new(RawData { sensor: file.sensor, capture: file.capture, file_notes: file.notes });
     let image = develop_raw(&raw, &core_model::DevelopSettings::default()).map_err(|e| format!("{name}: {e}"))?;
 
     // The lens as recognised, and the lenses that fit the camera, for the inspector.
@@ -516,6 +516,7 @@ fn develop_raw(raw: &RawData, settings: &core_model::DevelopSettings) -> Result<
         notes.extend(result.lens.note.clone());
     }
     notes.extend(result.profile.note.clone());
+    notes.extend(raw.file_notes.iter().cloned());
     let developed = result.image;
     let preview = engine::downscale(&developed, PREVIEW_SIDE).map_err(|e| e.to_string())?;
     let draft = engine::downscale(&preview, DRAFT_SIDE).map_err(|e| e.to_string())?;
