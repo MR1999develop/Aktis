@@ -70,7 +70,7 @@ fn values_out_of_range_are_clamped_before_they_are_stored() {
     let reg = registry();
     let (mut s, node) = session_with_exposure(&reg);
     s.apply(&reg, Edit::SetParam { node, param: exposure_param(), value: ParamValue::Float(40.0) }).expect("set");
-    assert_eq!(exposure_of(&s, node), Some(ParamValue::Float(5.0)));
+    assert_eq!(exposure_of(&s, node), Some(ParamValue::Float(4.0)));
 }
 
 #[test]

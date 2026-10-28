@@ -450,7 +450,7 @@ fn lens_chooser(ui: &mut egui::Ui, doc: &Document, menu: &LensMenu<'_>) -> Optio
         .show_ui(ui, |ui| {
             let field = ui.add(
                 egui::TextEdit::singleline(&mut search)
-                    .hint_text("Type to search, e.g. 24-70 2.8")
+                    .hint_text("Type the first letters, e.g. Can, or 24-70 2.8")
                     .desired_width(f32::INFINITY),
             );
             // Ready to type as soon as the list opens.
@@ -459,13 +459,9 @@ fn lens_chooser(ui: &mut egui::Ui, doc: &Document, menu: &LensMenu<'_>) -> Optio
             }
             ui.checkbox(&mut only, "Only lenses that fit this camera");
             ui.separator();
-            let words: Vec<String> = search.split_whitespace().map(editor::lenses::searchable).collect();
             let mut mine: Vec<&&CustomLens> = customs
                 .iter()
-                .filter(|c| {
-                    let hay = editor::lenses::searchable(&format!("{} {}", c.name, c.exif_lens));
-                    words.iter().all(|w| hay.contains(w.as_str()))
-                })
+                .filter(|c| editor::lenses::rank(&search, &c.name, &format!("{} {}", c.name, c.exif_lens)).is_some())
                 .filter(|c| !only || exif_lens.is_some_and(|k| c.fits(k)))
                 .collect();
             mine.sort_by_key(|c| !exif_lens.is_some_and(|k| c.fits(k)));

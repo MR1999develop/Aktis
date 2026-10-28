@@ -2,18 +2,25 @@
 //! brightness and saturation.
 //!
 //! - **Exposure** multiplies linear light by `2^stops`, like opening the
-//!   aperture: every tone moves by the same number of stops.
-//! - **Contrast** spreads the tones around middle grey (0.18) evenly in
-//!   stops: luminance `Y → 0.18·(Y/0.18)^k`, `k = 1 + contrast/200`.
+//!   aperture: every tone moves by the same number of stops (−4 to +4, as
+//!   in Capture One).
+//! - **Contrast** is an S curve in stops around middle grey (0.18): near
+//!   grey the tones spread by `k = 1 + contrast/200` (+100: one stop above
+//!   grey becomes about 1.5), the extra push levelling off over
+//!   [`CONTRAST_SPAN`] stops so the far highlights and shadows move by a
+//!   bounded amount. As in Capture One it also makes colours more (or
+//!   less) saturated: the channels' ratios to luminance are raised to
+//!   `1 + (k − 1)·`[`CONTRAST_COLOUR`].
 //! - **Brightness** lifts or lowers the midtones and keeps black and white:
 //!   `Y → Y^γ` up to white, `γ = 2^(−0.8·brightness/100)`, continued in a
 //!   straight line above.
-//! - **Saturation** moves colours away from (or towards) their grey.
+//! - **Saturation** moves colours away from (or towards) their grey, the
+//!   same on every channel.
 //!
-//! Contrast and brightness change luminance only, scaling R, G and B
-//! together, so hues stay as they are. Alpha is untouched. Because the data
-//! are scene-referred, values above 1 are kept; highlight roll-off belongs
-//! to the output render, not here.
+//! Brightness changes luminance only, scaling R, G and B together, so hues
+//! stay as they are; contrast keeps the luminance it sets. Alpha is
+//! untouched. Because the data are scene-referred, values above 1 are
+//! kept; highlight roll-off belongs to the output render, not here.
 
 use std::sync::{Arc, LazyLock};
 
@@ -34,6 +41,16 @@ pub const SATURATION: &str = "saturation";
 /// Rec. 2020 luminance weights (the working space).
 const LUMA: [f32; 3] = [0.2627, 0.6780, 0.0593];
 
+/// Largest exposure change, in stops (Capture One's range).
+pub const MAX_STOPS: f32 = 4.0;
+
+/// Stops around middle grey over which contrast acts fully; further out
+/// its extra push levels off (at most `(k − 1)·CONTRAST_SPAN` stops).
+pub const CONTRAST_SPAN: f32 = 3.0;
+
+/// Share of the contrast that also goes into the colours.
+pub const CONTRAST_COLOUR: f32 = 0.5;
+
 fn slider(id: &str, label: &'static str) -> ParamDescriptor {
     ParamDescriptor {
         id: ParamId::new(id).expect("constant id is valid"),
@@ -52,7 +69,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
         ParamDescriptor {
             id: ParamId::new(EXPOSURE).expect("constant id is valid"),
             label: "Exposure",
-            kind: ParamKind::Float { min: -5.0, max: 5.0, default: 0.0, step: 0.01, unit: Unit::Stops },
+            kind: ParamKind::Float { min: -MAX_STOPS, max: MAX_STOPS, default: 0.0, step: 0.01, unit: Unit::Stops },
         },
         slider(CONTRAST, "Contrast"),
         slider(BRIGHTNESS, "Brightness"),
@@ -68,11 +85,18 @@ fn pixel(rgb: [f32; 3], stops: f32, contrast: f32, brightness: f32, saturation: 
     if contrast != 0.0 || brightness != 0.0 {
         let y = luma(rgb);
         if y > 1e-6 {
-            let mut y2 = 0.18 * ((y / 0.18).log2() * (1.0 + contrast / 200.0)).exp2();
+            let k = 1.0 + contrast / 200.0;
+            let d = (y / 0.18).log2();
+            let d2 = d + (k - 1.0) * CONTRAST_SPAN * (d / CONTRAST_SPAN).tanh();
+            let mut y2 = 0.18 * d2.exp2();
             let g = (-0.8 * brightness / 100.0).exp2();
             y2 = if y2 <= 1.0 { y2.powf(g) } else { 1.0 + g * (y2 - 1.0) };
-            let k = y2 / y;
-            rgb = rgb.map(|v| v * k);
+            // Contrast reaches the colours: ratios to luminance raised to kc.
+            let kc = 1.0 + (k - 1.0) * CONTRAST_COLOUR;
+            let ratios = rgb.map(|v| if v > 0.0 { (v / y).powf(kc) } else { v / y });
+            let ly = luma(ratios);
+            let scale = if ly > 1e-6 { y2 / ly } else { y2 / y };
+            rgb = if ly > 1e-6 { ratios.map(|r| r * scale) } else { rgb.map(|v| v * scale) };
         }
     }
     if saturation != 0.0 {
@@ -92,10 +116,17 @@ const WGSL: &str = "
     if (contrast != 0.0 || bright != 0.0) {
         let y = dot(rgb, w);
         if (y > 1e-6) {
-            var y2 = 0.18 * exp2(log2(y / 0.18) * (1.0 + contrast / 200.0));
+            let k = 1.0 + contrast / 200.0;
+            let d = log2(y / 0.18);
+            let d2 = d + (k - 1.0) * 3.0 * tanh(d / 3.0);
+            var y2 = 0.18 * exp2(d2);
             let g = exp2(-0.8 * bright / 100.0);
             if (y2 <= 1.0) { y2 = pow(y2, g); } else { y2 = 1.0 + g * (y2 - 1.0); }
-            rgb = rgb * (y2 / y);
+            let kc = 1.0 + (k - 1.0) * 0.5;
+            let q = rgb / y;
+            let ratios = select(q, pow(max(q, vec3<f32>(1e-30)), vec3<f32>(kc)), rgb > vec3<f32>(0.0));
+            let ly = dot(ratios, w);
+            if (ly > 1e-6) { rgb = ratios * (y2 / ly); } else { rgb = rgb * (y2 / y); }
         }
     }
     if (sat != 0.0) {
@@ -174,17 +205,38 @@ mod tests {
     }
 
     #[test]
-    fn contrast_spreads_the_tones_evenly_in_stops_around_middle_grey() {
+    fn contrast_is_an_s_curve_in_stops_around_middle_grey() {
         let grey = |y: f32| [y, y, y, 1.0];
-        assert!((luma(run_all(&[(CONTRAST, 100.0)], grey(0.18))) - 0.18).abs() < 1e-5);
-        // +100: one stop above grey becomes 1.5 stops, one below −1.5.
-        let up = luma(run_all(&[(CONTRAST, 100.0)], grey(0.36)));
-        let down = luma(run_all(&[(CONTRAST, 100.0)], grey(0.09)));
-        assert!(((up / 0.18).log2() - 1.5).abs() < 1e-4, "{up}");
-        assert!(((down / 0.18).log2() + 1.5).abs() < 1e-4, "{down}");
-        // Less contrast pulls them in.
-        let up = luma(run_all(&[(CONTRAST, -100.0)], grey(0.36)));
-        assert!(((up / 0.18).log2() - 0.5).abs() < 1e-4, "{up}");
+        let stops = |c: f32, y: f32| (luma(run_all(&[(CONTRAST, c)], grey(y))) / 0.18).log2();
+        assert!(stops(100.0, 0.18).abs() < 1e-4, "middle grey stays");
+        // +100: one stop above grey becomes about 1.5, one below about −1.5.
+        assert!((1.45..1.5).contains(&stops(100.0, 0.36)), "{}", stops(100.0, 0.36));
+        assert!((-1.5..-1.45).contains(&stops(100.0, 0.09)), "{}", stops(100.0, 0.09));
+        // Far from grey the push levels off: 6 stops up gain at most 1.5.
+        let far = stops(100.0, 0.18 * 64.0);
+        assert!(far > 7.0 && far < 7.5, "{far}");
+        // Less contrast pulls the tones in.
+        assert!((0.5..0.55).contains(&stops(-100.0, 0.36)), "{}", stops(-100.0, 0.36));
+        // Always in order.
+        let mut last = f32::NEG_INFINITY;
+        for i in 1..200 {
+            #[allow(clippy::cast_precision_loss)]
+            let s = stops(100.0, 0.001 * (i * i) as f32);
+            assert!(s > last, "monotonic");
+            last = s;
+        }
+    }
+
+    #[test]
+    fn contrast_also_saturates_colours_and_keeps_their_order() {
+        let c = run_all(&[(CONTRAST, 100.0)], [0.4, 0.2, 0.1, 1.0]);
+        assert!(c[0] / c[1] > 2.0 && c[1] / c[2] > 2.0, "more saturated: {c:?}");
+        assert!((c[0] / c[1] - c[1] / c[2]).abs() < 1e-3, "evenly, in stops: {c:?}");
+        let less = run_all(&[(CONTRAST, -100.0)], [0.4, 0.2, 0.1, 1.0]);
+        assert!(less[0] / less[1] < 2.0 && less[0] > less[1] && less[1] > less[2], "{less:?}");
+        // A grey stays grey.
+        let g = run_all(&[(CONTRAST, 80.0)], [0.3, 0.3, 0.3, 1.0]);
+        assert!((g[0] - g[1]).abs() < 1e-6 && (g[1] - g[2]).abs() < 1e-6);
     }
 
     #[test]
@@ -200,8 +252,8 @@ mod tests {
     }
 
     #[test]
-    fn contrast_and_brightness_keep_the_hue() {
-        let c = run_all(&[(CONTRAST, 60.0), (BRIGHTNESS, 40.0)], [0.4, 0.2, 0.1, 1.0]);
+    fn brightness_keeps_the_hue() {
+        let c = run_all(&[(BRIGHTNESS, 40.0)], [0.4, 0.2, 0.1, 1.0]);
         assert!((c[0] / c[1] - 2.0).abs() < 1e-4 && (c[1] / c[2] - 2.0).abs() < 1e-4, "{c:?}");
     }
 
@@ -233,8 +285,8 @@ mod tests {
     }
 
     #[test]
-    fn values_beyond_the_range_are_clamped_to_five_stops() {
-        assert_eq!(run(12.0, [1.0, 1.0, 1.0, 1.0]), [32.0, 32.0, 32.0, 1.0]);
+    fn values_beyond_the_range_are_clamped_to_four_stops() {
+        assert_eq!(run(12.0, [1.0, 1.0, 1.0, 1.0]), [16.0, 16.0, 16.0, 1.0]);
     }
 
     #[test]

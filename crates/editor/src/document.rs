@@ -1017,7 +1017,7 @@ mod tests {
         let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
         let node = doc.node_rows(&reg)[0].node;
         doc.set_param(&reg, node, exposure_param(), ParamValue::Float(99.0), None).unwrap();
-        assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(5.0));
+        assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(4.0));
         doc.reset_param(&reg, node, exposure_param()).unwrap();
         assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(0.0));
         assert_eq!(doc.undo_label().as_deref(), Some("Reset exposure"));

@@ -49,23 +49,43 @@ pub fn lens_choices(db: &LensDatabase, camera: Option<&Camera>) -> Vec<LensChoic
     out
 }
 
-/// The choices whose name (or mounts) contain every word of `text`, as
-/// people type lens names: case, `/` and the decimal comma apart ("FE
-/// 24-70mm F2.8" finds "Sony FE 24-70mm f/2.8 GM"). Only compatible ones
-/// when `compatible_only` and some choice is compatible (without a known
-/// camera none is, and the tick would hide every lens).
+/// The choices `text` finds, as people type a lens name letter by letter:
+/// the lenses whose name starts with it ("C" shows Canon, Carl Zeiss,
+/// Cosina…, "Can" only Canon); when none does, those where every typed
+/// word starts a word of the name or mounts ("FE 24-70", "50 canon").
+/// Case, `/` and the decimal comma do not count ("F2.8" finds "f/2.8").
+/// Only compatible ones when `compatible_only` and some choice is
+/// compatible (without a known camera none is, and the tick would hide
+/// every lens).
 #[must_use]
 pub fn filter<'a>(choices: &'a [LensChoice], text: &str, compatible_only: bool) -> Vec<&'a LensChoice> {
-    let words: Vec<String> = text.split_whitespace().map(searchable).filter(|w| !w.is_empty()).collect();
     let only = compatible_only && choices.iter().any(|c| c.compatible);
-    choices
-        .iter()
-        .filter(|c| !only || c.compatible)
-        .filter(|c| {
-            let hay = searchable(&format!("{} {} {}", c.name, c.maker, c.mounts));
-            words.iter().all(|w| hay.contains(w.as_str()))
-        })
-        .collect()
+    let shown: Vec<&LensChoice> = choices.iter().filter(|c| !only || c.compatible).collect();
+    let ranked: Vec<(Option<Rank>, &LensChoice)> =
+        shown.into_iter().map(|c| (rank(text, &c.name, &format!("{} {}", c.name, c.mounts)), c)).collect();
+    let best = ranked.iter().filter_map(|(r, _)| *r).min();
+    ranked.into_iter().filter(|(r, _)| r.is_some() && *r == best).map(|(_, c)| c).collect()
+}
+
+/// How well a typed text matches a name; better first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Rank {
+    /// Nothing typed, or the name starts with the text.
+    Start,
+    /// Every typed word starts a word of the name (or of `words`).
+    Words,
+}
+
+/// How `text` matches `name`, also looking at the words of `words`
+/// (the name and more, such as the mounts); `None` when it does not.
+#[must_use]
+pub fn rank(text: &str, name: &str, words: &str) -> Option<Rank> {
+    let typed: Vec<String> = text.split_whitespace().map(searchable).filter(|w| !w.is_empty()).collect();
+    if typed.is_empty() || searchable(name).starts_with(&typed.join(" ")) {
+        return Some(Rank::Start);
+    }
+    let hay: Vec<String> = words.split_whitespace().map(searchable).collect();
+    typed.iter().all(|t| hay.iter().any(|w| w.starts_with(t.as_str()))).then_some(Rank::Words)
 }
 
 /// `text` as the search compares it: lower case, without `/`, with `.`
@@ -108,6 +128,15 @@ mod tests {
             choice("Canon EF 50mm f/1.8 STM", "Canon", false),
         ];
         assert_eq!(filter(&all, "", false).len(), 3);
+        // Letter by letter: the names that start with it.
+        let mut more = all.clone();
+        more.push(choice("Sigma 30mm f/1.4 DC DN Contemporary", "Sigma", true));
+        more.push(choice("Carl Zeiss Batis 25mm f/2", "Zeiss", true));
+        let names = |t: &str| filter(&more, t, false).iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("c"), ["Canon EF 50mm f/1.8 STM", "Carl Zeiss Batis 25mm f/2"]);
+        assert_eq!(names("Can"), ["Canon EF 50mm f/1.8 STM"]);
+        assert_eq!(names("canon ef 5"), ["Canon EF 50mm f/1.8 STM"]);
+        assert_eq!(names("sig").len(), 2);
         assert_eq!(filter(&all, "", true).len(), 2);
         let found = filter(&all, "50 CANON", false);
         assert_eq!(found.len(), 1);
