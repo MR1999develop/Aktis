@@ -44,11 +44,28 @@ pub struct LensSettings {
     /// Magnification after correcting the geometry; `None` chooses the
     /// smallest that leaves no empty borders.
     pub zoom: Option<f32>,
+    /// How much of each database correction is applied.
+    pub amount: LensAmounts,
+    /// Corrections set by hand, on top of the database's or without it.
+    pub manual: ManualLens,
+    /// The custom lens these settings came from, by name; `None` when they
+    /// were set on this photo only.
+    pub custom: Option<String>,
 }
 
 impl Default for LensSettings {
     fn default() -> Self {
-        Self { enabled: true, lens: None, distortion: true, tca: true, vignetting: true, zoom: None }
+        Self {
+            enabled: true,
+            lens: None,
+            distortion: true,
+            tca: true,
+            vignetting: true,
+            zoom: None,
+            amount: LensAmounts::default(),
+            manual: ManualLens::default(),
+            custom: None,
+        }
     }
 }
 
@@ -57,6 +74,70 @@ impl LensSettings {
     #[must_use]
     pub fn off() -> Self {
         Self { enabled: false, ..Self::default() }
+    }
+
+    /// The settings with every amount in its range (a value that is not a
+    /// number takes the default).
+    #[must_use]
+    pub fn sanitized(mut self) -> Self {
+        self.amount = self.amount.clamped();
+        self.manual = self.manual.clamped();
+        self
+    }
+}
+
+/// How much of each database correction is applied: 1 is the full
+/// correction (100 %), 0 none, up to 2 (200 %).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LensAmounts {
+    /// Distortion.
+    pub distortion: f32,
+    /// Lateral chromatic aberration.
+    pub tca: f32,
+    /// Vignetting.
+    pub vignetting: f32,
+}
+
+impl LensAmounts {
+    /// Largest amount (200 %).
+    pub const MAX: f32 = 2.0;
+
+    /// Every amount between 0 and [`Self::MAX`]; not-a-number becomes 1.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        let c = |v: f32| if v.is_finite() { v.clamp(0.0, Self::MAX) } else { 1.0 };
+        Self { distortion: c(self.distortion), tca: c(self.tca), vignetting: c(self.vignetting) }
+    }
+}
+
+impl Default for LensAmounts {
+    fn default() -> Self {
+        Self { distortion: 1.0, tca: 1.0, vignetting: 1.0 }
+    }
+}
+
+/// Corrections set by hand, each from −1 to 1, 0 doing nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ManualLens {
+    /// Above 0 removes barrel distortion (straightens lines bowed outwards),
+    /// below 0 removes pincushion distortion.
+    pub distortion: f32,
+    /// Above 0 brightens the corners (up to one stop), below 0 darkens them.
+    pub vignetting: f32,
+}
+
+impl ManualLens {
+    /// Every value between −1 and 1; not-a-number becomes 0.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        let c = |v: f32| if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 };
+        Self { distortion: c(self.distortion), vignetting: c(self.vignetting) }
+    }
+
+    /// `true` when nothing is set.
+    #[must_use]
+    pub fn is_none(self) -> bool {
+        self.distortion == 0.0 && self.vignetting == 0.0
     }
 }
 
@@ -149,4 +230,26 @@ pub struct Recipe {
     pub geometry: crate::Geometry,
     /// Tone curve of the output render.
     pub curve: BaseCurve,
+}
+
+/// A custom lens: lens-correction settings saved under a name for the lens
+/// that took a photo. Photos taken with the same lens and never edited
+/// start with these settings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomLens {
+    /// Name shown in the lens chooser, unique among the custom lenses.
+    pub name: String,
+    /// The lens the settings are for, as the files name it
+    /// ([`crate::CaptureInfo::lens_key`]).
+    pub exif_lens: String,
+    /// The settings; their `custom` names this custom lens.
+    pub settings: LensSettings,
+}
+
+impl CustomLens {
+    /// `true` when it is for the lens named `exif_lens` in a file.
+    #[must_use]
+    pub fn fits(&self, exif_lens: &str) -> bool {
+        crate::capture::same_lens(&self.exif_lens, exif_lens)
+    }
 }

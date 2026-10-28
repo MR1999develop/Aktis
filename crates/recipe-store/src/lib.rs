@@ -11,11 +11,13 @@
 //! Pure: no I/O, every type round-trips exactly (floats included).
 
 mod codec;
+mod custom_lens;
 mod json;
 mod preset;
 
 use std::fmt;
 
+pub use custom_lens::{CUSTOM_LENS_EXTENSION, CUSTOM_LENS_FORMAT, decode_custom_lens, encode_custom_lens};
 pub use preset::{
     BRUSH_EXTENSION, BrushSettings, PRESET_EXTENSION, PRESET_FORMAT, Preset, decode_preset, encode_preset,
 };

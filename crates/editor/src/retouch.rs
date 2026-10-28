@@ -158,6 +158,7 @@ mod tests {
             raw: None,
             detected_lens: None,
             lens_choices: Vec::new(),
+            lens_key: None,
             info: raw_io::PhotoInfo::default(),
             image: crate::DevelopedImage {
                 settings: core_model::DevelopSettings::default(),

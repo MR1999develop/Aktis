@@ -14,7 +14,7 @@
 
 use catalog::{StoredVariant, VariantInfo, variant_name};
 use commands::{Edit, EditSession};
-use core_model::{Recipe, Style};
+use core_model::{LensSettings, Recipe, Style};
 use engine::Rgb8Image;
 use recipe_store::{DecodeError, FORMAT_VERSION, Variant};
 use tool_api::ToolRegistry;
@@ -258,8 +258,29 @@ pub fn stored_recipe(stored: &StoredVariant) -> Option<Recipe> {
     recipe_store::decode_recipe_lenient(&stored.data).map(|(_, recipe)| recipe)
 }
 
+/// The document of a photo as it came from the camera (a variant never
+/// saved, or a new one): the default recipe, with `start_lens` (the
+/// settings of its custom lens) when given; an empty history.
+#[must_use]
+pub fn fresh(
+    opened: Opened,
+    first_generation: u64,
+    registry: &ToolRegistry,
+    start_lens: Option<LensSettings>,
+) -> Document {
+    match start_lens {
+        Some(lens) => {
+            let mut recipe = Recipe::default();
+            recipe.develop.lens = lens;
+            Document::restored(opened, first_generation, registry, recipe, None).0
+        }
+        None => Document::new(opened, first_generation),
+    }
+}
+
 /// Builds the document of variant `number` of a photo from what the
-/// catalog has for it (`stored`; `None` for a variant never saved).
+/// catalog has for it (`stored`; `None` for a variant never saved, which
+/// starts with `start_lens`, the settings of its custom lens, when given).
 #[must_use]
 pub fn reopen(
     opened: Opened,
@@ -267,9 +288,10 @@ pub fn reopen(
     registry: &ToolRegistry,
     number: u32,
     stored: Option<StoredVariant>,
+    start_lens: Option<LensSettings>,
 ) -> Reopened {
     let Some(stored) = stored else {
-        let doc = Document::new(opened, first_generation);
+        let doc = fresh(opened, first_generation, registry, start_lens);
         let view = placed(GraphView::default(), &doc);
         let state = VariantState::untouched(number, &doc, &view);
         return Reopened { doc, view, state, notice: None };
@@ -372,6 +394,7 @@ mod tests {
             raw: None,
             detected_lens: None,
             lens_choices: Vec::new(),
+            lens_key: None,
             info: raw_io::PhotoInfo::default(),
             image: DevelopedImage {
                 settings: DevelopSettings::default(),
@@ -390,7 +413,7 @@ mod tests {
 
     /// Opens a never-edited photo and adds an exposure node set to +1.
     fn edited(reg: &ToolRegistry) -> Reopened {
-        let mut r = reopen(opened(), 1, reg, 1, None);
+        let mut r = reopen(opened(), 1, reg, 1, None, None);
         let source = r.doc.recipe().graph.source();
         let node = r.doc.add_node(reg, source, core_model::ToolId::new("exposure").unwrap()).unwrap();
         let p = ParamId::new("exposure").unwrap();
@@ -423,7 +446,7 @@ mod tests {
         let v = recipe_store::decode(save.data.as_deref().unwrap()).unwrap();
         assert_eq!(v.history.as_ref().map(|h| h.steps.len()), Some(3));
         assert!(v.layout.is_some());
-        let reopened = reopen(opened(), 1, &reg, 1, Some(stored(&save)));
+        let reopened = reopen(opened(), 1, &reg, 1, Some(stored(&save)), None);
         assert!(reopened.notice.is_none());
         assert_eq!(reopened.doc.recipe(), &v.recipe);
         // A newer editor's edit is left alone.
@@ -434,7 +457,7 @@ mod tests {
     #[test]
     fn a_photo_never_edited_writes_nothing_until_it_changes() {
         let reg = registry();
-        let mut r = reopen(opened(), 1, &reg, 1, None);
+        let mut r = reopen(opened(), 1, &reg, 1, None, None);
         assert!(r.notice.is_none() && !r.doc.is_read_only());
         // The graph panel draws it.
         r.view.sync(&r.doc.recipe().graph);
@@ -456,7 +479,7 @@ mod tests {
         assert!(!r.state.is_dirty(&r.doc, &r.view));
         assert!(r.state.to_save(&r.doc, &r.view, Some(&shown())).is_empty(), "nothing new");
 
-        let back = reopen(opened(), 50, &reg, 1, Some(row));
+        let back = reopen(opened(), 50, &reg, 1, Some(row), None);
         assert!(back.notice.is_none());
         assert_eq!(back.doc.recipe(), r.doc.recipe());
         assert_eq!(back.doc.history(), r.doc.history());
@@ -503,7 +526,7 @@ mod tests {
         let mut row = stored(&save);
         row.data = row.data.replacen("\"format\":1", "\"format\":9", 1);
         row.info.format = 9;
-        let mut back = reopen(opened(), 5, &reg, 1, Some(row.clone()));
+        let mut back = reopen(opened(), 5, &reg, 1, Some(row.clone()), None);
         assert!(back.doc.is_read_only());
         let why = back.state.read_only.clone().unwrap();
         assert!(why.contains("newer version") && why.contains("format 9"), "{why}");
@@ -516,7 +539,7 @@ mod tests {
 
         // A recipe this version cannot read: shown unedited.
         row.data = row.data.replacen("{\"tool\":\"exposure\"}", "{\"lut3d\":\"x\"}", 1);
-        let unknown = reopen(opened(), 5, &reg, 1, Some(row));
+        let unknown = reopen(opened(), 5, &reg, 1, Some(row), None);
         assert!(unknown.doc.is_read_only());
         assert_eq!(unknown.doc.recipe(), &core_model::Recipe::default());
         assert!(unknown.notice.unwrap().contains("cannot show"));
@@ -529,7 +552,7 @@ mod tests {
             info: VariantInfo { number: 2, name: "Variant 2".into(), format: 1 },
             data: "{\"format\":1,".into(),
         };
-        let r = reopen(opened(), 1, &reg, 2, Some(row));
+        let r = reopen(opened(), 1, &reg, 2, Some(row), None);
         assert!(r.doc.is_read_only());
         assert!(r.notice.unwrap().contains("damaged"));
         assert!(r.state.to_save(&r.doc, &r.view, Some(&shown())).is_empty());
@@ -538,7 +561,7 @@ mod tests {
     #[test]
     fn an_untouched_variant_is_written_before_another_is_added() {
         let reg = registry();
-        let mut r = reopen(opened(), 1, &reg, 1, None);
+        let mut r = reopen(opened(), 1, &reg, 1, None, None);
         r.state.ensure_stored();
         let save = r.state.to_save(&r.doc, &r.view, None);
         assert!(save.data.is_some());
@@ -548,9 +571,19 @@ mod tests {
     }
 
     #[test]
+    fn a_photo_never_edited_starts_with_its_custom_lens_and_is_not_saved_for_it() {
+        let reg = registry();
+        let lens = LensSettings { vignetting: false, custom: Some("Mine".into()), ..LensSettings::default() };
+        let r = reopen(opened(), 1, &reg, 1, None, Some(lens.clone()));
+        assert_eq!(r.doc.recipe().develop.lens, lens);
+        assert!(r.doc.history().is_empty(), "not an edit of the user");
+        assert!(r.state.to_save(&r.doc, &r.view, None).is_empty(), "nothing to save until edited");
+    }
+
+    #[test]
     fn a_new_variant_is_written_at_the_next_save() {
         let reg = registry();
-        let r = reopen(opened(), 1, &reg, 1, None);
+        let r = reopen(opened(), 1, &reg, 1, None, None);
         let state = VariantState::unsaved(3, variant_name(3));
         assert!(state.is_dirty(&r.doc, &r.view));
         let save = state.to_save(&r.doc, &r.view, None);

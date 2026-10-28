@@ -7,8 +7,9 @@
 //! the other nodes.
 
 use commands::GestureId;
-use core_model::{BaseCurve, LensSettings, NodeId, NodeKind, ParamId, ParamValue};
+use core_model::{BaseCurve, CustomLens, LensSettings, NodeId, NodeKind, ParamId, ParamValue};
 use editor::adjust::Pick;
+use editor::custom_lenses::CustomLenses;
 use editor::{Document, Histogram};
 use eframe::egui::{self, Align, Layout, RichText};
 use tool_api::{ParamDescriptor, ParamKind, ToolRegistry, Unit};
@@ -66,6 +67,10 @@ pub enum UiEdit {
     },
     /// New lens-correction settings.
     Lens(LensSettings),
+    /// Save the lens corrections as a custom lens (opens the window).
+    SaveCustomLens,
+    /// Delete the custom lens with this name (asks first).
+    DeleteCustomLens(String),
     /// Another base curve (Base Characteristics).
     Curve(BaseCurve),
     /// Several values of one node at once (one undo step; while dragging,
@@ -108,6 +113,8 @@ pub struct Context<'a> {
     pub pick: Option<Pick>,
     /// The colour entering the selected node under the pointer in the viewer.
     pub probe: Option<[f32; 3]>,
+    /// The custom lenses saved on this computer.
+    pub custom_lenses: &'a CustomLenses,
 }
 
 /// The settings of the selected node.
@@ -141,7 +148,7 @@ pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
             ui.add_space(SPACE[2]);
             base_characteristics(ui, doc, edits);
             ui.add_space(SPACE[2]);
-            lens_section(ui, doc, cx.developing, edits);
+            lens_section(ui, doc, cx, edits);
         }
         NodeKind::Tool(_) => {
             let Some(row) = doc.node_rows(cx.registry).into_iter().find(|r| r.node == node.id) else { return };
@@ -251,27 +258,53 @@ fn curve_hint(curve: BaseCurve) -> &'static str {
     }
 }
 
-fn lens_section(ui: &mut egui::Ui, doc: &Document, developing: bool, edits: &mut Vec<UiEdit>) {
+fn lens_section(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut Vec<UiEdit>) {
+    let t = Tokens::of(ui.ctx().theme());
     let current = doc.recipe().develop.lens.clone();
     let mut next = current.clone();
     ui.horizontal(|ui| {
         ui.checkbox(&mut next.enabled, RichText::new("Lens corrections").size(FONT[2]).strong())
             .on_hover_text("Correct distortion, chromatic aberration and vignetting from the lens database");
-        if developing {
+        if cx.developing {
             ui.spinner();
         }
     });
     ui.add_space(SPACE[1]);
+    let exif_lens = doc.opened().lens_key.as_deref();
     ui.add_enabled_ui(current.enabled, |ui| {
         let automatic = match doc.detected_lens() {
             Some(name) => format!("Automatic ({name})"),
             None => "Automatic (lens not recognised)".to_owned(),
         };
         let selected = current.lens.clone().unwrap_or_else(|| automatic.clone());
-        lens_chooser(ui, doc, &selected, &automatic, &mut next.lens);
-        ui.checkbox(&mut next.distortion, "Distortion");
-        ui.checkbox(&mut next.tca, "Chromatic aberration");
-        ui.checkbox(&mut next.vignetting, "Vignetting");
+        let customs = cx.custom_lenses.by_name();
+        match lens_chooser(ui, doc, &selected, &automatic, current.lens.as_deref(), &customs, exif_lens) {
+            Some(LensPick::Database(lens)) => next.lens = lens,
+            Some(LensPick::Custom(settings)) => next = settings,
+            None => {}
+        }
+        ui.add_space(SPACE[0]);
+        let id = ui.id();
+        amount_row(ui, id.with("d"), &mut next.distortion, &mut next.amount.distortion, "Distortion");
+        amount_row(ui, id.with("t"), &mut next.tca, &mut next.amount.tca, "Chromatic aberration");
+        amount_row(ui, id.with("v"), &mut next.vignetting, &mut next.amount.vignetting, "Vignetting");
+        ui.add_space(SPACE[0]);
+        ui.label(RichText::new("Manual").size(FONT[1]).strong().color(t.text_weak));
+        manual_row(
+            ui,
+            id.with("md"),
+            &mut next.manual.distortion,
+            "Distortion",
+            "Above 0 straightens lines bowed outwards (barrel), below 0 lines bowed inwards (pincushion); \
+             also for lenses the database does not know",
+        );
+        manual_row(
+            ui,
+            id.with("mv"),
+            &mut next.manual.vignetting,
+            "Light falloff",
+            "Above 0 brightens the corners (up to one stop), below 0 darkens them",
+        );
         let mut auto_zoom = next.zoom.is_none();
         if ui
             .checkbox(&mut auto_zoom, "Fill the frame")
@@ -284,16 +317,124 @@ fn lens_section(ui: &mut egui::Ui, doc: &Document, developing: bool, edits: &mut
             ui.label(RichText::new(note).size(FONT[1]).weak());
         }
     });
+    ui.add_space(SPACE[1]);
+    custom_lens_row(ui, &t, &current, cx.custom_lenses, exif_lens, edits);
     if next != current {
         edits.push(UiEdit::Lens(next));
     }
 }
 
+/// The custom lens the settings came from (and whether they were changed
+/// since), with Save and Delete.
+fn custom_lens_row(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    current: &LensSettings,
+    customs: &CustomLenses,
+    exif_lens: Option<&str>,
+    edits: &mut Vec<UiEdit>,
+) {
+    let custom = current.custom.as_deref().and_then(|n| customs.named(n));
+    if let Some(c) = custom {
+        let modified = c.settings != *current;
+        let text = if modified {
+            format!("Custom lens \u{201c}{}\u{201d} (modified)", c.name)
+        } else {
+            format!("Custom lens \u{201c}{}\u{201d}", c.name)
+        };
+        ui.label(RichText::new(text).size(FONT[1]).color(t.text_weak))
+            .on_hover_text(format!("For photos taken with {}", c.exif_lens));
+    }
+    ui.horizontal(|ui| {
+        let why = if exif_lens.is_none() { Some("The file does not name its lens") } else { None };
+        let save = ui
+            .add_enabled(why.is_none(), egui::Button::new("Save custom lens\u{2026}"))
+            .on_hover_text(
+                "Keep these lens corrections under a name: photos taken with this lens and never edited start \
+                 with them",
+            )
+            .on_disabled_hover_text(why.unwrap_or_default());
+        if save.clicked() {
+            edits.push(UiEdit::SaveCustomLens);
+        }
+        if let Some(c) = custom
+            && ui
+                .button("Delete\u{2026}")
+                .on_hover_text("Delete this custom lens; photos keep their settings")
+                .clicked()
+        {
+            edits.push(UiEdit::DeleteCustomLens(c.name.clone()));
+        }
+    });
+}
+
+/// A correction's tick with its amount (0–200 %), applied when the slider
+/// is let go so that the photo is developed once per change.
+fn amount_row(ui: &mut egui::Ui, id: egui::Id, on: &mut bool, amount: &mut f32, label: &str) {
+    ui.horizontal(|ui| {
+        ui.checkbox(on, label);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let max = core_model::LensAmounts::MAX * 100.0;
+            if let Some(v) = released(ui, id, *amount * 100.0, *on, 0.0..=max, " %") {
+                *amount = v / 100.0;
+            }
+        });
+    });
+}
+
+/// A manual correction from −100 to 100, applied when the slider is let go.
+fn manual_row(ui: &mut egui::Ui, id: egui::Id, value: &mut f32, label: &str, hint: &str) {
+    ui.horizontal(|ui| {
+        ui.label(label).on_hover_text(hint);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if let Some(v) = released(ui, id, *value * 100.0, true, -100.0..=100.0, "") {
+                *value = v / 100.0;
+            }
+        });
+    });
+}
+
+/// A whole-number slider over `range` starting at `stored`: while it is
+/// dragged the value shown is kept under `id`; the new value is returned
+/// once the drag ends, or at once for a click or a typed value.
+fn released(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    stored: f32,
+    enabled: bool,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+) -> Option<f32> {
+    let mut shown = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(stored);
+    let slider = egui::Slider::new(&mut shown, range).suffix(suffix).step_by(1.0).fixed_decimals(0);
+    let response = ui.add_enabled(enabled, slider);
+    if response.drag_stopped() {
+        ui.ctx().data_mut(|d| d.remove::<f32>(id));
+        return Some(shown);
+    }
+    if response.dragged() {
+        ui.ctx().data_mut(|d| d.insert_temp(id, shown));
+        return None;
+    }
+    response.changed().then_some(shown)
+}
+
 /// The lens chooser: a button with the chosen lens opening a list of every
 /// lens of the database, the ones that fit the camera first and the others
 /// by maker, with a search field that filters as you type and a tick to
-/// show only the fitting ones. Sets `chosen` (`None` = Automatic).
-fn lens_chooser(ui: &mut egui::Ui, doc: &Document, selected: &str, automatic: &str, chosen: &mut Option<String>) {
+/// show only the fitting ones; the custom lenses come first, those for the
+/// photo's lens (`exif_lens`) at the top. `chosen` is the database lens
+/// chosen now (`None` = Automatic).
+fn lens_chooser(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    selected: &str,
+    automatic: &str,
+    chosen: Option<&str>,
+    customs: &[&CustomLens],
+    exif_lens: Option<&str>,
+) -> Option<LensPick> {
+    let mut pick = None;
     let t = Tokens::of(ui.ctx().theme());
     let search_id = egui::Id::unique("rne-lens-search");
     let only_id = egui::Id::unique("rne-lens-compatible-only");
@@ -316,8 +457,29 @@ fn lens_chooser(ui: &mut egui::Ui, doc: &Document, selected: &str, automatic: &s
             }
             ui.checkbox(&mut only, "Only lenses that fit this camera");
             ui.separator();
+            let words: Vec<String> = search.split_whitespace().map(str::to_lowercase).collect();
+            let mut mine: Vec<&&CustomLens> = customs
+                .iter()
+                .filter(|c| {
+                    let hay = format!("{} {}", c.name, c.exif_lens).to_lowercase();
+                    words.iter().all(|w| hay.contains(w.as_str()))
+                })
+                .filter(|c| !only || exif_lens.is_some_and(|k| c.fits(k)))
+                .collect();
+            mine.sort_by_key(|c| !exif_lens.is_some_and(|k| c.fits(k)));
+            if !mine.is_empty() {
+                ui.label(RichText::new("Custom lenses").size(FONT[0]).strong().color(t.text_weak));
+                for c in mine {
+                    let label = format!("\u{2605} {}", c.name);
+                    if ui.selectable_label(false, label).on_hover_text(format!("For {}", c.exif_lens)).clicked() {
+                        pick = Some(LensPick::Custom(c.settings.clone()));
+                        ui.close();
+                    }
+                }
+                ui.add_space(SPACE[0]);
+            }
             if ui.selectable_label(chosen.is_none(), automatic).clicked() {
-                *chosen = None;
+                pick = Some(LensPick::Database(None));
                 ui.close();
             }
             let found = editor::lenses::filter(doc.lens_choices(), &search, only);
@@ -328,7 +490,7 @@ fn lens_chooser(ui: &mut egui::Ui, doc: &Document, selected: &str, automatic: &s
                 ui.add_space(SPACE[0]);
                 ui.label(RichText::new(title).size(FONT[0]).strong().color(t.text_weak));
                 for lens in lenses {
-                    let is = chosen.as_deref() == Some(lens.name.as_str());
+                    let is = chosen == Some(lens.name.as_str());
                     let response = ui.selectable_label(is, lens.name.as_str());
                     let response = if lens.compatible {
                         response
@@ -336,7 +498,7 @@ fn lens_chooser(ui: &mut egui::Ui, doc: &Document, selected: &str, automatic: &s
                         response.on_hover_text(format!("Mount: {}", lens.mounts))
                     };
                     if response.clicked() {
-                        *chosen = Some(lens.name.clone());
+                        pick = Some(LensPick::Database(Some(lens.name.clone())));
                         ui.close();
                     }
                 }
@@ -347,6 +509,15 @@ fn lens_chooser(ui: &mut egui::Ui, doc: &Document, selected: &str, automatic: &s
         d.insert_temp(search_id, search);
         d.insert_temp(only_id, only);
     });
+    pick
+}
+
+/// What was chosen in the lens chooser.
+enum LensPick {
+    /// A lens of the database (`None` = Automatic).
+    Database(Option<String>),
+    /// A custom lens: all its settings.
+    Custom(LensSettings),
 }
 
 /// A slider for a float parameter, with its edits; returns the slider's

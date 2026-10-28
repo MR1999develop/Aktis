@@ -7,9 +7,10 @@
 
 use commands::{Edit, SavedHistory, SavedStep};
 use core_model::{
-    AiMask, AiTarget, BaseCurve, BodyPart, BrushMask, BrushStroke, DevelopSettings, Geometry, LensSettings, Link,
-    MaskComponent, MaskDef, MaskOp, MaskSource, ModelId, Node, NodeGraph, NodeId, NodeKind, NormPoint, NormRect,
-    ParamId, ParamValue, Params, ProfileChoice, PromptPoint, RasterKey, Recipe, Style, StyleNode, ToolId, WhiteBalance,
+    AiMask, AiTarget, BaseCurve, BodyPart, BrushMask, BrushStroke, CustomLens, DevelopSettings, Geometry, LensAmounts,
+    LensSettings, Link, ManualLens, MaskComponent, MaskDef, MaskOp, MaskSource, ModelId, Node, NodeGraph, NodeId,
+    NodeKind, NormPoint, NormRect, ParamId, ParamValue, Params, ProfileChoice, PromptPoint, RasterKey, Recipe, Style,
+    StyleNode, ToolId, WhiteBalance,
 };
 
 use crate::Layout;
@@ -127,6 +128,9 @@ fn lens(l: &LensSettings) -> Value {
         ("tca", Value::Bool(l.tca)),
         ("vignetting", Value::Bool(l.vignetting)),
         ("zoom", opt(l.zoom.map(Value::f32))),
+        ("amount", f32s(&[l.amount.distortion, l.amount.tca, l.amount.vignetting])),
+        ("manual", f32s(&[l.manual.distortion, l.manual.vignetting])),
+        ("custom", opt(l.custom.as_deref().map(Value::text))),
     ])
 }
 
@@ -140,6 +144,41 @@ fn read_lens(v: &Value) -> Result<LensSettings, String> {
         tca: flag("tca")?,
         vignetting: flag("vignetting")?,
         zoom: optional(f, "zoom").map(|v| v.as_f32("zoom")).transpose()?,
+        // Amounts and manual corrections came later: missing means the defaults.
+        amount: match optional(f, "amount") {
+            Some(v) => {
+                let [distortion, tca, vignetting] = read_f32s::<3>(v, "amount")?;
+                LensAmounts { distortion, tca, vignetting }
+            }
+            None => LensAmounts::default(),
+        },
+        manual: match optional(f, "manual") {
+            Some(v) => {
+                let [distortion, vignetting] = read_f32s::<2>(v, "manual")?;
+                ManualLens { distortion, vignetting }
+            }
+            None => ManualLens::default(),
+        },
+        custom: optional(f, "custom").map(|v| v.as_str("custom").map(str::to_owned)).transpose()?,
+    })
+}
+
+/// A custom lens as JSON.
+pub(crate) fn custom_lens(c: &CustomLens) -> Value {
+    Value::object([
+        ("name", Value::text(&c.name)),
+        ("exif_lens", Value::text(&c.exif_lens)),
+        ("lens", lens(&c.settings)),
+    ])
+}
+
+/// A custom lens from JSON.
+pub(crate) fn read_custom_lens(v: &Value) -> Result<CustomLens, String> {
+    let f = v.as_object("custom lens")?;
+    Ok(CustomLens {
+        name: required(f, "name")?.as_str("name")?.to_owned(),
+        exif_lens: required(f, "exif_lens")?.as_str("exif_lens")?.to_owned(),
+        settings: read_lens(required(f, "lens")?)?,
     })
 }
 

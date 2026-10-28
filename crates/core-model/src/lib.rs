@@ -20,7 +20,7 @@ mod recipe;
 mod sensor;
 mod style;
 
-pub use capture::{CalibratedMatrix, CaptureInfo, Illuminant};
+pub use capture::{CalibratedMatrix, CaptureInfo, Illuminant, same_lens};
 pub use geometry::{Geometry, MAX_ANGLE, Warp, full_frame, level_angle};
 pub use graph::{GraphError, Link, Node, NodeGraph, NodeKind, NodeMut, PortKind};
 pub use ids::{IdError, ModelId, NodeId, ParamId, ToolId};
@@ -32,6 +32,8 @@ pub use mask::{
 pub use math::Matrix3;
 pub use orientation::Orientation;
 pub use params::{ParamValue, Params};
-pub use recipe::{BaseCurve, DevelopSettings, LensSettings, ProfileChoice, Recipe, WhiteBalance};
+pub use recipe::{
+    BaseCurve, CustomLens, DevelopSettings, LensAmounts, LensSettings, ManualLens, ProfileChoice, Recipe, WhiteBalance,
+};
 pub use sensor::{BayerPattern, CfaPattern, SensorError, SensorImage};
 pub use style::{Style, StyleNode, StyleSelection, tool_nodes};

@@ -46,7 +46,43 @@ pub struct CorrectionRequest {
     pub tca: bool,
     /// Correct vignetting.
     pub vignetting: bool,
+    /// Amounts of the database corrections and corrections set by hand.
+    pub adjust: Adjustments,
 }
+
+/// How much of each database correction to apply, and corrections set by
+/// hand on top (they also work for a lens the database does not know).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Adjustments {
+    /// Share of the distortion correction: 1 full, 0 none.
+    pub distortion: f32,
+    /// Share of the chromatic aberration correction.
+    pub tca: f32,
+    /// Share of the vignetting correction.
+    pub vignetting: f32,
+    /// Distortion removed by hand, −1 to 1: above 0 barrel, below 0 pincushion.
+    pub manual_distortion: f32,
+    /// Corners brightened by hand, −1 to 1 (one stop at ±1).
+    pub manual_vignetting: f32,
+}
+
+impl Default for Adjustments {
+    fn default() -> Self {
+        Self { distortion: 1.0, tca: 1.0, vignetting: 1.0, manual_distortion: 0.0, manual_vignetting: 0.0 }
+    }
+}
+
+impl Adjustments {
+    /// `true` when something is set by hand.
+    #[must_use]
+    pub fn has_manual(&self) -> bool {
+        self.manual_distortion != 0.0 || self.manual_vignetting != 0.0
+    }
+}
+
+/// Barrel distortion removed by a manual distortion of 1: the corner of the
+/// image moves by about this share of the half diagonal.
+const MANUAL_DISTORTION: f64 = 0.15;
 
 /// Why no correction could be prepared.
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +132,12 @@ pub struct LensCorrection {
     distortion: Option<(DistortionModel, [f64; 3])>,
     tca: Option<(TcaModel, [f64; 6])>,
     vignetting: Option<[f64; 3]>,
+    /// Distortion set by hand: `1 + k r²` on the corrected image, before the database's.
+    manual_distortion: f64,
+    /// Vignetting set by hand: stops gained at the corner of the image.
+    manual_vignetting: f64,
+    /// Squared distance of the image corner from the centre, in normalised units.
+    corner_r2: f64,
     /// Magnification of the corrected image (> 1 crops in).
     zoom: f64,
 }
@@ -155,7 +197,8 @@ impl LensCorrection {
                     [t[0] * hs.powi(3) / dd.powi(4), t[1] * hs.powi(2) / dd.powi(3), t[2] * hs / dd.powi(2)]
                 }
             };
-            (d.model, terms)
+            let a = f64::from(req.adjust.distortion);
+            (d.model, terms.map(|k| k * a))
         });
 
         let tca = if req.tca { interp::tca(lens, crop, focal) } else { None }.map(|(t, set)| {
@@ -166,6 +209,13 @@ impl LensCorrection {
                 terms[3] *= hs;
                 terms[4] *= hs * hs;
                 terms[5] *= hs * hs;
+            }
+            // Red and blue scale towards no shift (1 for the constant terms).
+            let a = f64::from(req.adjust.tca);
+            terms[0] = 1.0 + a * (terms[0] - 1.0);
+            terms[1] = 1.0 + a * (terms[1] - 1.0);
+            for k in &mut terms[2..] {
+                *k *= a;
             }
             (t.model, terms)
         });
@@ -179,32 +229,81 @@ impl LensCorrection {
         .map(|(v, set)| {
             // The "pa" model's unit is the half diagonal of the calibration frame.
             let hs = real_focal / (FULL_FRAME_DIAGONAL / f64::from(set.crop_factor) / 2.0);
+            let a = f64::from(req.adjust.vignetting);
             let k = v.terms.map(f64::from);
-            [k[0] * hs.powi(2), k[1] * hs.powi(4), k[2] * hs.powi(6)]
+            [k[0] * hs.powi(2) * a, k[1] * hs.powi(4) * a, k[2] * hs.powi(6) * a]
         });
 
-        let mut c =
-            Self { width: req.width, height: req.height, norm_scale, center, distortion, tca, vignetting, zoom: 1.0 };
+        Ok(Self::finish(req, norm_scale, center, distortion, tca, vignetting))
+    }
+
+    /// The corrections set by hand only, for a lens (or camera, or focal
+    /// length) the database cannot help with: the optical centre is the
+    /// image centre.
+    ///
+    /// # Errors
+    /// [`CorrectionError`] when the image is empty.
+    pub fn manual_only(req: &CorrectionRequest) -> Result<Self, CorrectionError> {
+        if req.width == 0 || req.height == 0 {
+            return Err(CorrectionError::BadRequest("the image is empty".to_owned()));
+        }
+        let w1 = f64::from(req.width.max(2) - 1);
+        let h1 = f64::from(req.height.max(2) - 1);
+        // The unit is the half diagonal, so the corner is at r = 1.
+        let norm_scale = 2.0 / w1.hypot(h1);
+        let center = [w1 / 2.0 * norm_scale, h1 / 2.0 * norm_scale];
+        Ok(Self::finish(req, norm_scale, center, None, None, None))
+    }
+
+    /// Adds the corrections set by hand and the automatic zoom.
+    fn finish(
+        req: &CorrectionRequest,
+        norm_scale: f64,
+        center: [f64; 2],
+        distortion: Option<(DistortionModel, [f64; 3])>,
+        tca: Option<(TcaModel, [f64; 6])>,
+        vignetting: Option<[f64; 3]>,
+    ) -> Self {
+        let w1 = f64::from(req.width.max(2) - 1);
+        let h1 = f64::from(req.height.max(2) - 1);
+        let corner_r2 = (w1.hypot(h1) / 2.0 * norm_scale).powi(2);
+        let clean = |v: f32| if v.is_finite() { f64::from(v.clamp(-1.0, 1.0)) } else { 0.0 };
+        let manual_distortion =
+            if req.distortion { -MANUAL_DISTORTION * clean(req.adjust.manual_distortion) / corner_r2 } else { 0.0 };
+        let manual_vignetting = if req.vignetting { clean(req.adjust.manual_vignetting) } else { 0.0 };
+        let mut c = Self {
+            width: req.width,
+            height: req.height,
+            norm_scale,
+            center,
+            distortion,
+            tca,
+            vignetting,
+            manual_distortion,
+            manual_vignetting,
+            corner_r2,
+            zoom: 1.0,
+        };
         if c.applied().distortion || c.applied().tca {
             c.zoom = c.auto_zoom();
         }
-        Ok(c)
+        c
     }
 
     /// The corrections this instance applies.
     #[must_use]
     pub fn applied(&self) -> Applied {
         Applied {
-            distortion: self.distortion.is_some(),
+            distortion: self.distortion.is_some() || self.manual_distortion != 0.0,
             tca: self.tca.is_some(),
-            vignetting: self.vignetting.is_some(),
+            vignetting: self.vignetting.is_some() || self.manual_vignetting != 0.0,
         }
     }
 
     /// `true` when pixels move (distortion or TCA), so the image must be resampled.
     #[must_use]
     pub fn moves_pixels(&self) -> bool {
-        self.distortion.is_some() || self.tca.is_some() || (self.zoom - 1.0).abs() > 1e-9
+        self.applied().distortion || self.tca.is_some() || (self.zoom - 1.0).abs() > 1e-9
     }
 
     /// Image width the correction was prepared for.
@@ -239,13 +338,19 @@ impl LensCorrection {
     #[must_use]
     #[allow(clippy::cast_possible_truncation)] // the gain is used in f32 pixel maths
     pub fn vignetting_gain(&self, x: f32, y: f32) -> f32 {
-        let Some(k) = self.vignetting else { return 1.0 };
+        if self.vignetting.is_none() && self.manual_vignetting == 0.0 {
+            return 1.0;
+        }
         let u = f64::from(x) * self.norm_scale - self.center[0];
         let v = f64::from(y) * self.norm_scale - self.center[1];
         let r2 = u * u + v * v;
-        let c = 1.0 + k[0] * r2 + k[1] * r2 * r2 + k[2] * r2 * r2 * r2;
-        // A calibration that darkens to nothing would blow up the corners.
-        if c > 1e-3 { (1.0 / c) as f32 } else { 1.0 }
+        let database = self.vignetting.map_or(1.0, |k| {
+            let c = 1.0 + k[0] * r2 + k[1] * r2 * r2 + k[2] * r2 * r2 * r2;
+            // A calibration that darkens to nothing would blow up the corners.
+            if c > 1e-3 { 1.0 / c } else { 1.0 }
+        });
+        let manual = (self.manual_vignetting * r2 / self.corner_r2).exp2();
+        (database * manual) as f32
     }
 
     /// Where to read red, green and blue in the uncorrected image for pixel
@@ -264,6 +369,8 @@ impl LensCorrection {
 
     /// Distortion, then TCA, in normalised coordinates (lensfun's order).
     fn map_normalized(&self, u: [f64; 2]) -> [[f64; 2]; 3] {
+        let m = 1.0 + self.manual_distortion * (u[0] * u[0] + u[1] * u[1]);
+        let u = [u[0] * m, u[1] * m];
         let d = match self.distortion {
             None => u,
             Some((model, k)) => {
@@ -389,6 +496,7 @@ mod tests {
             distortion: true,
             tca: true,
             vignetting: true,
+            adjust: Adjustments::default(),
         }
     }
 
@@ -511,6 +619,54 @@ mod tests {
         let corner = c.vignetting_gain(0.0, 0.0);
         assert!((corner - 1.0 / 0.6).abs() < 2e-2, "{corner}");
         assert!(c.vignetting_gain(75.0, 50.0) < corner);
+    }
+
+    #[test]
+    fn amounts_scale_the_database_corrections() {
+        let l = with_distortion(DistortionModel::Poly3, [-0.03, 0.0, 0.0]);
+        let mut full = LensCorrection::new(&l, &request(600, 400)).expect("valid");
+        let mut r = request(600, 400);
+        r.adjust.distortion = 0.5;
+        let mut half = LensCorrection::new(&l, &r).expect("valid");
+        r.adjust.distortion = 0.0;
+        let mut none = LensCorrection::new(&l, &r).expect("valid");
+        for c in [&mut full, &mut half, &mut none] {
+            c.set_zoom(1.0);
+        }
+        let (x, y) = (590.0, 390.0);
+        let shift = |c: &LensCorrection| (c.source(x, y)[1][0] - x).abs();
+        assert!(shift(&none) < 1e-3, "no correction at 0 %");
+        assert!((shift(&half) - shift(&full) / 2.0).abs() < 0.05 * shift(&full), "{} {}", shift(&half), shift(&full));
+
+        let mut s = empty_set();
+        s.vignetting.push(Vignetting { focal: 50.0, aperture: 2.0, distance: 10.0, terms: [-0.4, 0.0, 0.0] });
+        let mut r = request(301, 201);
+        r.adjust.vignetting = 0.0;
+        let c = LensCorrection::new(&lens(s), &r).expect("valid");
+        assert!((c.vignetting_gain(0.0, 0.0) - 1.0).abs() < 1e-6, "no vignetting correction at 0 %");
+    }
+
+    #[test]
+    fn manual_corrections_work_without_a_lens_and_follow_their_sign() {
+        let mut r = request(401, 301);
+        r.adjust.manual_vignetting = 1.0;
+        r.adjust.manual_distortion = 1.0;
+        let mut c = LensCorrection::manual_only(&r).expect("valid");
+        assert!(c.applied().distortion && c.applied().vignetting && !c.applied().tca);
+        assert!((c.vignetting_gain(200.0, 150.0) - 1.0).abs() < 1e-6, "the centre stays");
+        assert!((c.vignetting_gain(0.0, 0.0) - 2.0).abs() < 1e-3, "one stop at the corner");
+        c.set_zoom(1.0);
+        // Barrel removed: corners read closer to the centre.
+        let s = c.source(400.0, 300.0)[1];
+        assert!(s[0] < 400.0 && s[1] < 300.0, "{s:?}");
+        let mid = c.source(200.0, 150.0)[1];
+        assert!((mid[0] - 200.0).abs() < 1e-3 && (mid[1] - 150.0).abs() < 1e-3);
+        r.adjust.manual_vignetting = -1.0;
+        let dark = LensCorrection::manual_only(&r).expect("valid");
+        assert!((dark.vignetting_gain(0.0, 0.0) - 0.5).abs() < 1e-3);
+        r.vignetting = false;
+        r.distortion = false;
+        assert!(LensCorrection::manual_only(&r).expect("valid").applied().is_empty(), "switched off");
     }
 
     #[test]

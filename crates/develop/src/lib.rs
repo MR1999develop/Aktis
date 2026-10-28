@@ -415,6 +415,7 @@ mod tests {
             distortion: true,
             tca: true,
             vignetting: true,
+            adjust: lens_db::Adjustments::default(),
         }
     }
 

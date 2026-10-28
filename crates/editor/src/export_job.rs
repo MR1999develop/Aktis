@@ -55,6 +55,8 @@ pub struct ExportJob {
     pub options: ExportOptions,
     /// Written as the EXIF "Software" ("RAW Node Editor 0.1.0").
     pub software: String,
+    /// The custom lenses: a photo never edited is exported with the one of its lens.
+    pub custom_lenses: crate::custom_lenses::CustomLenses,
 }
 
 /// How an export ended.
@@ -161,7 +163,7 @@ fn export_one(
     cancel: &AtomicBool,
 ) -> Result<Option<PathBuf>, String> {
     let name = display_name(&photo.path);
-    let recipe = photo.recipe.clone().unwrap_or_default();
+    let mut recipe = photo.recipe.clone().unwrap_or_default();
     let (raw, image, orientation, info) = match &photo.open {
         Some(open) => {
             let image = match (&open.developed, &open.raw) {
@@ -174,6 +176,12 @@ fn export_one(
         None => {
             let file = raw_io::read_raw(&photo.path).map_err(|e| format!("{name}: {e}"))?;
             let raw = Arc::new(RawData { sensor: file.sensor, capture: file.capture, file_notes: file.notes });
+            // Never edited: as it would open, with the custom lens of its lens.
+            if photo.recipe.is_none()
+                && let Some(lens) = job.custom_lenses.start_settings(raw.capture.lens_key().as_deref())
+            {
+                recipe.develop.lens = lens;
+            }
             let image = Arc::new(develop_full(&raw, &recipe, &name)?);
             (Some(raw), image, file.orientation, file.info)
         }
@@ -298,6 +306,7 @@ mod tests {
                 ..options.clone()
             },
             software: "test".into(),
+            custom_lenses: Default::default(),
         };
         let mut seen = Vec::new();
         let summary = run(&engine(), &job, &AtomicBool::new(false), &mut |i, n| seen.push((i, n)));
@@ -328,6 +337,7 @@ mod tests {
             ],
             options: ExportOptions::default(),
             software: String::new(),
+            custom_lenses: Default::default(),
         };
         let summary = run(&engine(), &job, &AtomicBool::new(false), &mut |_, _| {});
         assert_eq!(summary.written, vec![dir.join("ok.jpg")]);
@@ -345,6 +355,7 @@ mod tests {
             photos: vec![open_photo(&dir.join("a.NEF"))],
             options: ExportOptions::default(),
             software: String::new(),
+            custom_lenses: Default::default(),
         };
         let summary = run(&engine(), &job, &AtomicBool::new(true), &mut |_, _| {});
         assert!(summary.cancelled && summary.written.is_empty());
@@ -383,7 +394,12 @@ mod tests {
             size: export::Size { resize: export::Resize::LongEdge(3), upscale: false },
             ..ExportOptions::default()
         };
-        let job = ExportJob { photos: vec![open_photo(&dir.join("p.NEF"))], options, software: String::new() };
+        let job = ExportJob {
+            photos: vec![open_photo(&dir.join("p.NEF"))],
+            options,
+            software: String::new(),
+            custom_lenses: Default::default(),
+        };
         let summary = run(&engine(), &job, &AtomicBool::new(false), &mut |_, _| {});
         let tiff = std::fs::read(&summary.written[0]).unwrap();
         // Width and height are the first two LONG entries of IFD0 (tags 256, 257).

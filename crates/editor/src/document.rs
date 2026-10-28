@@ -61,6 +61,9 @@ pub struct Opened {
     pub raw: Option<Arc<RawData>>,
     /// Lens recognised from the file in the lens database, if any.
     pub detected_lens: Option<String>,
+    /// The lens as the file names it ([`core_model::CaptureInfo::lens_key`]),
+    /// to find and save its custom lens.
+    pub lens_key: Option<String>,
     /// Every lens of the database with corrections, those fitting the
     /// camera first, for choosing by hand.
     pub lens_choices: Vec<crate::lenses::LensChoice>,
@@ -849,6 +852,7 @@ mod tests {
             raw: None,
             detected_lens: None,
             lens_choices: Vec::new(),
+            lens_key: None,
             info: raw_io::PhotoInfo::default(),
             image: DevelopedImage {
                 settings: DevelopSettings::default(),

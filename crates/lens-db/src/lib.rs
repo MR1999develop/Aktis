@@ -27,7 +27,7 @@ mod matching;
 mod model;
 mod xml;
 
-pub use correction::{Applied, CorrectionError, CorrectionRequest, LensCorrection};
+pub use correction::{Adjustments, Applied, CorrectionError, CorrectionRequest, LensCorrection};
 pub use db::{DbError, LensDatabase, LensMatch, MAX_FILE_BYTES};
 pub use model::{
     CalibrationSet, Camera, Distortion, DistortionModel, Lens, LensType, Mount, Name, Tca, TcaModel, Vignetting,

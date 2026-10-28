@@ -663,6 +663,7 @@ fn open_file(path: &std::path::Path, timing: &mut OpenTiming) -> Result<Opened, 
     let camera = develop::prepare::find_camera(&db, &raw.capture);
     let detected_lens = develop::prepare::find_lens(&db, camera, &raw.capture, None).map(lens_db::Lens::full_name);
     let lens_choices = crate::lenses::lens_choices(&db, camera);
+    let lens_key = raw.capture.lens_key();
 
     Ok(Opened {
         path: path.to_owned(),
@@ -672,6 +673,7 @@ fn open_file(path: &std::path::Path, timing: &mut OpenTiming) -> Result<Opened, 
         raw: Some(raw),
         detected_lens,
         lens_choices,
+        lens_key,
         info: file.info,
         image,
     })
@@ -963,7 +965,12 @@ mod tests {
             keywords: Vec::new(),
         };
         let options = engine::export::ExportOptions::default();
-        let handle = worker.export(ExportJob { photos: vec![photo], options, software: "test".into() });
+        let handle = worker.export(ExportJob {
+            photos: vec![photo],
+            options,
+            software: "test".into(),
+            custom_lenses: Default::default(),
+        });
         assert!(!handle.is_cancelled());
         let events = wait_for(&worker, |e| matches!(e, Event::ExportFinished(_)));
         let progress =

@@ -427,7 +427,7 @@ enum Done {
 /// What Ctrl+Y redoes, newest last.
 #[derive(Debug, Clone, PartialEq)]
 enum Undone {
-    Step(Step),
+    Step(Box<Step>),
     Rewrite(Box<Rewrite>),
 }
 
@@ -541,7 +541,13 @@ impl EditSession {
             if perform(&mut probe, &edit).is_err() {
                 break;
             }
-            undone.push(Undone::Step(Step { edit, undo: None, gesture: None, created: Vec::new(), skipped: None }));
+            undone.push(Undone::Step(Box::new(Step {
+                edit,
+                undo: None,
+                gesture: None,
+                created: Vec::new(),
+                skipped: None,
+            })));
         }
         // The next redo is the last entry.
         undone.reverse();
@@ -643,7 +649,7 @@ impl EditSession {
                     revert(&mut self.recipe, undo);
                 }
                 let label = step.edit.label();
-                self.undone.push(Undone::Step(step));
+                self.undone.push(Undone::Step(Box::new(step)));
                 Some(label)
             }
             Done::Rewrite(r) => {
@@ -665,7 +671,7 @@ impl EditSession {
                     let label = step.edit.label();
                     step.undo = Some(undo);
                     step.created = created;
-                    self.steps.push(step);
+                    self.steps.push(*step);
                     self.done.push(Done::Step);
                     Some(label)
                 } else {
@@ -869,7 +875,9 @@ fn validate(recipe: &Recipe, registry: &ToolRegistry, edit: Edit) -> Result<Edit
             }
             Ok(Edit::SetCameraProfile(ProfileChoice::Named(name.to_owned())))
         }
-        Edit::SetLensCorrection(mut lens) => {
+        Edit::SetLensCorrection(lens) => {
+            let mut lens = lens.sanitized();
+            lens.custom = lens.custom.map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
             if lens.zoom.is_some_and(|z| !(z.is_finite() && (0.25..=4.0).contains(&z))) {
                 return Err(EditError::InvalidLensSettings);
             }

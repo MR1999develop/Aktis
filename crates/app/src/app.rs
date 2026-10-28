@@ -150,6 +150,8 @@ pub struct EditorApp {
     node_problem: Option<String>,
     /// Downloads of the AI models: the dialog and the "AI models" window.
     models: ModelsUi,
+    /// Lens corrections saved under a name for a lens.
+    custom_lenses: editor::custom_lenses::CustomLenses,
     title: String,
     /// Explorer, filmstrip and catalog.
     library: Library,
@@ -214,6 +216,10 @@ pub struct EditorApp {
     close_refused: bool,
     /// The name being typed in the Save Workspace window, while it is open.
     workspace_name: Option<String>,
+    /// The Save Custom Lens window: the name being typed.
+    custom_lens_name: Option<String>,
+    /// The custom lens whose deletion waits for confirmation.
+    delete_custom_lens: Option<String>,
     /// Wheel scrolling not yet turned into a zoom step.
     wheel: f32,
 }
@@ -274,6 +280,7 @@ impl EditorApp {
             toast,
             node_problem: None,
             models: ModelsUi::new(),
+            custom_lenses: editor::custom_lenses::CustomLenses::load(editor::custom_lenses::default_folder()),
             title: String::new(),
             library: Library::new(),
             tabs: Tabs::default(),
@@ -305,6 +312,8 @@ impl EditorApp {
             presets: PresetsUi::default(),
             close_refused: false,
             workspace_name: None,
+            custom_lens_name: None,
+            delete_custom_lens: None,
             wheel: 0.0,
         };
         app.reload_presets();
@@ -446,6 +455,7 @@ impl EditorApp {
             photos: photos.iter().map(|p| self.export_photo(p)).collect(),
             options: self.settings.export_options(),
             software: format!("{APP_NAME} {VERSION}"),
+            custom_lenses: self.custom_lenses.clone(),
         };
         let total = job.photos.len();
         let current = photos.first().map(|p| file_name(p.as_path())).unwrap_or_default();
@@ -522,11 +532,12 @@ impl EditorApp {
                             self.last_open = Some(timing);
                             self.prefetch_step = Some(step);
                             let first = self.doc.as_ref().map_or(1, |d| d.generation() + 1);
+                            let start = self.custom_lenses.start_settings(opened.lens_key.as_deref());
                             let reopened = match self.library.shown_variant(&path) {
                                 Ok((number, stored)) => {
                                     // An edit changed from the filmstrip (a preset) has no preview yet.
                                     let missing = stored.is_some() && !self.library.has_edited_preview(&path);
-                                    let mut r = variants::reopen(*opened, first, &self.registry, number, stored);
+                                    let mut r = variants::reopen(*opened, first, &self.registry, number, stored, start);
                                     if missing {
                                         r.state.preview_missing();
                                     }
@@ -534,8 +545,14 @@ impl EditorApp {
                                 }
                                 Err(e) => {
                                     // Never save over an edit that could not be read.
-                                    let mut r =
-                                        variants::reopen(*opened, first, &self.registry, catalog::FIRST_VARIANT, None);
+                                    let mut r = variants::reopen(
+                                        *opened,
+                                        first,
+                                        &self.registry,
+                                        catalog::FIRST_VARIANT,
+                                        None,
+                                        None,
+                                    );
                                     let why =
                                         format!("Read-only: the saved edit of this photo could not be read ({e}).");
                                     r.doc.set_read_only(true);
@@ -695,6 +712,16 @@ impl EditorApp {
                     result
                 }
                 UiEdit::Lens(lens) => doc.set_lens_correction(&self.registry, lens),
+                UiEdit::SaveCustomLens => {
+                    let lens = &doc.recipe().develop.lens;
+                    let name = lens.custom.clone().or_else(|| doc.opened().lens_key.clone());
+                    self.custom_lens_name = Some(name.unwrap_or_else(|| "My lens".to_owned()));
+                    Ok(())
+                }
+                UiEdit::DeleteCustomLens(name) => {
+                    self.delete_custom_lens = Some(name);
+                    Ok(())
+                }
                 UiEdit::Curve(curve) => doc.set_base_curve(&self.registry, curve),
                 UiEdit::SetMany { node, key, values, in_drag } => {
                     let gesture =
@@ -1105,7 +1132,8 @@ impl EditorApp {
             let copy = Document::restored(doc.opened().clone(), first, &self.registry, doc.recipe().clone(), history);
             (copy.0, self.graph.view().clone())
         } else {
-            (Document::new(doc.opened().clone(), first), GraphView::default())
+            let start = self.custom_lenses.start_settings(doc.opened().lens_key.as_deref());
+            (variants::fresh(doc.opened().clone(), first, &self.registry, start), GraphView::default())
         };
         let state = VariantState::unsaved(number, variant_name(number));
         self.install(Reopened { doc, view, state, notice: None }, true, clone);
@@ -1138,7 +1166,8 @@ impl EditorApp {
                 return;
             }
         };
-        let reopened = variants::reopen(opened, first, &self.registry, number, stored);
+        let start = self.custom_lenses.start_settings(opened.lens_key.as_deref());
+        let reopened = variants::reopen(opened, first, &self.registry, number, stored, start);
         self.install(reopened, true, false);
         if let Err(e) = self.library.set_current_variant(&path, number) {
             self.toast = Some(error_toast(format!("The variant could not be chosen: {e}")));
@@ -1175,7 +1204,8 @@ impl EditorApp {
         }
         let Some(doc) = &self.doc else { return };
         let (opened, first) = (doc.opened().clone(), doc.generation() + 1);
-        let reopened = variants::reopen(opened, first, &self.registry, next, stored);
+        let start = self.custom_lenses.start_settings(opened.lens_key.as_deref());
+        let reopened = variants::reopen(opened, first, &self.registry, next, stored, start);
         self.install(reopened, true, false);
         if let Err(e) = self.library.set_current_variant(&path, next) {
             self.toast = Some(error_toast(format!("The variant could not be chosen: {e}")));
@@ -2073,6 +2103,7 @@ impl EditorApp {
                         histogram: self.histogram.as_deref(),
                         pick: self.pick,
                         probe: self.probe,
+                        custom_lenses: &self.custom_lenses,
                     };
                     // The selected node first, then the ones used just before it.
                     let shown: Vec<NodeId> = if self.recent_nodes.is_empty() {
@@ -2524,6 +2555,100 @@ impl EditorApp {
         }
     }
 
+    /// The Save Custom Lens window: a name for the lens corrections of the
+    /// open photo, kept for its lens.
+    fn custom_lens_dialog(&mut self, ctx: &egui::Context) {
+        let Some(name) = &mut self.custom_lens_name else { return };
+        let Some(exif_lens) = self.doc.as_ref().and_then(|d| d.opened().lens_key.clone()) else {
+            self.custom_lens_name = None;
+            return;
+        };
+        let t = Tokens::of(ctx.theme());
+        let mut choice = None;
+        let replaced = self.custom_lenses.named(name).map(|c| c.name.clone());
+        crate::dialog::dialog(ctx, "rne-save-custom-lens", |ui| {
+            ui.label(RichText::new("Save Custom Lens").size(FONT[4]).strong());
+            ui.add_space(SPACE[1]);
+            ui.label(
+                RichText::new(format!(
+                    "The lens corrections of this photo, under a name, for {exif_lens}. Photos taken with this \
+                     lens and never edited start with them; any photo can choose them in the lens list."
+                ))
+                .color(t.text_weak),
+            );
+            ui.add_space(SPACE[1]);
+            let field = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
+            if ui.ctx().memory(|m| m.focused().is_none()) {
+                field.request_focus();
+            }
+            if let Some(old) = &replaced {
+                ui.label(RichText::new(format!("The custom lens \u{201c}{old}\u{201d} is replaced")).color(t.warning));
+            }
+            ui.add_space(SPACE[2]);
+            let ready = !name.trim().is_empty();
+            let action = if replaced.is_some() { "Replace" } else { "Save" };
+            choice = crate::dialog::dialog_buttons(ui, &t, ready.then_some(action), "Cancel", |_| {});
+        });
+        match choice {
+            Some(crate::dialog::Choice::Action) => {
+                let Some(name) = self.custom_lens_name.take() else { return };
+                let Some(doc) = &mut self.doc else { return };
+                let name = name.trim().to_owned();
+                let mut settings = doc.recipe().develop.lens.clone();
+                settings.custom = Some(name.clone());
+                let lens = core_model::CustomLens { name: name.clone(), exif_lens: exif_lens.clone(), settings };
+                match self.custom_lenses.save(lens) {
+                    Ok(()) => {
+                        // The photo now names its custom lens.
+                        let saved = self.custom_lenses.named(&name).map(|c| c.settings.clone());
+                        if let Some(settings) = saved
+                            && let Err(e) = doc.set_lens_correction(&self.registry, settings)
+                        {
+                            self.toast = Some(error_toast(format!("That change was refused: {e}")));
+                        } else {
+                            self.toast =
+                                Some(info_toast(format!("Custom lens \u{201c}{name}\u{201d} saved for {exif_lens}")));
+                        }
+                    }
+                    Err(e) => self.toast = Some(error_toast(format!("The custom lens could not be saved: {e}"))),
+                }
+            }
+            Some(crate::dialog::Choice::Cancel) => self.custom_lens_name = None,
+            None => {}
+        }
+    }
+
+    /// Asks before deleting a custom lens.
+    fn delete_custom_lens_dialog(&mut self, ctx: &egui::Context) {
+        let Some(name) = self.delete_custom_lens.clone() else { return };
+        let t = Tokens::of(ctx.theme());
+        let mut choice = None;
+        crate::dialog::dialog(ctx, "rne-delete-custom-lens", |ui| {
+            ui.label(RichText::new(format!("Delete custom lens \u{201c}{name}\u{201d}?")).size(FONT[4]).strong());
+            ui.add_space(SPACE[1]);
+            ui.label(
+                RichText::new(
+                    "Photos keep the lens corrections they have; photos never edited no longer start with it. \
+                     This cannot be undone.",
+                )
+                .color(t.text_weak),
+            );
+            ui.add_space(SPACE[2]);
+            choice = crate::dialog::dialog_buttons(ui, &t, Some("Delete"), "Cancel", |_| {});
+        });
+        match choice {
+            Some(crate::dialog::Choice::Action) => {
+                self.delete_custom_lens = None;
+                self.toast = Some(match self.custom_lenses.delete(&name) {
+                    Ok(()) => info_toast(format!("Custom lens \u{201c}{name}\u{201d} deleted")),
+                    Err(e) => error_toast(format!("The custom lens could not be deleted: {e}")),
+                });
+            }
+            Some(crate::dialog::Choice::Cancel) => self.delete_custom_lens = None,
+            None => {}
+        }
+    }
+
     /// The exposure warning for the image on screen, made once per render.
     fn exposure_warning_texture(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
         if self.warning_texture.is_none() {
@@ -2709,6 +2834,8 @@ impl eframe::App for EditorApp {
             .show(ui, |ui| self.center(ui, &mut commands, &mut library));
         self.library.rename_dialog(&ctx, &mut library);
         self.workspace_dialog(&ctx);
+        self.custom_lens_dialog(&ctx);
+        self.delete_custom_lens_dialog(&ctx);
         let presets_folder = self.settings.presets_folder();
         if self.prefs.show(&ctx, &mut self.settings) {
             ctx.set_theme(theme_preference(self.settings.theme));

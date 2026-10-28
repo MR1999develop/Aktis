@@ -138,10 +138,62 @@ pub struct CaptureInfo {
     pub color_matrices: Vec<CalibratedMatrix>,
 }
 
+impl CaptureInfo {
+    /// The lens as the file names it, to recognise the same lens on other
+    /// photos ("Sony FE 24-70mm F2.8 GM"): maker and model as recorded;
+    /// for a camera that names no lens (a fixed-lens compact) the camera.
+    /// `None` when the file names neither.
+    #[must_use]
+    pub fn lens_key(&self) -> Option<String> {
+        let clean = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let model = self.lens_model.as_deref().map(clean).filter(|m| !m.is_empty());
+        let make = self.lens_make.as_deref().map(clean).filter(|m| !m.is_empty());
+        match (make, model) {
+            // Most files repeat the maker at the start of the model.
+            (Some(make), Some(model)) if !model.to_lowercase().starts_with(&make.to_lowercase()) => {
+                Some(format!("{make} {model}"))
+            }
+            (_, Some(model)) => Some(model),
+            (_, None) => {
+                let camera = clean(&format!("{} {}", self.clean_make, self.clean_model));
+                (!camera.is_empty()).then(|| format!("{camera} (built-in lens)"))
+            }
+        }
+    }
+}
+
+/// `true` when two lens keys ([`CaptureInfo::lens_key`]) name the same
+/// lens: case and spacing apart.
+#[must_use]
+pub fn same_lens(a: &str, b: &str) -> bool {
+    let norm = |s: &str| s.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>();
+    norm(a) == norm(b)
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // table values
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lens_key_names_the_lens_once_and_falls_back_to_the_camera() {
+        let mut info = CaptureInfo {
+            clean_make: "Sony".into(),
+            clean_model: "RX100 VII".into(),
+            lens_make: Some("Sony".into()),
+            lens_model: Some("FE  24-70mm F2.8 GM".into()),
+            ..CaptureInfo::default()
+        };
+        assert_eq!(info.lens_key().as_deref(), Some("Sony FE 24-70mm F2.8 GM"));
+        info.lens_model = Some("Sony FE 24-70mm F2.8 GM".into());
+        assert_eq!(info.lens_key().as_deref(), Some("Sony FE 24-70mm F2.8 GM"), "the maker is not repeated");
+        info.lens_make = None;
+        info.lens_model = Some(" ".into());
+        assert_eq!(info.lens_key().as_deref(), Some("Sony RX100 VII (built-in lens)"));
+        assert_eq!(CaptureInfo::default().lens_key(), None);
+        assert!(same_lens("Sony FE 24-70mm  F2.8 GM", "sony fe 24-70mm f2.8 gm"));
+        assert!(!same_lens("Sony FE 24-70mm F2.8 GM", "Sony FE 24-70mm F2.8 GM II"));
+    }
 
     #[test]
     fn codes_round_trip_and_temperatures_follow_the_dng_sdk() {

@@ -3,7 +3,7 @@
 
 use core_color::{CameraNames, ColorProfile, ProfileLibrary};
 use core_model::{CaptureInfo, DevelopSettings, ImageF32, LensSettings, ProfileChoice, SensorImage, WorkingSpace};
-use lens_db::{Applied, Camera, CorrectionRequest, Lens, LensCorrection, LensDatabase};
+use lens_db::{Adjustments, Applied, Camera, CorrectionRequest, Lens, LensCorrection, LensDatabase};
 
 use crate::{DevelopError, DevelopInputs};
 
@@ -145,6 +145,9 @@ pub fn find_lens<'a>(
 }
 
 /// Prepares the lens correction of a `width × height` sensor image.
+/// When the database cannot help (unknown lens, camera or focal length) the
+/// corrections set by hand are still applied, with a note on why the
+/// database's are not.
 #[must_use]
 pub fn prepare_lens(
     db: &LensDatabase,
@@ -156,31 +159,9 @@ pub fn prepare_lens(
     if !settings.enabled {
         return LensOutcome::none(None, None, "lens corrections are switched off");
     }
-    let camera = find_camera(db, info);
-    let lens = find_lens(db, camera, info, settings.lens.as_deref());
-    let Some(lens) = lens else {
-        let why = match (&settings.lens, &info.lens_model) {
-            (Some(name), _) => format!("lens '{name}' is not in the lens database"),
-            (None, Some(model)) => format!("lens '{model}' is not in the lens database"),
-            (None, None) => "the file does not name the lens".to_owned(),
-        };
-        return LensOutcome::none(camera, None, why);
-    };
-    let Some(camera) = camera else {
-        return LensOutcome::none(
-            None,
-            Some(lens),
-            format!(
-                "camera {} {} is not in the lens database (its sensor size is needed)",
-                info.clean_make, info.clean_model
-            ),
-        );
-    };
-    let Some(focal) = info.focal_length.filter(|f| *f > 0.0) else {
-        return LensOutcome::none(Some(camera), Some(lens), "the file does not record the focal length");
-    };
-    let req = CorrectionRequest {
-        crop_factor: camera.crop_factor,
+    let adjust = adjustments(settings);
+    let request = |crop_factor: f32, focal: f32| CorrectionRequest {
+        crop_factor,
         focal,
         aperture: info.aperture.unwrap_or(0.0),
         distance: info.focus_distance.unwrap_or(1000.0),
@@ -189,9 +170,45 @@ pub fn prepare_lens(
         distortion: settings.distortion,
         tca: settings.tca,
         vignetting: settings.vignetting,
+        adjust,
     };
-    match LensCorrection::new(lens, &req) {
-        Err(e) => LensOutcome::none(Some(camera), Some(lens), e.to_string()),
+    // Without database data: only what is set by hand.
+    let by_hand = |camera: Option<&Camera>, lens: Option<&Lens>, why: String| {
+        let mut out = LensOutcome::none(camera, lens, why);
+        if adjust.has_manual()
+            && let Ok(mut c) = LensCorrection::manual_only(&request(1.0, 1.0))
+        {
+            if let Some(z) = settings.zoom {
+                c.set_zoom(z);
+            }
+            out.applied = c.applied();
+            out.correction = (!out.applied.is_empty()).then_some(c);
+            out.note = out.note.map(|n| format!("{n}; only the manual corrections are applied"));
+        }
+        out
+    };
+    let camera = find_camera(db, info);
+    let lens = find_lens(db, camera, info, settings.lens.as_deref());
+    let Some(lens) = lens else {
+        let why = match (&settings.lens, &info.lens_model) {
+            (Some(name), _) => format!("lens '{name}' is not in the lens database"),
+            (None, Some(model)) => format!("lens '{model}' is not in the lens database"),
+            (None, None) => "the file does not name the lens".to_owned(),
+        };
+        return by_hand(camera, None, why);
+    };
+    let Some(camera) = camera else {
+        let why = format!(
+            "camera {} {} is not in the lens database (its sensor size is needed)",
+            info.clean_make, info.clean_model
+        );
+        return by_hand(None, Some(lens), why);
+    };
+    let Some(focal) = info.focal_length.filter(|f| *f > 0.0) else {
+        return by_hand(Some(camera), Some(lens), "the file does not record the focal length".to_owned());
+    };
+    match LensCorrection::new(lens, &request(camera.crop_factor, focal)) {
+        Err(e) => by_hand(Some(camera), Some(lens), e.to_string()),
         Ok(mut c) => {
             if let Some(z) = settings.zoom {
                 c.set_zoom(z);
@@ -215,6 +232,18 @@ pub fn prepare_lens(
                 note,
             }
         }
+    }
+}
+
+/// The amounts and manual corrections of `settings` for the lens database.
+fn adjustments(settings: &LensSettings) -> Adjustments {
+    let s = settings.clone().sanitized();
+    Adjustments {
+        distortion: s.amount.distortion,
+        tca: s.amount.tca,
+        vignetting: s.amount.vignetting,
+        manual_distortion: s.manual.distortion,
+        manual_vignetting: s.manual.vignetting,
     }
 }
 
@@ -259,6 +288,29 @@ mod tests {
         no_focal.focal_length = None;
         let out = prepare_lens(db, &no_focal, &LensSettings::default(), 600, 400);
         assert!(out.note.as_deref().is_some_and(|n| n.contains("focal length")), "{out:?}");
+    }
+
+    #[test]
+    fn manual_corrections_apply_to_a_lens_the_database_does_not_know() {
+        let db = LensDatabase::builtin();
+        let mut settings = LensSettings::default();
+        settings.manual.vignetting = 0.5;
+        let out = prepare_lens(db, &info(Some("Imaginary 13mm F0.7")), &settings, 600, 400);
+        assert!(out.correction.is_some() && out.applied.vignetting && !out.applied.distortion, "{out:?}");
+        assert!(out.note.as_deref().is_some_and(|n| n.contains("only the manual")), "{out:?}");
+        // At 0 % nothing of the database's distortion correction is left.
+        let known = info(Some("FE 24-70mm F2.8 GM"));
+        let mut none = LensSettings::default();
+        none.amount.distortion = 0.0;
+        none.amount.tca = 0.0;
+        none.amount.vignetting = 0.0;
+        let out = prepare_lens(db, &known, &none, 600, 400);
+        let mut c = out.correction.expect("the data is still there");
+        c.set_zoom(1.0);
+        for p in c.source(590.0, 390.0) {
+            assert!((p[0] - 590.0).abs() < 1e-2 && (p[1] - 390.0).abs() < 1e-2, "{p:?}");
+        }
+        assert!((c.vignetting_gain(0.0, 0.0) - 1.0).abs() < 1e-6);
     }
 
     #[test]
