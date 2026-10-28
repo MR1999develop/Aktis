@@ -5,6 +5,10 @@
 //! ```text
 //! RNE_SCREENSHOT_DIR=out cargo test -p app --release --test screenshot -- --ignored
 //! ```
+#![allow(
+    linker_messages,
+    reason = "a C dependency of the tagging tokenizer exports functions, so the MSVC linker reports the .lib/.exp it writes"
+)]
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

@@ -1,5 +1,9 @@
 //! Starts the editor window. A RAW file given on the command line is opened.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // no console window in release builds
+#![allow(
+    linker_messages,
+    reason = "a C dependency of the tagging tokenizer exports functions, so the MSVC linker reports the .lib/.exp it writes"
+)]
 
 use std::path::PathBuf;
 

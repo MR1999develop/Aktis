@@ -162,7 +162,7 @@ impl Tabs {
         let row = ui.horizontal(|ui| {
             ui.set_min_height(ROW_HEIGHT);
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.dnd_drag_source(Id::new(("rne-history-step", i)), i, |ui| {
+            ui.dnd_drag_source(Id::unique(("rne-history-step", i)), i, |ui| {
                 let (rect, _) = ui.allocate_exact_size(vec2(12.0, ROW_HEIGHT), Sense::hover());
                 icons::grip(ui.painter(), rect, t.text_weak);
             })

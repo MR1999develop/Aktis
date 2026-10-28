@@ -369,8 +369,11 @@ pub fn rename_target(from: &Path, stem: &str, exists: impl Fn(&Path) -> bool) ->
         return Ok(to);
     }
     // A change of case only is allowed: on Windows and macOS the old file
-    // is "found" under the new name.
-    let same_file_other_case = to.to_string_lossy().to_lowercase() == from.to_string_lossy().to_lowercase();
+    // is "found" under the new name. Only the names are compared: the folder
+    // is the same, and on Windows `with_file_name` writes `\` where `from`
+    // may have `/`.
+    let lower = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    let same_file_other_case = lower(&to) == lower(from);
     if exists(&to) && !same_file_other_case {
         return Err(RenameError::Exists);
     }
