@@ -18,6 +18,7 @@
 //! The `app` crate draws these with egui and turns gestures into calls here.
 
 pub mod adjust;
+pub mod crop;
 pub mod document;
 pub mod graph_layout;
 pub mod graph_view;

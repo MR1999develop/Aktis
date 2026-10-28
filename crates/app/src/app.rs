@@ -28,6 +28,7 @@ use engine::{Backend, EngineChoice};
 use tool_api::ToolRegistry;
 
 use crate::actions::Command;
+use crate::geometry_ui::{GeoEdit, GeometryUi};
 use crate::graph_ui::{GraphAction, GraphUi};
 use crate::history_ui::{LeftTab, TabAction, Tabs};
 use crate::inspector::{self, Drag, UiEdit};
@@ -133,6 +134,12 @@ pub struct EditorApp {
     tool: Option<ViewerTool>,
     /// A picker of the settings panel waiting for a click in the viewer.
     pick: Option<Pick>,
+    /// The viewer tool at the last frame, to notice a change.
+    prev_tool: Option<ViewerTool>,
+    /// Crop box, aspect and Level line of the geometry tools.
+    geometry_ui: GeometryUi,
+    /// The slider drag of a geometry tool, one undo step.
+    geometry_gesture: Option<commands::GestureId>,
     /// The colour entering the selected node under the pointer in the viewer.
     probe: Option<[f32; 3]>,
     /// Levels of the image on screen.
@@ -210,6 +217,9 @@ impl EditorApp {
             graph: GraphUi::default(),
             tool: None,
             pick: None,
+            prev_tool: None,
+            geometry_ui: GeometryUi::default(),
+            geometry_gesture: None,
             probe: None,
             histogram: None,
             scopes: Scopes::default(),
@@ -275,7 +285,13 @@ impl EditorApp {
             return;
         }
         let wanted = doc.export_path(&self.settings.export_folder(doc.path()));
-        worker.export(doc.recipe().graph.clone(), Arc::clone(doc.developed()), doc.orientation(), wanted);
+        worker.export(
+            doc.recipe().graph.clone(),
+            Arc::clone(doc.developed()),
+            doc.orientation(),
+            doc.recipe().geometry,
+            wanted,
+        );
         self.exporting = Some(Job { ticket: 0, name: doc.file_name(), started: Instant::now() });
         ctx.request_repaint();
     }
@@ -310,7 +326,7 @@ impl EditorApp {
             Command::ZoomFit => self.view.fit(),
             Command::Zoom100 | Command::ZoomIn | Command::ZoomOut => {
                 let (Some(doc), Some(vp)) = (&self.doc, &self.viewport) else { return };
-                let (w, h) = doc.upright_size();
+                let (w, h) = doc.shown_size(self.tool != Some(ViewerTool::Crop));
                 let image = [w as f32, h as f32];
                 match command {
                     Command::Zoom100 => self.view.actual_pixels(None, image, vp),
@@ -685,7 +701,7 @@ impl EditorApp {
         let (Some(doc), Some(worker)) = (&self.doc, &self.worker) else { return };
         let busy = self.drag.is_some();
         // The full-size render only when the zoom shows more than the preview has.
-        let (w, h) = doc.upright_size();
+        let (w, h) = doc.shown_size(self.tool != Some(ViewerTool::Crop));
         let full_adds_detail = doc.preview_is_reduced()
             && self.viewport.as_ref().is_some_and(|vp| {
                 editor::needs_full_resolution(self.view.scale([w as f32, h as f32], vp), doc.preview_scale())
@@ -706,6 +722,9 @@ impl EditorApp {
             source: Arc::clone(source),
             orientation: doc.orientation(),
             max_side,
+            geometry: doc.recipe().geometry,
+            // While the crop is edited the whole frame shows around it.
+            crop: self.tool != Some(ViewerTool::Crop),
         });
         self.plan.requested(doc.generation(), quality);
     }
@@ -865,7 +884,7 @@ impl EditorApp {
             if let Some(doc) = &self.doc {
                 ui.label(doc.camera());
                 ui.separator();
-                let (w, h) = doc.upright_size();
+                let (w, h) = doc.shown_size(self.tool != Some(ViewerTool::Crop));
                 ui.label(format!("{w} \u{d7} {h}"));
                 if let Some(vp) = &self.viewport {
                     ui.separator();
@@ -946,10 +965,16 @@ impl EditorApp {
         }
 
         let mut picked = None;
+        let mut geo_edits = Vec::new();
+        let mut crop_apply = false;
         if let Some(doc) = &self.doc {
             let response = ui.allocate_rect(rect, Sense::click_and_drag());
-            let (w, h) = doc.upright_size();
+            let cropped = self.tool != Some(ViewerTool::Crop);
+            let (w, h) = doc.shown_size(cropped);
             let image = [w as f32, h as f32];
+            let geometry = doc.recipe().geometry;
+            let (uw, uh) = doc.upright_size();
+            let frame_aspect = uw as f32 / uh.max(1) as f32;
 
             if response.hovered() {
                 let (scroll, pinch, hover) =
@@ -962,9 +987,13 @@ impl EditorApp {
             // The colour entering the selected node under the pointer (marked
             // on the levels and curve), and a click for a waiting picker.
             let r = self.view.image_rect(image, &vp);
-            let at = |p: egui::Pos2| [(p.x - r.x) / r.w.max(1.0), (p.y - r.y) / r.h.max(1.0)];
+            let screen = to_egui_rect(r);
+            // A point of the photo on screen, in the upright image (0–1), through the geometry.
+            let at = |p: egui::Pos2| {
+                geometry.to_source([(p.x - r.x) / r.w.max(1.0), (p.y - r.y) / r.h.max(1.0)], frame_aspect, cropped)
+            };
             self.probe = match (self.selected_node, response.hover_pos()) {
-                (Some(node), Some(p)) => doc.probe(&self.registry, node, at(p)),
+                (Some(node), Some(p)) => at(p).and_then(|a| doc.probe(&self.registry, node, a)),
                 _ => None,
             };
             if let Some(pick) = self.pick {
@@ -974,24 +1003,10 @@ impl EditorApp {
                 if response.clicked()
                     && let Some(p) = response.interact_pointer_pos()
                 {
-                    picked = Some((pick, at(p)));
+                    picked = at(p).map(|a| (pick, a));
                 }
             }
-            // The left button pans; the right one is the eyedropper, the middle one the loupe.
-            if response.dragged_by(egui::PointerButton::Primary) {
-                let d = response.drag_delta();
-                self.view.pan([d.x, d.y], image, &vp);
-            }
-            if response.double_clicked() {
-                match self.view.zoom() {
-                    Zoom::Fit => {
-                        let at = response.interact_pointer_pos().map(|p| [p.x, p.y]);
-                        self.view.actual_pixels(at, image, &vp);
-                    }
-                    Zoom::Pixels { .. } => self.view.fit(),
-                }
-            }
-            if self.pick.is_none() && matches!(self.view.zoom(), Zoom::Pixels { .. }) {
+            if self.pick.is_none() && self.tool.is_none() && matches!(self.view.zoom(), Zoom::Pixels { .. }) {
                 if response.dragged() {
                     ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
                 } else if response.hovered() {
@@ -1049,6 +1064,35 @@ impl EditorApp {
                     }
                     _ => {}
                 }
+                // The geometry tools draw over the photo and may own the drag.
+                let mut tool_drag = false;
+                match self.tool {
+                    Some(ViewerTool::Crop) => {
+                        let (owned, apply) = self.geometry_ui.crop_overlay(ui, &response, screen, frame_aspect);
+                        tool_drag = owned;
+                        crop_apply = apply;
+                    }
+                    Some(ViewerTool::Level) => {
+                        tool_drag =
+                            self.geometry_ui.level_overlay(ui, &response, screen, image, &geometry, &mut geo_edits);
+                    }
+                    Some(ViewerTool::Perspective) => crate::geometry_ui::grid_overlay(ui, screen, &t),
+                    _ => {}
+                }
+                // The left button pans; the right one is the eyedropper, the middle one the loupe.
+                if !tool_drag && response.dragged_by(egui::PointerButton::Primary) {
+                    let d = response.drag_delta();
+                    self.view.pan([d.x, d.y], image, &vp);
+                }
+                if response.double_clicked() && self.tool != Some(ViewerTool::Crop) {
+                    match self.view.zoom() {
+                        Zoom::Fit => {
+                            let at = response.interact_pointer_pos().map(|p| [p.x, p.y]);
+                            self.view.actual_pixels(at, image, &vp);
+                        }
+                        Zoom::Pixels { .. } => self.view.fit(),
+                    }
+                }
             } else {
                 painter.text(
                     rect.center(),
@@ -1064,6 +1108,27 @@ impl EditorApp {
         if let Some((pick, at)) = picked {
             self.apply_pick(pick, at);
         }
+        // The options bar of a geometry tool, at the top of the viewer.
+        if let Some(doc) = &self.doc {
+            let geometry = doc.recipe().geometry;
+            let (uw, uh) = doc.upright_size();
+            let frame_aspect = uw as f32 / uh.max(1) as f32;
+            match self.tool {
+                Some(ViewerTool::Crop) => {
+                    if let Some(apply) = self.geometry_ui.crop_options(ui.ctx(), rect, frame_aspect) {
+                        self.leave_crop(apply);
+                    }
+                }
+                Some(tool @ (ViewerTool::Level | ViewerTool::Perspective)) => {
+                    self.geometry_ui.sliders(ui.ctx(), rect, tool, &geometry, &mut geo_edits);
+                }
+                _ => {}
+            }
+        }
+        if crop_apply {
+            self.leave_crop(true);
+        }
+        self.apply_geometry(geo_edits);
 
         if ui.input(|i| !i.raw.hovered_files.is_empty()) {
             let painter = ui.painter_at(rect);
@@ -1259,6 +1324,61 @@ impl EditorApp {
             .show(ui, |ui| self.central(ui, commands, library));
     }
 
+    /// Leaves the crop tool, applying the edited box (one undo step) or not.
+    fn leave_crop(&mut self, apply: bool) {
+        if let Some(doc) = &mut self.doc {
+            let g = doc.recipe().geometry;
+            if let Some(next) = self.geometry_ui.finish_crop(&g, apply)
+                && let Err(e) = doc.set_geometry(&self.registry, next, None)
+            {
+                self.toast = Some(error_toast(format!("That change was refused: {e}")));
+            }
+        }
+        if self.tool == Some(ViewerTool::Crop) {
+            self.tool = None;
+        }
+    }
+
+    /// Applies what the Level and Perspective tools asked for.
+    fn apply_geometry(&mut self, edits: Vec<GeoEdit>) {
+        let Some(doc) = &mut self.doc else { return };
+        for edit in edits {
+            match edit {
+                GeoEdit::Begin => self.geometry_gesture = Some(doc.begin_gesture()),
+                GeoEdit::End => self.geometry_gesture = None,
+                GeoEdit::Set { geometry, in_drag } => {
+                    let gesture = self.geometry_gesture.filter(|_| in_drag);
+                    if let Err(e) = doc.set_geometry(&self.registry, geometry, gesture) {
+                        self.toast = Some(error_toast(format!("That change was refused: {e}")));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reacts to the viewer tool changing: entering the crop tool starts
+    /// the box at the recipe's crop, leaving it (for another tool) applies
+    /// the box; the photo is shown again with or without its crop.
+    fn tool_changed(&mut self) {
+        if self.tool == self.prev_tool {
+            return;
+        }
+        if self.prev_tool == Some(ViewerTool::Crop) && self.tool != Some(ViewerTool::Crop) {
+            let next = self.tool;
+            self.leave_crop(true);
+            self.tool = next;
+        }
+        if self.tool == Some(ViewerTool::Crop)
+            && let Some(doc) = &self.doc
+        {
+            self.geometry_ui.start_crop(&doc.recipe().geometry);
+        }
+        if let Some(doc) = &self.doc {
+            self.plan.reset(doc.generation());
+        }
+        self.prev_tool = self.tool;
+    }
+
     /// A click with a picker of the settings panel at the upright point `at`
     /// (0–1): the colour entering its node there sets its values (one undo
     /// step). The picker stops after one click.
@@ -1293,6 +1413,17 @@ impl EditorApp {
         if self.pick.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.pick = None;
             return;
+        }
+        // In the crop tool Enter applies the box and Esc drops it.
+        if self.tool == Some(ViewerTool::Crop) {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+                self.leave_crop(true);
+                return;
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.leave_crop(false);
+                return;
+            }
         }
         for &tool in TOOL_GROUPS.iter().flat_map(|g| g.iter()) {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, tool.key())) {
@@ -1384,6 +1515,7 @@ impl eframe::App for EditorApp {
                 BarAction::Tool(tool) => self.tool = tool,
             }
         }
+        self.tool_changed();
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::left("library")
             .resizable(true)

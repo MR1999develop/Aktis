@@ -76,6 +76,11 @@ pub struct RenderRequest {
     pub orientation: Orientation,
     /// Largest texture side the screen accepts.
     pub max_side: u32,
+    /// Perspective, straightening and crop of the finished image.
+    pub geometry: core_model::Geometry,
+    /// Apply the crop (off while the crop is being edited, so the whole
+    /// frame shows around it).
+    pub crop: bool,
 }
 
 /// What the worker reports back.
@@ -342,16 +347,25 @@ impl Worker {
         self.queue.wake.notify_one();
     }
 
-    /// Renders `graph` on the full-size `source` and writes a JPEG at
-    /// `wanted` (or a free name next to it). Reported as [`Event::Exported`].
-    pub fn export(&self, graph: NodeGraph, source: Arc<ImageF32>, orientation: Orientation, wanted: PathBuf) {
+    /// Renders `graph` on the full-size `source`, turns it upright, applies
+    /// `geometry` (crop included) and writes a JPEG at `wanted` (or a free
+    /// name next to it). Reported as [`Event::Exported`].
+    pub fn export(
+        &self,
+        graph: NodeGraph,
+        source: Arc<ImageF32>,
+        orientation: Orientation,
+        geometry: core_model::Geometry,
+        wanted: PathBuf,
+    ) {
         let (tx, notify, engine) = (self.tx.clone(), Arc::clone(&self.notify), Arc::clone(&self.engine));
         let fallback = tx.clone();
         let spawned = thread::Builder::new().name("export".into()).spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 let engine = engine.wait();
                 let rendered = engine.render(&graph, &source).map_err(|e| e.to_string())?;
-                engine::export_jpeg(&rendered.image, orientation, EXPORT_QUALITY, &wanted).map_err(|e| e.to_string())
+                let finished = engine::finish(&rendered.image, orientation, &geometry).map_err(|e| e.to_string())?;
+                engine::export_jpeg(&finished, Orientation::Normal, EXPORT_QUALITY, &wanted).map_err(|e| e.to_string())
             }))
             .unwrap_or_else(|_| Err("the export stopped because of an internal error".to_owned()));
             let _ = tx.send(Event::Exported { result });
@@ -451,7 +465,7 @@ fn render_for_screen(engine: &Engine, req: &RenderRequest) -> Event {
         Err(e) => return Event::RenderFailed { generation: req.generation, message: e.to_string() },
     };
     let rendered_at = Instant::now();
-    match engine::to_display(&rendered.image, req.orientation, req.max_side) {
+    match engine::to_display_geometry(&rendered.image, req.orientation, &req.geometry, req.crop, req.max_side) {
         Ok(image) => Event::Rendered {
             generation: req.generation,
             quality: req.quality,
@@ -711,6 +725,8 @@ mod tests {
             source: Arc::new(img),
             orientation: Orientation::Rotate90,
             max_side: 4096,
+            geometry: core_model::Geometry::default(),
+            crop: true,
         });
         let events = wait_for(&worker, |e| matches!(e, Event::Rendered { .. } | Event::RenderFailed { .. }));
         let Some(Event::Rendered { generation, image, .. }) = events.last() else { panic!("{events:?}") };
@@ -734,7 +750,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rne-worker-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = ImageF32::from_pixels(4, 2, WorkingSpace::LinearRec2020, vec![[0.5, 0.2, 0.1, 1.0]; 8]).unwrap();
-        worker.export(NodeGraph::new(), Arc::new(img), Orientation::Normal, dir.join("a.jpg"));
+        worker.export(
+            NodeGraph::new(),
+            Arc::new(img),
+            Orientation::Normal,
+            core_model::Geometry::default(),
+            dir.join("a.jpg"),
+        );
         let events = wait_for(&worker, |e| matches!(e, Event::Exported { .. }));
         let Some(Event::Exported { result: Ok(path) }) = events.last() else { panic!("{events:?}") };
         assert_eq!(path, &dir.join("a.jpg"));

@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use core_model::{
-    GraphError, LensSettings, Link, MaskDef, NodeGraph, NodeId, NodeKind, ParamId, ParamValue, Params, PortKind,
-    ProfileChoice, Recipe, ToolId, WhiteBalance,
+    Geometry, GraphError, LensSettings, Link, MaskDef, NodeGraph, NodeId, NodeKind, ParamId, ParamValue, Params,
+    PortKind, ProfileChoice, Recipe, ToolId, WhiteBalance,
 };
 use tool_api::ToolRegistry;
 
@@ -83,6 +83,8 @@ pub enum Edit {
     SetCameraProfile(ProfileChoice),
     /// Changes the lens corrections of the development stage.
     SetLensCorrection(LensSettings),
+    /// Changes the perspective, straightening and crop of the finished image.
+    SetGeometry(Geometry),
     /// Adds a mask node and connects it to the key input of a tool node, so
     /// the tool acts only inside the mask. A mask already on that input is
     /// disconnected (its node stays in the graph).
@@ -122,6 +124,7 @@ impl Edit {
             Self::SetWhiteBalance(_) => "Change white balance".to_owned(),
             Self::SetCameraProfile(_) => "Change camera profile".to_owned(),
             Self::SetLensCorrection(_) => "Change lens corrections".to_owned(),
+            Self::SetGeometry(_) => "Change crop and straightening".to_owned(),
             Self::AddMask { .. } => "Add mask".to_owned(),
             Self::SetMask { .. } => "Change mask".to_owned(),
         }
@@ -146,6 +149,19 @@ impl Edit {
             }
             Self::SetCameraProfile(ProfileChoice::Named(name)) => name.clone(),
             Self::SetLensCorrection(lens) => on_off(lens.enabled).to_owned(),
+            Self::SetGeometry(g) => {
+                let mut parts = Vec::new();
+                if g.angle != 0.0 {
+                    parts.push(format!("{:+.1}\u{b0}", g.angle));
+                }
+                if g.vertical != 0.0 || g.horizontal != 0.0 {
+                    parts.push("perspective".to_owned());
+                }
+                if g.crop.is_some() {
+                    parts.push("cropped".to_owned());
+                }
+                if parts.is_empty() { "none".to_owned() } else { parts.join(", ") }
+            }
             _ => String::new(),
         }
     }
@@ -155,7 +171,10 @@ impl Edit {
     pub fn kind(&self) -> EditKind {
         match self {
             Self::SetParam { .. } | Self::SetParams { .. } | Self::ResetParam { .. } => EditKind::Adjust,
-            Self::SetWhiteBalance(_) | Self::SetCameraProfile(_) | Self::SetLensCorrection(_) => EditKind::Develop,
+            Self::SetWhiteBalance(_)
+            | Self::SetCameraProfile(_)
+            | Self::SetLensCorrection(_)
+            | Self::SetGeometry(_) => EditKind::Develop,
             Self::AddMask { .. } | Self::SetMask { .. } => EditKind::Mask,
             Self::InsertSerial { .. }
             | Self::RemoveNode { .. }
@@ -183,7 +202,10 @@ impl Edit {
             Self::SetEnabled { node, enabled } => Self::SetEnabled { node: map(*node)?, enabled: *enabled },
             Self::AddMask { to, def } => Self::AddMask { to: map(*to)?, def: def.clone() },
             Self::SetMask { node, def } => Self::SetMask { node: map(*node)?, def: def.clone() },
-            Self::SetWhiteBalance(_) | Self::SetCameraProfile(_) | Self::SetLensCorrection(_) => self.clone(),
+            Self::SetWhiteBalance(_)
+            | Self::SetCameraProfile(_)
+            | Self::SetLensCorrection(_)
+            | Self::SetGeometry(_) => self.clone(),
         })
     }
 }
@@ -302,6 +324,7 @@ enum Undo {
     WhiteBalance(WhiteBalance),
     Profile(ProfileChoice),
     Lens(LensSettings),
+    Geometry(Geometry),
     Mask {
         node: NodeId,
         previous: MaskDef,
@@ -708,6 +731,7 @@ fn validate(recipe: &Recipe, registry: &ToolRegistry, edit: Edit) -> Result<Edit
             }
             Ok(Edit::SetLensCorrection(lens))
         }
+        Edit::SetGeometry(g) => Ok(Edit::SetGeometry(g.sanitized())),
         Edit::AddMask { to, def } => {
             let node = recipe.graph.node(to).ok_or(GraphError::UnknownNode(to))?;
             if !node.kind.inputs().contains(&PortKind::Mask) {
@@ -762,6 +786,7 @@ fn perform(recipe: &mut Recipe, edit: &Edit) -> Result<(Undo, Vec<NodeId>), Edit
         Edit::SetWhiteBalance(wb) => Undo::WhiteBalance(std::mem::replace(&mut recipe.develop.white_balance, *wb)),
         Edit::SetCameraProfile(p) => Undo::Profile(std::mem::replace(&mut recipe.develop.profile, p.clone())),
         Edit::SetLensCorrection(l) => Undo::Lens(std::mem::replace(&mut recipe.develop.lens, l.clone())),
+        Edit::SetGeometry(g) => Undo::Geometry(std::mem::replace(&mut recipe.geometry, *g)),
         Edit::SetMask { node, def } => {
             let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
             let slot = n.mask().ok_or(EditError::NotAMaskNode(*node))?;
@@ -843,6 +868,7 @@ fn revert(recipe: &mut Recipe, undo: &Undo) {
         Undo::WhiteBalance(wb) => recipe.develop.white_balance = *wb,
         Undo::Profile(p) => recipe.develop.profile = p.clone(),
         Undo::Lens(l) => recipe.develop.lens = l.clone(),
+        Undo::Geometry(g) => recipe.geometry = *g,
         Undo::Mask { node, previous } => {
             if let Some(mut n) = recipe.graph.node_mut(*node)
                 && let Some(def) = n.mask()
@@ -860,6 +886,7 @@ fn same_param(a: &Edit, b: &Edit) -> bool {
         (Edit::SetParam { node: n1, param: p1, .. }, Edit::SetParam { node: n2, param: p2, .. })
             if n1 == n2 && p1 == p2
     ) || matches!((a, b), (Edit::SetMask { node: n1, .. }, Edit::SetMask { node: n2, .. }) if n1 == n2)
+        || matches!((a, b), (Edit::SetGeometry(_), Edit::SetGeometry(_)))
         || matches!(
             (a, b),
             (Edit::SetParams { node: n1, values: v1 }, Edit::SetParams { node: n2, values: v2 })

@@ -80,4 +80,6 @@ pub struct Recipe {
     pub develop: DevelopSettings,
     /// The free node graph.
     pub graph: NodeGraph,
+    /// Perspective, straightening and crop of the finished image.
+    pub geometry: crate::Geometry,
 }

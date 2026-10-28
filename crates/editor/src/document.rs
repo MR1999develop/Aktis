@@ -211,6 +211,20 @@ impl Document {
         if self.opened.orientation.swaps_axes() { (h, w) } else { (w, h) }
     }
 
+    /// Width and height of the image as shown and exported: the upright
+    /// full-size image, cut to the recipe's crop when `cropped`.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // pixel sizes
+    pub fn shown_size(&self, cropped: bool) -> (u32, u32) {
+        let (w, h) = self.upright_size();
+        match self.recipe().geometry.crop.filter(|_| cropped) {
+            Some(c) => {
+                (((w as f32 * c.width()).round() as u32).max(1), ((h as f32 * c.height()).round() as u32).max(1))
+            }
+            None => (w, h),
+        }
+    }
+
     /// `false` when the file had no white balance.
     #[must_use]
     pub fn has_camera_white_balance(&self) -> bool {
@@ -492,6 +506,26 @@ impl Document {
             return Ok(());
         }
         self.session.apply_in_gesture(registry, Edit::SetParams { node, values }, gesture)?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// Changes the perspective, straightening and crop (one undo step,
+    /// merged with the previous one in the same `gesture`). Equal settings
+    /// change nothing.
+    ///
+    /// # Errors
+    /// Never in practice ([`EditError`] from the session).
+    pub fn set_geometry(
+        &mut self,
+        registry: &ToolRegistry,
+        geometry: core_model::Geometry,
+        gesture: Option<GestureId>,
+    ) -> Result<(), EditError> {
+        if self.recipe().geometry == geometry.sanitized() {
+            return Ok(());
+        }
+        self.session.apply_in_gesture(registry, Edit::SetGeometry(geometry), gesture)?;
         self.generation += 1;
         Ok(())
     }

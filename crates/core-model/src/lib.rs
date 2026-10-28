@@ -8,6 +8,7 @@
 //! `f32`; quantisation happens only when a result leaves the editor.
 
 mod capture;
+mod geometry;
 mod graph;
 mod ids;
 mod image;
@@ -19,6 +20,7 @@ mod recipe;
 mod sensor;
 
 pub use capture::{CalibratedMatrix, CaptureInfo, Illuminant};
+pub use geometry::{Geometry, MAX_ANGLE, Warp, full_frame, level_angle};
 pub use graph::{GraphError, Link, Node, NodeGraph, NodeKind, NodeMut, PortKind};
 pub use ids::{IdError, ModelId, NodeId, ParamId, ToolId};
 pub use image::{ImageError, ImageF32, MAX_PIXELS, Rgba, WorkingSpace};

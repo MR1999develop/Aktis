@@ -149,6 +149,18 @@ impl NormRect {
     pub fn max(self) -> NormPoint {
         self.max
     }
+
+    /// Width, 0–1.
+    #[must_use]
+    pub fn width(self) -> f32 {
+        self.max.x - self.min.x
+    }
+
+    /// Height, 0–1.
+    #[must_use]
+    pub fn height(self) -> f32 {
+        self.max.y - self.min.y
+    }
 }
 
 /// One click on the image: on the object (`include`) or on something to leave out.

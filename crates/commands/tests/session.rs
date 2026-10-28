@@ -284,3 +284,15 @@ fn several_parameters_change_in_one_step_and_merge_within_a_gesture() {
     let unknown = ParamId::new("warmth").expect("valid id");
     assert!(s.apply(&reg, Edit::SetParams { node, values: vec![(unknown, ParamValue::Float(1.0))] }).is_err());
 }
+
+#[test]
+fn geometry_is_one_undo_step_and_is_kept_in_range() {
+    let reg = registry();
+    let mut s = EditSession::new(Recipe::default());
+    let g = core_model::Geometry { angle: 80.0, ..core_model::Geometry::default() };
+    s.apply(&reg, Edit::SetGeometry(g)).expect("geometry");
+    assert!((s.recipe().geometry.angle - core_model::MAX_ANGLE).abs() < f32::EPSILON);
+    assert_eq!(s.undo_label(), Some("Change crop and straightening".to_owned()));
+    s.undo();
+    assert!(s.recipe().geometry.is_identity());
+}

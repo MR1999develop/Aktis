@@ -14,6 +14,8 @@
 //! The first-version output render (clip to sRGB) lives in `render-cpu`;
 //! this crate only decides where and in which order things run.
 
+pub mod geometry;
+
 use std::borrow::Cow;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -22,7 +24,7 @@ use core_color::ProfileLibrary;
 use lens_db::LensDatabase;
 use platform::{APP_DIR, Os};
 
-use core_model::{ImageError, ImageF32, NodeGraph, NodeId, Orientation, Rgba, ToolId};
+use core_model::{Geometry, ImageError, ImageF32, NodeGraph, NodeId, Orientation, Rgba, ToolId};
 use tool_api::{RegistryError, ToolError, ToolRegistry};
 
 /// Every tool compiled into this build, registered once.
@@ -339,6 +341,40 @@ pub fn to_display(image: &ImageF32, orientation: Orientation, max_side: u32) -> 
     };
     let (width, height, pixels) = render_cpu::to_srgb8_oriented(&fitted, orientation);
     Ok(Rgb8Image { width, height, pixels })
+}
+
+/// Like [`to_display`], with the recipe's perspective, straightening and
+/// (when `crop`) crop applied to the upright image first; with no geometry
+/// it is exactly [`to_display`].
+///
+/// # Errors
+/// [`EngineError::Image`] when `max_side` is 0.
+pub fn to_display_geometry(
+    image: &ImageF32,
+    orientation: Orientation,
+    geometry: &Geometry,
+    crop: bool,
+    max_side: u32,
+) -> Result<Rgb8Image, EngineError> {
+    if !geometry.warps() && (geometry.crop.is_none() || !crop) {
+        return to_display(image, orientation, max_side);
+    }
+    let upright = image.oriented(orientation).map_err(EngineError::Image)?;
+    let finished = geometry::apply(&upright, geometry, crop).map_err(EngineError::Image)?;
+    to_display(&finished, Orientation::Normal, max_side)
+}
+
+/// The upright image with the recipe's geometry (crop included), ready to
+/// encode.
+///
+/// # Errors
+/// [`EngineError::Image`] only for impossible sizes.
+pub fn finish(image: &ImageF32, orientation: Orientation, geometry: &Geometry) -> Result<ImageF32, EngineError> {
+    let upright = image.oriented(orientation).map_err(EngineError::Image)?;
+    if geometry.is_identity() {
+        return Ok(upright);
+    }
+    geometry::apply(&upright, geometry, true).map_err(EngineError::Image)
 }
 
 /// Writes `image` upright as a JPEG with an sRGB profile. `wanted` is the
