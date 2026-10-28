@@ -27,8 +27,9 @@ pub struct Thresholds {
 }
 
 impl Default for Thresholds {
+    /// As in Capture One: highlights from 250, no shadow warning.
     fn default() -> Self {
-        Self { highlight: 250, shadow: Some(5) }
+        Self { highlight: 250, shadow: None }
     }
 }
 
@@ -67,7 +68,7 @@ mod tests {
 
     #[test]
     fn one_burnt_channel_is_a_highlight_and_only_all_dark_channels_a_shadow() {
-        let t = Thresholds::default();
+        let t = Thresholds { shadow: Some(5), ..Thresholds::default() };
         assert_eq!(classify([255, 10, 10], t), Clip::Highlight, "a burnt red");
         assert_eq!(classify([249, 249, 249], t), Clip::None, "just under the threshold");
         assert_eq!(classify([250, 0, 0], t), Clip::Highlight, "at the threshold");
@@ -81,7 +82,8 @@ mod tests {
     #[test]
     fn the_overlay_has_four_bytes_per_pixel_and_is_clear_where_nothing_clips() {
         let rgb = [255, 255, 255, 128, 128, 128, 0, 0, 0, 7];
-        let o = overlay(&rgb, Thresholds::default(), [200, 0, 0, 200], [0, 0, 200, 200]);
+        let t = Thresholds { shadow: Some(5), ..Thresholds::default() };
+        let o = overlay(&rgb, t, [200, 0, 0, 200], [0, 0, 200, 200]);
         assert_eq!(o, vec![200, 0, 0, 200, 0, 0, 0, 0, 0, 0, 200, 200]);
         assert!(overlay(&[], Thresholds::default(), [1; 4], [2; 4]).is_empty());
     }

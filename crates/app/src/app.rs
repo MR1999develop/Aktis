@@ -1317,7 +1317,7 @@ impl EditorApp {
                 ui.separator();
                 if ui
                     .checkbox(&mut exposure_warning, "Exposure warning")
-                    .on_hover_text("Burnt highlights in red, blocked shadows in blue")
+                    .on_hover_text("Burnt highlights in red; blocked shadows in blue when turned on in Preferences")
                     .clicked()
                 {
                     ui.close();
@@ -2353,7 +2353,7 @@ impl EditorApp {
             let shown = self.shown.as_ref()?;
             let rgba = editor::clipping::overlay(
                 &shown.pixels,
-                editor::clipping::Thresholds::default(),
+                self.settings.warning.thresholds(),
                 theme::WARNING_HIGHLIGHT,
                 theme::WARNING_SHADOW,
             );
@@ -2516,6 +2516,7 @@ impl eframe::App for EditorApp {
         let presets_folder = self.settings.presets_folder();
         if self.prefs.show(&ctx, &mut self.settings) {
             ctx.set_theme(theme_preference(self.settings.theme));
+            self.warning_texture = None; // its thresholds may have changed
             if self.settings.presets_folder() != presets_folder {
                 self.reload_presets();
             }

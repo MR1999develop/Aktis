@@ -61,6 +61,34 @@ impl ViewerBackground {
     }
 }
 
+/// The exposure warning's settings, as in Capture One's Preferences ▸
+/// Exposure: the highlight threshold (250 by default) and a shadow warning,
+/// off by default, with its own threshold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WarningSettings {
+    /// A displayed channel at this value (0–255) or above is burnt.
+    pub highlight: u8,
+    /// Blocked shadows are shown too.
+    pub shadow_enabled: bool,
+    /// All displayed channels at this value or below are blocked.
+    pub shadow: u8,
+}
+
+impl Default for WarningSettings {
+    fn default() -> Self {
+        Self { highlight: 250, shadow_enabled: false, shadow: 5 }
+    }
+}
+
+impl WarningSettings {
+    /// The thresholds the warning is computed with.
+    #[must_use]
+    pub fn thresholds(self) -> editor::clipping::Thresholds {
+        editor::clipping::Thresholds { highlight: self.highlight, shadow: self.shadow_enabled.then_some(self.shadow) }
+    }
+}
+
 /// Remembered between sessions.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -83,6 +111,8 @@ pub struct Settings {
     pub scope_height: Option<f32>,
     /// The exposure warning is shown over the photo.
     pub exposure_warning: bool,
+    /// Its thresholds and whether it shows the shadows too (Preferences ▸ Exposure).
+    pub warning: WarningSettings,
     /// Colour around the photo in the viewer.
     pub viewer_background: ViewerBackground,
     /// Folder of the presets and style brushes; `None`: `Presets` in the

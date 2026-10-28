@@ -208,7 +208,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &BarState) -> Vec<BarAction> {
             let mut warn = state.exposure_warning;
             if ui
                 .checkbox(&mut warn, "Exposure warning")
-                .on_hover_text("Show burnt highlights in red and blocked shadows in blue over the photo")
+                .on_hover_text("Show burnt highlights in red over the photo (blocked shadows in blue: Preferences)")
                 .changed()
             {
                 actions.push(BarAction::ExposureWarning(warn));

@@ -65,6 +65,23 @@ impl Preferences {
             );
             ui.add_space(SPACE[2]);
 
+            section(ui, &t, "Exposure warning");
+            let w = &mut draft.warning;
+            ui.horizontal(|ui| {
+                ui.label("Highlight");
+                ui.add(egui::Slider::new(&mut w.highlight, 200..=255))
+                    .on_hover_text("A channel at this value or above shows in red (250 as in Capture One)");
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut w.shadow_enabled, "Shadow warning");
+                ui.add_enabled(w.shadow_enabled, egui::Slider::new(&mut w.shadow, 0..=40))
+                    .on_hover_text("All channels at this value or below show in blue");
+            });
+            if ui.small_button("Defaults").clicked() {
+                *w = crate::settings::WarningSettings::default();
+            }
+            ui.add_space(SPACE[2]);
+
             section(ui, &t, "Presets");
             ui.horizontal(|ui| {
                 ui.label("Folder");
@@ -102,6 +119,7 @@ impl Preferences {
                     settings.theme = d.theme;
                     settings.viewer_background = d.viewer_background;
                     settings.presets_dir = d.presets_dir;
+                    settings.warning = d.warning;
                 }
                 true
             }
