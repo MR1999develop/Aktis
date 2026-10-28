@@ -270,7 +270,8 @@ fn include_by_group(ui: &mut egui::Ui, choices: &[NodeChoice], chosen: &mut Vec<
         let title = group.map_or("Other", crate::graph_ui::category_name);
         let on = members.iter().filter(|c| chosen.contains(&c.node)).count();
         let mut all = on == members.len();
-        let tick = egui::Checkbox::new(&mut all, RichText::new(title).strong()).indeterminate(on > 0 && !all);
+        let partly = on > 0 && !all;
+        let tick = egui::Checkbox::new(&mut all, RichText::new(title).strong()).indeterminate(partly);
         if ui.add(tick).on_hover_text("Every node of this group").changed() {
             for c in &members {
                 chosen.retain(|n| *n != c.node);
