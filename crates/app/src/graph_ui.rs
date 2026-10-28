@@ -3,7 +3,7 @@
 //! A new photo shows only the Source. Clicking the port on the right of a
 //! node opens the list of tools; the chosen one becomes a new node after
 //! it. Nodes are dragged anywhere; dragging the background (or with the
-//! middle button anywhere) pans. Click a node to edit it on the right,
+//! middle button anywhere) pans, the wheel zooms. Click a node to edit it on the right,
 //! right-click it to bypass or delete it.
 
 use core_model::{Node, NodeGraph, NodeId, NodeKind, PortKind, ToolId};
@@ -21,6 +21,8 @@ use crate::theme::{FONT, HISTOGRAM, SPACE, Tokens};
 const GRID: f32 = 20.0;
 /// Radius of a port.
 const PORT: f32 = 4.5;
+/// Zoom factor per point of mouse-wheel scrolling (as in the viewer).
+const WHEEL_ZOOM_PER_POINT: f32 = 0.004_5;
 /// Width of the "add a node" menu.
 const ADD_MENU_WIDTH: f32 = 200.0;
 
@@ -142,21 +144,32 @@ impl GraphUi {
         self.view.sync(graph);
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let area = response.rect;
+        // Wheel: zoom around the pointer.
+        if let Some(pointer) = response.hover_pos() {
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            let factor = ui.input(egui::InputState::zoom_delta) * (scroll * WHEEL_ZOOM_PER_POINT).exp();
+            if (factor - 1.0).abs() > 1e-4 {
+                self.view.zoom_at(factor, [pointer.x - area.min.x, pointer.y - area.min.y]);
+            }
+        }
+        let z = self.view.zoom;
         let origin = area.min + vec2(self.view.pan[0], self.view.pan[1]);
-        let to_screen = |p: [f32; 2]| origin + vec2(p[0], p[1]);
-        let to_graph = |q: Pos2| [q.x - origin.x, q.y - origin.y];
+        let to_screen = |p: [f32; 2]| origin + vec2(p[0], p[1]) * z;
+        let to_graph = |q: Pos2| [(q.x - origin.x) / z, (q.y - origin.y) / z];
+        let port_hit = PORT_HIT / z;
 
         // Background grid, moving with the pan.
         let grid = Stroke::new(1.0, t.graph_grid);
-        let mut x = area.left() + self.view.pan[0].rem_euclid(GRID);
+        let step = GRID * z;
+        let mut x = area.left() + self.view.pan[0].rem_euclid(step);
         while x < area.right() {
             painter.line_segment([pos2(x, area.top()), pos2(x, area.bottom())], grid);
-            x += GRID;
+            x += step;
         }
-        let mut y = area.top() + self.view.pan[1].rem_euclid(GRID);
+        let mut y = area.top() + self.view.pan[1].rem_euclid(step);
         while y < area.bottom() {
             painter.line_segment([pos2(area.left(), y), pos2(area.right(), y)], grid);
-            y += GRID;
+            y += step;
         }
 
         // Links behind the nodes (the hidden Output's link is not drawn).
@@ -168,23 +181,23 @@ impl GraphUi {
             let Some(to) = self.view.input_port(link.to, usize::from(link.to_port), inputs.len()) else { continue };
             let kind = inputs.get(usize::from(link.to_port)).copied().unwrap_or(PortKind::Image);
             let (start, end) = (to_screen(from), to_screen(to));
-            let bend = ((end.x - start.x).abs() * 0.5).max(30.0);
+            let bend = ((end.x - start.x).abs() * 0.5).max(30.0 * z);
             painter.add(CubicBezierShape::from_points_stroke(
                 [start, start + vec2(bend, 0.0), end - vec2(bend, 0.0), end],
                 false,
                 Color32::TRANSPARENT,
-                Stroke::new(2.0, port_color(&t, kind)),
+                Stroke::new(2.0 * z.sqrt(), port_color(&t, kind)),
             ));
         }
 
         // Nodes.
         let hover = response.hover_pos().map(to_graph);
         let hovered_node = hover.and_then(|p| self.view.node_at(p));
-        let hovered_port = hover.and_then(|p| self.view.output_port_at(graph, p));
+        let hovered_port = hover.and_then(|p| self.view.output_port_at(graph, p, port_hit));
         let feeds_output = graph.input_link(graph.output(), 0).map(|l| l.from);
         for (id, pos) in self.view.nodes() {
             let Some(node) = graph.node(id) else { continue };
-            let rect = Rect::from_min_size(to_screen(pos), vec2(NODE_SIZE[0], NODE_SIZE[1]));
+            let rect = Rect::from_min_size(to_screen(pos), vec2(NODE_SIZE[0], NODE_SIZE[1]) * z);
             if !rect.expand(PORT_HIT).intersects(area) {
                 continue;
             }
@@ -198,42 +211,42 @@ impl GraphUi {
                 Stroke::new(1.0, if hovered { t.stroke_strong } else { t.stroke_weak })
             };
             painter.rect(rect, CornerRadius::same(6), fill, stroke, StrokeKind::Inside);
-            let strip = Rect::from_min_size(rect.min + vec2(1.0, 1.0), vec2(rect.width() - 2.0, 3.0));
+            let strip = Rect::from_min_size(rect.min + vec2(1.0, 1.0), vec2(rect.width() - 2.0, 3.0 * z));
             painter.rect_filled(strip, CornerRadius::same(2), kind_color(&t, &node.kind));
             let title_color = if off { t.text_weak } else { t.text_strong };
             painter.with_clip_rect(rect.shrink(4.0)).text(
-                rect.left_top() + vec2(10.0, 10.0),
+                rect.left_top() + vec2(10.0, 10.0) * z,
                 Align2::LEFT_TOP,
                 node_title(node, registry),
-                FontId::proportional(FONT[1]),
+                FontId::proportional(FONT[1] * z),
                 title_color,
             );
             painter.text(
-                rect.left_top() + vec2(10.0, 28.0),
+                rect.left_top() + vec2(10.0, 28.0) * z,
                 Align2::LEFT_TOP,
                 node_subtitle(node),
-                FontId::proportional(FONT[0]),
+                FontId::proportional(FONT[0] * z),
                 t.text_weak,
             );
             let inputs = node.kind.inputs();
             for (k, kind) in inputs.iter().enumerate() {
                 if let Some(p) = self.view.input_port(id, k, inputs.len()) {
-                    painter.circle_filled(to_screen(p), PORT, port_color(&t, *kind));
+                    painter.circle_filled(to_screen(p), PORT * z, port_color(&t, *kind));
                 }
             }
             if let (Some(kind), Some(p)) = (node.kind.outputs().first(), self.view.output_port(id)) {
                 let c = to_screen(p);
                 if hovered_port == Some(id) {
                     // "+": click to add a node here.
-                    painter.circle_filled(c, PORT + 4.0, t.accent);
-                    let s = 4.0;
+                    painter.circle_filled(c, (PORT + 4.0) * z, t.accent);
+                    let s = 4.0 * z;
                     painter.line_segment([c - vec2(s, 0.0), c + vec2(s, 0.0)], Stroke::new(2.0, t.on_accent));
                     painter.line_segment([c - vec2(0.0, s), c + vec2(0.0, s)], Stroke::new(2.0, t.on_accent));
                 } else {
-                    painter.circle_filled(c, PORT, port_color(&t, *kind));
+                    painter.circle_filled(c, PORT * z, port_color(&t, *kind));
                     if feeds_output == Some(id) {
                         // The end of the chain: what is exported.
-                        painter.circle_stroke(c, PORT + 3.0, Stroke::new(1.5, t.accent));
+                        painter.circle_stroke(c, (PORT + 3.0) * z, Stroke::new(1.5, t.accent));
                     }
                 }
             }
@@ -277,7 +290,7 @@ impl GraphUi {
         if response.dragged() {
             let d = response.drag_delta();
             if let Some(id) = self.dragging {
-                self.view.move_node(id, [d.x, d.y]);
+                self.view.move_node(id, [d.x / z, d.y / z]);
             } else if self.panning {
                 self.view.pan[0] += d.x;
                 self.view.pan[1] += d.y;
@@ -292,7 +305,7 @@ impl GraphUi {
         if response.clicked() {
             let at = response.interact_pointer_pos();
             let gp = at.map(to_graph);
-            if let (Some(p), Some(id)) = (at, gp.and_then(|p| self.view.output_port_at(graph, p))) {
+            if let (Some(p), Some(id)) = (at, gp.and_then(|p| self.view.output_port_at(graph, p, port_hit))) {
                 self.add_menu = Some(AddMenu { after: id, at: p, fresh: true });
             } else if let Some(id) = gp.and_then(|p| self.view.node_at(p)) {
                 actions.push(GraphAction::Select(id));
@@ -308,6 +321,10 @@ impl GraphUi {
             let Some(id) = menu_node else {
                 if ui.button("Show the Source").clicked() {
                     self.view.pan = [0.0, 0.0];
+                    ui.close();
+                }
+                if ui.button("Zoom 100 %").clicked() {
+                    self.view.zoom = 1.0;
                     ui.close();
                 }
                 return;

@@ -17,16 +17,27 @@ pub const NODE_SIZE: [f32; 2] = [132.0, 46.0];
 pub const NODE_STEP: [f32; 2] = [NODE_SIZE[0] + 46.0, NODE_SIZE[1] + 24.0];
 /// Where the Source starts.
 pub const ORIGIN: [f32; 2] = [24.0, 24.0];
-/// Radius within which a click hits a port.
+/// Radius (screen points) within which a click hits a port.
 pub const PORT_HIT: f32 = 9.0;
 
-/// Node positions and the panning of the panel.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// Smallest and largest zoom of the node graph.
+pub const ZOOM_RANGE: [f32; 2] = [0.3, 2.5];
+
+/// Node positions, panning and zoom of the panel.
+#[derive(Debug, Clone, PartialEq)]
 pub struct GraphView {
     positions: BTreeMap<NodeId, [f32; 2]>,
-    /// Graph point shown at the panel's top-left corner, negated: screen =
-    /// panel corner + pan + graph point.
+    /// Offset of the graph origin from the panel's top-left corner, in
+    /// screen points: screen = panel corner + pan + zoom × graph point.
     pub pan: [f32; 2],
+    /// Screen points per graph point.
+    pub zoom: f32,
+}
+
+impl Default for GraphView {
+    fn default() -> Self {
+        Self { positions: BTreeMap::new(), pan: [0.0, 0.0], zoom: 1.0 }
+    }
 }
 
 /// Whether a node is drawn (the Output is not).
@@ -120,6 +131,32 @@ impl GraphView {
         spot
     }
 
+    /// Zooms by `factor` keeping the graph point under `anchor` (screen
+    /// points from the panel's corner) where it is.
+    pub fn zoom_at(&mut self, factor: f32, anchor: [f32; 2]) {
+        if !factor.is_finite() || factor <= 0.0 {
+            return;
+        }
+        let new = (self.zoom * factor).clamp(ZOOM_RANGE[0], ZOOM_RANGE[1]);
+        let k = new / self.zoom;
+        for (pan, a) in self.pan.iter_mut().zip(anchor) {
+            *pan = a - (a - *pan) * k;
+        }
+        self.zoom = new;
+    }
+
+    /// Graph point under a screen point (from the panel's corner).
+    #[must_use]
+    pub fn to_graph(&self, screen: [f32; 2]) -> [f32; 2] {
+        [(screen[0] - self.pan[0]) / self.zoom, (screen[1] - self.pan[1]) / self.zoom]
+    }
+
+    /// Screen point (from the panel's corner) of a graph point.
+    #[must_use]
+    pub fn to_screen(&self, graph: [f32; 2]) -> [f32; 2] {
+        [self.pan[0] + graph[0] * self.zoom, self.pan[1] + graph[1] * self.zoom]
+    }
+
     /// Moves a node by `delta` (graph coordinates).
     pub fn move_node(&mut self, id: NodeId, delta: [f32; 2]) {
         if let Some(p) = self.positions.get_mut(&id) {
@@ -152,15 +189,15 @@ impl GraphView {
         self.positions.get(&id).map(|p| [p[0], y(*p)])
     }
 
-    /// The node whose output port is under graph point `p`.
+    /// The node whose output port is within `radius` (graph units) of graph point `p`.
     #[must_use]
-    pub fn output_port_at(&self, graph: &NodeGraph, p: [f32; 2]) -> Option<NodeId> {
+    pub fn output_port_at(&self, graph: &NodeGraph, p: [f32; 2], radius: f32) -> Option<NodeId> {
         self.positions.keys().copied().find(|&id| {
             let has_output = graph.node(id).is_some_and(|n| !n.kind.outputs().is_empty());
             has_output
                 && self
                     .output_port(id)
-                    .is_some_and(|q| (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2) <= PORT_HIT * PORT_HIT)
+                    .is_some_and(|q| (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2) <= radius * radius)
         })
     }
 
@@ -242,8 +279,8 @@ mod tests {
         assert_eq!(v.node_at([pa[0] + 5.0, pa[1] + 5.0]), Some(a));
         assert_eq!(v.node_at([pa[0] - 20.0, pa[1] - 20.0]), None);
         let port = v.output_port(g.source()).unwrap();
-        assert_eq!(v.output_port_at(&g, [port[0] + 3.0, port[1] - 3.0]), Some(g.source()));
-        assert_eq!(v.output_port_at(&g, [port[0] + 30.0, port[1]]), None);
+        assert_eq!(v.output_port_at(&g, [port[0] + 3.0, port[1] - 3.0], PORT_HIT), Some(g.source()));
+        assert_eq!(v.output_port_at(&g, [port[0] + 30.0, port[1]], PORT_HIT), None);
         v.move_node(a, [10.0, 20.0]);
         assert_eq!(v.position(a), Some([pa[0] + 10.0, pa[1] + 20.0]));
         assert!(v.extent()[0] >= pa[0] + 10.0 + NODE_SIZE[0]);
@@ -260,5 +297,24 @@ mod tests {
         let (pa, pm) = (v.position(a).unwrap(), v.position(m).unwrap());
         assert!(pm[1] > pa[1]);
         assert!(!overlaps(pa, pm) && !overlaps(v.position(g.source()).unwrap(), pm));
+    }
+
+    #[test]
+    fn zooming_keeps_the_point_under_the_pointer() {
+        let mut v = GraphView::default();
+        let anchor = [200.0, 80.0];
+        let before = v.to_graph(anchor);
+        v.zoom_at(1.5, anchor);
+        assert!((v.zoom - 1.5).abs() < 1e-6);
+        let after = v.to_graph(anchor);
+        assert!((before[0] - after[0]).abs() < 1e-4 && (before[1] - after[1]).abs() < 1e-4);
+        let back = v.to_screen(after);
+        assert!((back[0] - anchor[0]).abs() < 1e-3);
+        v.zoom_at(100.0, anchor);
+        assert!((v.zoom - ZOOM_RANGE[1]).abs() < 1e-6, "clamped");
+        v.zoom_at(f32::NAN, anchor);
+        assert!((v.zoom - ZOOM_RANGE[1]).abs() < 1e-6);
+        v.reset();
+        assert!((v.zoom - 1.0).abs() < 1e-6);
     }
 }
