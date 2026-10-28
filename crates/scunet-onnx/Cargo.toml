@@ -1,0 +1,12 @@
+[package]
+name = "scunet-onnx"
+description = "Converts the KAIR SCUNet checkpoint (.pth) into the ONNX model of the AI denoise tool, in pure Rust."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -6,6 +6,13 @@ come from an earlier denoiser and need only Python 3 and NumPy (no PyTorch, no
 `onnx` package): `pth_weights.py` reads the checkpoint safely (tensors only),
 `scunet_graph.py` builds the network and `onnxproto.py` writes the file.
 
+The editor now does this conversion itself: the crate `scunet-onnx`
+(`crates/scunet-onnx`, pure Rust, no dependencies) reads the downloaded
+KAIR checkpoint and writes the same model, byte for byte, so users need no
+Python. These scripts remain the reference it is tested against (an ignored
+test compares the two outputs; see `crates/scunet-onnx/tests/reference.rs`);
+a change to the graph is made in both.
+
 1. Download the original weights (72 MB, Apache-2.0, SHA-256 `fa78899b…809c2e`):
    <https://github.com/cszn/KAIR/releases/download/v1.0/scunet_color_real_psnr.pth>
 2. Make the normal model (required, 448 px tiles, about 77 MB):

@@ -23,6 +23,7 @@ members = [
     "crates/app",
     "crates/tagging",
     "crates/tagging-onnx",
+    "crates/scunet-onnx",
     "tools/exposure",
     "tools/denoise-ai",
 ]
@@ -55,6 +56,7 @@ masks = { path = "crates/masks" }
 onnx-env = { path = "crates/onnx-env" }
 ai-models = { path = "crates/ai-models" }
 ai-segment = { path = "crates/ai-segment" }
+scunet-onnx = { path = "crates/scunet-onnx" }
 tool-exposure = { path = "tools/exposure" }
 tool-denoise-ai = { path = "tools/denoise-ai" }
 
