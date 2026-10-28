@@ -105,3 +105,13 @@
   every render, and creates its buffers each time; keep the source on the
   GPU between renders of the same image (and draw the result straight from
   a texture, see above) if the timings in the status bar show it matters.
+- Export: PNG uses the built-in deflate of `export` (hash chains, no lazy
+  matching): files are somewhat larger than zlib's; TIFF is uncompressed.
+  Add Deflate/LZW to TIFF and tune PNG if file sizes matter.
+- Export shrinks with an area average (no ringing, a little soft) and adds
+  no output sharpening; offer Lanczos and "sharpen for screen/print" later.
+- Exported photos that are not open use the default recipe until recipes
+  are stored: plug the store into `EditorApp::recipe_for`.
+- EXIF text fields (copyright, artist) are written as UTF-8; strict EXIF
+  readers show "©" as Latin-1. The XMP packet carries them correctly.
+- The export window, like the other dialogs, is not modal (see above).

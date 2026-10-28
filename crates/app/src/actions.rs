@@ -10,10 +10,10 @@ use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 pub enum Command {
     /// File ▸ Open…
     Open,
-    /// File ▸ Export (to the remembered folder).
+    /// File ▸ Export…: the export window.
     Export,
-    /// File ▸ Export to…
-    ExportTo,
+    /// File ▸ Export with previous settings: no window.
+    ExportAgain,
     /// File ▸ Quit.
     Quit,
     /// Edit ▸ Undo.
@@ -39,7 +39,7 @@ const fn k(modifiers: Modifiers, key: Key) -> KeyboardShortcut {
 
 const OPEN: &[KeyboardShortcut] = &[k(CMD, Key::O)];
 const EXPORT: &[KeyboardShortcut] = &[k(CMD, Key::E)];
-const EXPORT_TO: &[KeyboardShortcut] = &[k(CMD_SHIFT, Key::E)];
+const EXPORT_AGAIN: &[KeyboardShortcut] = &[k(CMD_SHIFT, Key::E)];
 const QUIT: &[KeyboardShortcut] = &[k(CMD, Key::Q)];
 const UNDO: &[KeyboardShortcut] = &[k(CMD, Key::Z)];
 const REDO: &[KeyboardShortcut] = &[k(CMD, Key::Y), k(CMD_SHIFT, Key::Z)];
@@ -54,8 +54,8 @@ impl Command {
     pub fn label(self) -> &'static str {
         match self {
             Self::Open => "Open\u{2026}",
-            Self::Export => "Export",
-            Self::ExportTo => "Export to\u{2026}",
+            Self::Export => "Export\u{2026}",
+            Self::ExportAgain => "Export with previous settings",
             Self::Quit => "Quit",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
@@ -72,7 +72,7 @@ impl Command {
         match self {
             Self::Open => OPEN,
             Self::Export => EXPORT,
-            Self::ExportTo => EXPORT_TO,
+            Self::ExportAgain => EXPORT_AGAIN,
             Self::Quit => QUIT,
             Self::Undo => UNDO,
             Self::Redo => REDO,
@@ -87,7 +87,7 @@ impl Command {
     pub const ALL: [Self; 10] = [
         Self::Open,
         Self::Export,
-        Self::ExportTo,
+        Self::ExportAgain,
         Self::Quit,
         Self::Undo,
         Self::Redo,

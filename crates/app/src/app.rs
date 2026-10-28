@@ -16,10 +16,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use core_model::{DevelopSettings, NodeId, NodeKind};
+use core_model::{DevelopSettings, NodeId, NodeKind, Recipe};
 use editor::adjust::Pick;
 use editor::{
-    Document, Event, Histogram, Quality, RenderPlan, RenderRequest, RenderTiming, ViewState, Viewport, Worker, Zoom,
+    Document, Event, ExportHandle, ExportJob, ExportPhoto, ExportSummary, Histogram, OpenPhoto, Quality, RenderPlan,
+    RenderRequest, RenderTiming, ViewState, Viewport, Worker, Zoom,
 };
 use eframe::egui::{
     self, Align, Align2, Button, Color32, CursorIcon, Frame, Id, Layout, Margin, Order, RichText, Sense, TextureOptions,
@@ -28,6 +29,7 @@ use engine::{Backend, EngineChoice};
 use tool_api::ToolRegistry;
 
 use crate::actions::Command;
+use crate::export_ui::{ExportDialog, ExportRequest, NameExample};
 use crate::graph_ui::{GraphAction, GraphUi};
 use crate::history_ui::{LeftTab, TabAction, Tabs};
 use crate::inspector::{self, Drag, UiEdit};
@@ -55,6 +57,15 @@ struct Job {
     ticket: u64,
     name: String,
     started: Instant,
+}
+
+/// A running export, for the status bar.
+#[derive(Debug)]
+struct ExportRun {
+    handle: ExportHandle,
+    done: usize,
+    total: usize,
+    current: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +116,9 @@ pub struct EditorApp {
     opening: Option<Job>,
     /// File being opened, to drop it from the recent list if it has gone.
     opening_path: Option<PathBuf>,
-    exporting: Option<Job>,
+    exporting: Option<ExportRun>,
+    /// The export window, while it is open.
+    export_dialog: Option<ExportDialog>,
     /// A development in flight (lens corrections changed): ticket and settings.
     developing: Option<(u64, DevelopSettings)>,
     texture: Option<egui::TextureHandle>,
@@ -192,6 +205,7 @@ impl EditorApp {
             opening: None,
             opening_path: None,
             exporting: None,
+            export_dialog: None,
             developing: None,
             texture: None,
             plan: RenderPlan::default(),
@@ -263,39 +277,99 @@ impl EditorApp {
         }
     }
 
-    fn export(&mut self, ctx: &egui::Context) {
-        let (Some(doc), Some(worker)) = (&self.doc, &self.worker) else { return };
-        if self.exporting.is_some() {
-            return;
+    /// The photos File ▸ Export and the Export button act on: the photos
+    /// selected in the filmstrip when there are several, else the open
+    /// photo (or the one selected photo).
+    fn export_targets(&self) -> Vec<PathBuf> {
+        let selection = self.library.selection();
+        if selection.len() > 1 {
+            return selection;
         }
-        if doc.needs_develop() {
-            // The shown image is about to change: export what the recipe says, not the old pixels.
-            self.toast =
-                Some(error_toast("Lens corrections are still being applied; export again in a moment".to_owned()));
-            return;
+        match &self.doc {
+            Some(doc) => vec![doc.path().to_owned()],
+            None => selection,
         }
-        let wanted = doc.export_path(&self.settings.export_folder(doc.path()));
-        worker.export(doc.recipe().graph.clone(), Arc::clone(doc.developed()), doc.orientation(), wanted);
-        self.exporting = Some(Job { ticket: 0, name: doc.file_name(), started: Instant::now() });
-        ctx.request_repaint();
     }
 
-    fn export_to(&mut self, ctx: &egui::Context) {
-        let mut dialog = rfd::FileDialog::new().set_title("Export to folder");
-        if let Some(dir) = self.settings.export_dir.as_ref().or(self.settings.open_dir.as_ref()) {
-            dialog = dialog.set_directory(dir);
+    /// Opens the export window for `photos`.
+    fn open_export_dialog(&mut self, photos: Vec<PathBuf>) {
+        let Some(first) = photos.first() else { return };
+        if self.exporting.is_some() {
+            self.toast = Some(info_toast("An export is running; wait for it to finish or stop it".to_owned()));
+            return;
         }
-        if let Some(folder) = dialog.pick_folder() {
-            self.settings.export_dir = Some(folder);
-            self.export(ctx);
+        let example = self.name_example(first);
+        self.export_dialog =
+            Some(ExportDialog::new(photos, &self.settings.export, self.settings.export_dir.clone(), example));
+    }
+
+    /// The live example of the export window: the photo's name, and its date
+    /// and camera when it is the open photo.
+    fn name_example(&self, path: &Path) -> NameExample {
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        match self.doc.as_ref().filter(|d| d.path() == path) {
+            Some(doc) => NameExample {
+                stem,
+                captured: doc.info().captured.clone(),
+                camera: Some(doc.camera().trim().to_owned()).filter(|c| !c.is_empty()),
+            },
+            None => NameExample { stem, ..NameExample::default() },
         }
+    }
+
+    /// The edits of `path` for an export: the open photo's recipe, `None`
+    /// (the default recipe) for the others.
+    ///
+    /// The one place exports learn a photo's edits: when edits of photos
+    /// that are not open are stored (in the catalog), they are looked up here.
+    fn recipe_for(&self, path: &Path) -> Option<Recipe> {
+        self.doc.as_ref().filter(|d| d.path() == path).map(|d| d.recipe().clone())
+    }
+
+    /// What the export job needs about `path`: its recipe, what is in memory
+    /// when it is the open photo, and its catalog rating and keywords.
+    fn export_photo(&self, path: &Path) -> ExportPhoto {
+        let open = self.doc.as_ref().filter(|d| d.path() == path).map(|d| OpenPhoto {
+            raw: d.raw().cloned(),
+            // While lens corrections are being applied the image on screen is
+            // out of date: the export develops the RAW again instead.
+            developed: (!d.needs_develop()).then(|| Arc::clone(d.developed())),
+            orientation: d.orientation(),
+            info: d.info().clone(),
+        });
+        let meta = self.library.catalog_meta(path);
+        ExportPhoto {
+            path: path.to_owned(),
+            recipe: self.recipe_for(path),
+            open,
+            rating: Some(meta.rating).filter(|r| *r > 0),
+            keywords: meta.tags.iter().map(|t| t.name.clone()).collect(),
+        }
+    }
+
+    /// Exports `photos` with the remembered export settings.
+    fn start_export(&mut self, photos: Vec<PathBuf>, ctx: &egui::Context) {
+        if photos.is_empty() || self.exporting.is_some() {
+            return;
+        }
+        let Some(worker) = &self.worker else { return };
+        let job = ExportJob {
+            photos: photos.iter().map(|p| self.export_photo(p)).collect(),
+            options: self.settings.export_options(),
+            software: format!("{APP_NAME} {VERSION}"),
+        };
+        let total = job.photos.len();
+        let current = photos.first().map(|p| file_name(p.as_path())).unwrap_or_default();
+        let handle = worker.export(job);
+        self.exporting = Some(ExportRun { handle, done: 0, total, current });
+        ctx.request_repaint();
     }
 
     fn run(&mut self, command: Command, ctx: &egui::Context) {
         match command {
             Command::Open => self.pick_and_open(),
-            Command::Export => self.export(ctx),
-            Command::ExportTo => self.export_to(ctx),
+            Command::Export => self.open_export_dialog(self.export_targets()),
+            Command::ExportAgain => self.start_export(self.export_targets(), ctx),
             Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Command::Undo => {
                 if let Some(doc) = &mut self.doc {
@@ -425,17 +499,16 @@ impl EditorApp {
                 Event::RenderFailed { message, .. } => {
                     self.toast = Some(error_toast(format!("The preview could not be made: {message}")));
                 }
-                Event::Exported { result } => {
+                Event::ExportProgress { done, total, current } => {
+                    if let Some(run) = &mut self.exporting {
+                        run.done = done;
+                        run.total = total;
+                        run.current = current;
+                    }
+                }
+                Event::ExportFinished(summary) => {
                     self.exporting = None;
-                    self.toast = Some(match result {
-                        Ok(path) => Toast {
-                            text: format!("Exported {}", file_name(&path)),
-                            kind: ToastKind::Info,
-                            action: Some(ToastAction::ShowInFolder(path)),
-                            deadline: Instant::now() + Duration::from_secs_f32(TOAST_SECONDS),
-                        },
-                        Err(message) => error_toast(format!("Export failed: {message}")),
-                    });
+                    self.toast = Some(export_toast(&summary));
                 }
                 Event::FolderListed { dir, result } => {
                     if let Some(message) = self.library.on_listed(dir, result) {
@@ -524,8 +597,8 @@ impl EditorApp {
                         self.open(path);
                     }
                 }
-                LibraryAction::Export => self.export(ctx),
-                LibraryAction::ExportTo => self.export_to(ctx),
+                LibraryAction::Export(photos) => self.open_export_dialog(photos),
+                LibraryAction::ExportAgain(photos) => self.start_export(photos, ctx),
                 LibraryAction::Renamed { from, to } => {
                     if let Some(doc) = &mut self.doc
                         && doc.path() == from
@@ -726,6 +799,7 @@ impl EditorApp {
         let undo = self.doc.as_ref().and_then(Document::undo_label);
         let redo = self.doc.as_ref().and_then(Document::redo_label);
         let exporting = self.exporting.is_some();
+        let export_count = self.export_targets().len();
         let mut open_recent = None;
         let mut theme_choice = self.settings.theme;
         let mut open_models = false;
@@ -757,10 +831,14 @@ impl EditorApp {
                     ui.close();
                 }
                 ui.separator();
-                let why =
-                    if has_doc { exporting.then_some("An export is running") } else { Some("Open an image first") };
-                menu_item(ui, Command::Export, None, why, commands);
-                menu_item(ui, Command::ExportTo, None, why, commands);
+                let why = if export_count == 0 {
+                    Some("Open or select a photo first")
+                } else {
+                    exporting.then_some("An export is running")
+                };
+                let export_label = (export_count > 1).then(|| format!("Export {export_count} selected photos\u{2026}"));
+                menu_item(ui, Command::Export, export_label, why, commands);
+                menu_item(ui, Command::ExportAgain, None, why, commands);
                 ui.separator();
                 menu_item(ui, Command::Quit, None, None, commands);
             });
@@ -916,16 +994,37 @@ impl EditorApp {
                     ui.separator();
                     ui.weak("Applying lens corrections\u{2026}");
                 }
-                for (job, verb) in [(&self.opening, "Opening"), (&self.exporting, "Exporting")] {
-                    if let Some(job) = job {
-                        ui.separator();
-                        ui.label(format!("{verb} {}\u{2026}", job.name));
-                        if job.started.elapsed().as_secs_f32() > SPINNER_DELAY_SECONDS {
-                            ui.add(egui::Spinner::new());
-                        } else {
-                            ui.ctx().request_repaint_after(Duration::from_secs_f32(SPINNER_DELAY_SECONDS));
-                        }
+                if let Some(job) = &self.opening {
+                    ui.separator();
+                    ui.label(format!("Opening {}\u{2026}", job.name));
+                    if job.started.elapsed().as_secs_f32() > SPINNER_DELAY_SECONDS {
+                        ui.add(egui::Spinner::new());
+                    } else {
+                        ui.ctx().request_repaint_after(Duration::from_secs_f32(SPINNER_DELAY_SECONDS));
                     }
+                }
+                if let Some(run) = &self.exporting {
+                    // Right to left: Cancel at the end, the text first.
+                    ui.separator();
+                    let stopping = run.handle.is_cancelled();
+                    if ui
+                        .add_enabled(!stopping, Button::new("Cancel"))
+                        .on_hover_text("Stop after the photo being exported; files written stay")
+                        .clicked()
+                    {
+                        run.handle.cancel();
+                    }
+                    #[allow(clippy::cast_precision_loss)] // photo counts
+                    let fraction = if run.total == 0 { 0.0 } else { run.done as f32 / run.total as f32 };
+                    ui.add(egui::ProgressBar::new(fraction).desired_width(120.0));
+                    let text = if stopping {
+                        "Stopping the export\u{2026}".to_owned()
+                    } else if run.total > 1 {
+                        format!("Exporting {} of {}: {}\u{2026}", (run.done + 1).min(run.total), run.total, run.current)
+                    } else {
+                        format!("Exporting {}\u{2026}", run.current)
+                    };
+                    ui.label(text);
                 }
             });
         });
@@ -1222,12 +1321,12 @@ impl EditorApp {
                     });
                 }
                 Some(doc) => {
-                    let folder = self.settings.export_folder(doc.path());
+                    let export_summary = self.settings.export.summary();
                     let cx = inspector::Context {
                         registry: &self.registry,
                         selected: self.selected_node,
                         developing: self.developing.is_some(),
-                        export_folder: &folder,
+                        export_summary: &export_summary,
                         histogram: self.histogram.as_deref(),
                         pick: self.pick,
                         probe: self.probe,
@@ -1372,6 +1471,7 @@ impl eframe::App for EditorApp {
             undo: self.doc.as_ref().and_then(Document::undo_label).map(|l| lowercase_first(&l)),
             redo: self.doc.as_ref().and_then(Document::redo_label).map(|l| lowercase_first(&l)),
             exporting: self.exporting.is_some(),
+            export_count: self.export_targets().len(),
             active: self.tool,
         };
         let bar_actions = egui::Panel::top("toolbar")
@@ -1406,6 +1506,18 @@ impl eframe::App for EditorApp {
             .frame(Frame::NONE.fill(t.canvas))
             .show(ui, |ui| self.center(ui, &mut commands, &mut library));
         self.library.rename_dialog(&ctx, &mut library);
+        if let Some(dialog) = &mut self.export_dialog
+            && let Some(request) = dialog.show(&ctx)
+        {
+            self.export_dialog = None;
+            if let ExportRequest::Export { photos, settings, folder } = request {
+                self.settings.export = settings;
+                if folder.is_some() {
+                    self.settings.export_dir = folder;
+                }
+                self.start_export(photos, &ctx);
+            }
+        }
 
         self.apply_edits(edits);
         self.apply_tabs(tabs);
@@ -1461,6 +1573,27 @@ fn lowercase_first(s: &str) -> String {
 
 fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// What the user is told when an export ends, with "Show in folder" for the
+/// last file written.
+fn export_toast(summary: &ExportSummary) -> Toast {
+    let written = summary.written.len();
+    let photos = |n: usize| if n == 1 { "1 photo".to_owned() } else { format!("{n} photos") };
+    let action = summary.written.last().cloned().map(ToastAction::ShowInFolder);
+    let (text, kind) = match (summary.failed.first(), summary.cancelled) {
+        (Some(first), _) if written == 0 => (format!("Export failed: {first}"), ToastKind::Error),
+        (Some(first), _) => {
+            (format!("Exported {}; {} failed: {first}", photos(written), summary.failed.len()), ToastKind::Error)
+        }
+        (None, true) => (format!("Export stopped after {}", photos(written)), ToastKind::Info),
+        (None, false) => match summary.written.as_slice() {
+            [one] => (format!("Exported {}", file_name(one)), ToastKind::Info),
+            _ => (format!("Exported {}", photos(written)), ToastKind::Info),
+        },
+    };
+    let seconds = if kind == ToastKind::Error { TOAST_ERROR_SECONDS } else { TOAST_SECONDS };
+    Toast { text, kind, action, deadline: Instant::now() + Duration::from_secs_f32(seconds) }
 }
 
 fn error_toast(text: String) -> Toast {
@@ -1625,5 +1758,23 @@ mod tests {
         let mut recent = vec![PathBuf::from("a/1.NEF"), PathBuf::from("a/2.NEF")];
         follow_rename(&mut recent, Path::new("a/2.NEF"), Path::new("a/Como.NEF"));
         assert_eq!(recent, vec![PathBuf::from("a/1.NEF"), PathBuf::from("a/Como.NEF")]);
+    }
+
+    #[test]
+    fn the_export_toast_says_what_happened() {
+        let written = vec![PathBuf::from("out/a.jpg"), PathBuf::from("out/b.jpg")];
+        let done = ExportSummary { total: 2, written: written.clone(), ..ExportSummary::default() };
+        let t = export_toast(&done);
+        assert_eq!((t.text.as_str(), t.kind), ("Exported 2 photos", ToastKind::Info));
+        assert!(matches!(&t.action, Some(ToastAction::ShowInFolder(p)) if p.as_path() == Path::new("out/b.jpg")));
+        let one = ExportSummary { total: 1, written: written[..1].to_vec(), ..ExportSummary::default() };
+        assert_eq!(export_toast(&one).text, "Exported a.jpg");
+        let failed = ExportSummary { total: 3, written, failed: vec!["c.NEF: broken".into()], cancelled: false };
+        let t = export_toast(&failed);
+        assert_eq!((t.text.as_str(), t.kind), ("Exported 2 photos; 1 failed: c.NEF: broken", ToastKind::Error));
+        let stopped = ExportSummary { total: 3, cancelled: true, ..ExportSummary::default() };
+        let t = export_toast(&stopped);
+        assert_eq!(t.text, "Export stopped after 0 photos");
+        assert!(t.action.is_none());
     }
 }

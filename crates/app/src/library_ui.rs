@@ -3,8 +3,8 @@
 //!
 //! Folder listings and thumbnails come from the worker; ratings, labels and
 //! keywords live in the catalog (SQLite in the editor's data folder). What
-//! concerns the open photo (opening, exporting, a rename of the open file)
-//! is handed to the window as a [`LibraryAction`].
+//! the window does (opening, exporting, a rename of the open file) is
+//! handed to it as a [`LibraryAction`].
 
 use std::path::{Path, PathBuf};
 
@@ -15,6 +15,7 @@ use eframe::egui::{
     StrokeKind, TextEdit, TextureHandle, TextureOptions, pos2, vec2,
 };
 
+use crate::actions::Command;
 use crate::dialog::{Choice, dialog, dialog_buttons};
 use crate::icons;
 use crate::theme::{BADGE_STAR, FONT, SPACE, Tokens};
@@ -45,10 +46,10 @@ const OVERVIEW_HEADER: f32 = 30.0;
 pub enum LibraryAction {
     /// Open this photo in the editor.
     Open(PathBuf),
-    /// Export the open photo (it is this one) next to the RAW or to the export folder.
-    Export,
-    /// Export the open photo, choosing the folder.
-    ExportTo,
+    /// Open the export window for these photos.
+    Export(Vec<PathBuf>),
+    /// Export these photos with the previous settings, without the window.
+    ExportAgain(Vec<PathBuf>),
     /// A file was renamed on disk.
     Renamed {
         /// Old path.
@@ -82,8 +83,8 @@ enum CardAction {
     Rename(PathBuf),
     OpenWith(PathBuf),
     Reveal(PathBuf),
-    Export,
-    ExportTo,
+    Export(PathBuf),
+    ExportAgain(PathBuf),
 }
 
 /// The Rename dialog.
@@ -733,8 +734,8 @@ impl Library {
                         actions.push(LibraryAction::Open(open));
                     }
                 }
-                CardAction::Export => actions.push(LibraryAction::Export),
-                CardAction::ExportTo => actions.push(LibraryAction::ExportTo),
+                CardAction::Export(p) => actions.push(LibraryAction::Export(self.strip.targets(&p))),
+                CardAction::ExportAgain(p) => actions.push(LibraryAction::ExportAgain(self.strip.targets(&p))),
                 // On a card of a multiple selection, stars and menus act on all of it.
                 CardAction::Rate(p, r) => {
                     let targets = self.strip.targets(&p);
@@ -1156,12 +1157,10 @@ fn badges(painter: &egui::Painter, t: &Tokens, frame: Rect, meta: &PhotoMeta) {
 
 /// The right-click menu of a card.
 fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState, actions: &mut Vec<CardAction>) {
-    let is_open = state.open;
-    // Rating and colour apply to the whole selection when this card is in it.
+    // Rating, colour and export apply to the whole selection when this card is in it.
     let group = if state.several && state.selected { " (selected photos)" } else { "" };
     let path = &photo.path;
     let soon = "Coming soon";
-    let open_first = "Open the photo first";
     if ui.add(Button::new("Rename").shortcut_text("F2")).clicked() {
         actions.push(CardAction::Rename(path.clone()));
         ui.close();
@@ -1171,13 +1170,15 @@ fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState, actions: &
     ui.add_enabled(false, Button::new("New Variant").shortcut_text("F7")).on_disabled_hover_text(soon);
     ui.add_enabled(false, Button::new("Clone Variant").shortcut_text("F8")).on_disabled_hover_text(soon);
     ui.separator();
-    ui.menu_button("Export", |ui| {
-        if ui.add_enabled(is_open, Button::new("JPEG")).on_disabled_hover_text(open_first).clicked() {
-            actions.push(CardAction::Export);
+    ui.menu_button(format!("Export{group}"), |ui| {
+        let keys = |c: Command| ui.ctx().format_shortcut(&c.shortcuts()[0]);
+        let (export_keys, again_keys) = (keys(Command::Export), keys(Command::ExportAgain));
+        if ui.add(Button::new(Command::Export.label()).shortcut_text(export_keys)).clicked() {
+            actions.push(CardAction::Export(path.clone()));
             ui.close();
         }
-        if ui.add_enabled(is_open, Button::new("JPEG to\u{2026}")).on_disabled_hover_text(open_first).clicked() {
-            actions.push(CardAction::ExportTo);
+        if ui.add(Button::new(Command::ExportAgain.label()).shortcut_text(again_keys)).clicked() {
+            actions.push(CardAction::ExportAgain(path.clone()));
             ui.close();
         }
     });

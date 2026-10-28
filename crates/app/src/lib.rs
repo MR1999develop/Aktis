@@ -17,6 +17,7 @@ mod actions;
 mod adjust_ui;
 mod app;
 mod dialog;
+mod export_ui;
 mod graph_ui;
 mod history_ui;
 mod icons;

@@ -239,6 +239,39 @@ tested offline.
 - Open dialog: ARI, DCS, FFF, ORI, QTK and RAW added; README lists the
   supported cameras and rawler 0.8.0's known limits per brand.
 
+## Export window: written, to be compiled and checked on Windows
+
+- The Export… button, File ▸ Export… (Ctrl+E) and the filmstrip's Export ▶
+  menu open the export window for the photos selected in the filmstrip
+  ("Export N selected photos") or the open photo. File ▸ Export with
+  previous settings (Ctrl+Shift+E, also in the card menu) skips the window.
+  The last choices are remembered (`Settings::export`, `export_dir`).
+- Format: JPEG (quality), PNG or TIFF at 8 or 16 bits, always sRGB with the
+  profile embedded. Size: full, long edge / width / height in pixels, or a
+  percentage, never enlarged unless asked; resampled in linear light (area
+  average when shrinking). Name: a pattern with `{name}`, `{counter}`
+  (start, digits), `{date}`, `{camera}` and free text, with a live example;
+  unsafe characters and reserved names are replaced. Folder: next to the
+  original, a sub-folder, or a chosen folder; existing files are never
+  replaced (`photo (2).jpg`). Watermark: text with a built-in stroke font
+  (ASCII, ©, accented letters), size and margin in % of the long edge,
+  opacity, 9 positions, a soft shadow. Metadata: all, all but GPS,
+  copyright only, none; a copyright field replaces the camera's notice.
+- `export`: hand-built EXIF (TIFF structure: camera, lens, exposure, dates,
+  GPS, Windows rating and keywords, artist, copyright, Orientation = 1) in
+  JPEG APP1, PNG eXIf and TIFF IFD0; XMP packet (rating, keywords, rights,
+  creator); PNG with a built-in zlib compressor; TIFF uncompressed. Files
+  checked with Pillow and ImageMagick.
+- `engine::finish_for_export`: the one step after the node graph (geometry
+  slot for crop/straighten, resize, 16-bit sRGB output turned upright,
+  watermark). `render-cpu::to_srgb16` for 16-bit files.
+- `editor::export_job`: photos exported one after another on a thread; the
+  open photo reuses its developed image, the others are read and developed
+  with their recipe (`EditorApp::recipe_for`: the open photo's recipe,
+  otherwise the default until recipes are stored). Status bar: "Exporting
+  3 of 10: name…", progress bar, Cancel; at the end a toast ("Exported 10
+  photos", failures named) with "Show in folder".
+
 ## Tests and CI
 
 GitHub Actions (`.github/workflows/ci.yml`) on every push:
