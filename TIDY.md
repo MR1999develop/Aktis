@@ -84,9 +84,6 @@
   ratings: renaming in the editor moves them; a file renamed or moved
   outside the editor loses its edits until a "relink" or a content key
   (size + date + hash) is added.
-- Dialogs (`app::dialog`: Rename, AI models) are drawn as a centred area,
-  not a modal: clicks behind them still reach the window. Move them all to
-  `egui::Modal` together, keeping `dialog_buttons` for the buttons.
 - AI tagging loads SigLIP 2 at each "AI-tag this folder"; keep the encoders
   loaded while the window is open when tagging becomes frequent.
 - Tool bar tools (crop, perspective, level, masks, AI select, heal, clone)
@@ -150,7 +147,6 @@
   no output sharpening; offer Lanczos and "sharpen for screen/print" later.
 - EXIF text fields (copyright, artist) are written as UTF-8; strict EXIF
   readers show "©" as Latin-1. The XMP packet carries them correctly.
-- The export window, like the other dialogs, is not modal (see above).
 - Colour editor: Capture One's "View selected color range" is missing; the
   viewer has no way to show which pixels a range selects. Add it when the
   viewer can draw a node's weight as an overlay (as the mask overlay does).

@@ -1,7 +1,7 @@
 //! Dialogs: a centred box above the window and the buttons at its foot,
 //! in the order of the system the editor runs on.
 
-use eframe::egui::{self, Align, Align2, Button, Id, Key, Layout, Margin, Order, RichText};
+use eframe::egui::{self, Align, Button, Id, Key, Layout, Margin, RichText};
 
 use crate::theme::{SPACE, Tokens};
 
@@ -17,23 +17,22 @@ pub enum Choice {
     Cancel,
 }
 
-/// A centred dialog above the window.
+/// A centred dialog above the window; the window behind it does not take
+/// clicks or keys while it is open (a modal).
 pub fn dialog(ctx: &egui::Context, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     dialog_with_width(ctx, id, DIALOG_WIDTH, add);
 }
 
-/// A centred dialog `width` points wide, for dialogs with many options.
+/// A centred modal dialog `width` points wide, for dialogs with many options.
+/// Clicking outside does not close it: its buttons (or Enter and Esc) do.
 pub fn dialog_with_width(ctx: &egui::Context, id: &str, width: f32, add: impl FnOnce(&mut egui::Ui)) {
     let t = Tokens::of(ctx.theme());
-    egui::Area::new(Id::unique(id)).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(
-        ctx,
-        |ui| {
-            egui::Frame::popup(ui.style()).fill(t.bg_raised).inner_margin(Margin::same(16)).show(ui, |ui| {
-                ui.set_width(width);
-                add(ui);
-            });
-        },
-    );
+    egui::Modal::new(Id::unique(id)).frame(egui::Frame::NONE).show(ctx, |ui| {
+        egui::Frame::popup(ui.style()).fill(t.bg_raised).inner_margin(Margin::same(16)).show(ui, |ui| {
+            ui.set_width(width);
+            add(ui);
+        });
+    });
 }
 
 /// The buttons at the foot of a dialog, on the right, in the system's order
