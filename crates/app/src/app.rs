@@ -1734,6 +1734,9 @@ impl EditorApp {
                 }
                 Some(tool @ (ViewerTool::Level | ViewerTool::Perspective)) => {
                     self.geometry_ui.sliders(ui.ctx(), rect, tool, &geometry, &mut geo_edits);
+                    if tool == ViewerTool::Level {
+                        GeometryUi::level_keys(ui.ctx(), &geometry, &mut geo_edits);
+                    }
                 }
                 Some(tool @ (ViewerTool::Masks | ViewerTool::AiSelect)) => {
                     let node = self.selected_node.and_then(|n| {
@@ -2447,6 +2450,10 @@ impl eframe::App for EditorApp {
         let mut library = Vec::new();
         let mut tabs = Vec::new();
         let current = self.doc.as_ref().map(|d| d.path().to_owned());
+        // Straighten turns the photo with the arrows instead of moving through the filmstrip.
+        if self.tool == Some(ViewerTool::Level) {
+            crate::color_ui::take_arrows(&ctx);
+        }
         self.library.keyboard(&ctx, current.as_deref(), &mut library);
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui, &mut commands));

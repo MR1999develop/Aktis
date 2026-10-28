@@ -5,8 +5,10 @@
 //!   aspect presets (Unconstrained, Original, 1x1 … 65x24, custom) and a
 //!   portrait/landscape switch in the options bar. Enter or a double-click
 //!   inside applies, Esc cancels; leaving the tool applies too.
-//! - **Level** (L): drag along something that should be level (or plumb);
-//!   the photo turns by that much. An angle slider in the options bar.
+//! - **Straighten** (R), as in Capture One: drag along something that
+//!   should be level or plumb (the nearer of the two is used); on release
+//!   the photo turns by that much and is enlarged to hide the empty corners.
+//!   An angle slider in the options bar; ←/→ turn by 0.01°, with Shift 0.1°.
 //! - **Perspective** (K): vertical and horizontal keystone sliders.
 //!
 //! Level and Perspective show a grid over the photo. Every change is one
@@ -18,6 +20,9 @@ use editor::crop::{self, ASPECTS, Handle};
 use eframe::egui::{self, Align2, CornerRadius, FontId, Id, Order, Pos2, Rect, Response, Stroke, vec2};
 
 use crate::theme::{FONT, SPACE, Tokens};
+
+/// Degrees one arrow key turns the photo in Straighten (Shift: ten times).
+pub const FINE_TURN: f32 = 0.01;
 use crate::toolbar::ViewerTool;
 
 /// A change of the recipe's geometry asked for by a tool.
@@ -308,6 +313,27 @@ impl GeometryUi {
         true
     }
 
+    /// The arrow keys of Straighten, as in Capture One: ←/→ turn the photo by
+    /// [`FINE_TURN`] degrees, with Shift ten times as much.
+    pub fn level_keys(ctx: &egui::Context, g: &Geometry, edits: &mut Vec<GeoEdit>) {
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let shift = ctx.input(|i| i.modifiers.shift);
+        let (left, right) = ctx.input_mut(|i| {
+            let mut key =
+                |k: egui::Key| i.consume_key(egui::Modifiers::NONE, k) || i.consume_key(egui::Modifiers::SHIFT, k);
+            (key(egui::Key::ArrowLeft), key(egui::Key::ArrowRight))
+        });
+        let turns = f32::from(u8::from(right)) - f32::from(u8::from(left));
+        if turns != 0.0 {
+            let step = if shift { FINE_TURN * 10.0 } else { FINE_TURN };
+            // Rounded to the step, so repeated presses stay on round values.
+            let angle = ((g.angle + turns * step) / FINE_TURN).round() * FINE_TURN;
+            edits.push(GeoEdit::Set { geometry: Geometry { angle, ..*g }.sanitized(), in_drag: false });
+        }
+    }
+
     /// The options bar of Level and Perspective: angle, or the two keystones.
     pub fn sliders(&self, ctx: &egui::Context, viewer: Rect, tool: ViewerTool, g: &Geometry, edits: &mut Vec<GeoEdit>) {
         options_bar(ctx, viewer, "rne-geometry-options", |ui| {
@@ -316,7 +342,7 @@ impl GeometryUi {
                 |ui: &mut egui::Ui, label: &str, v: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str| {
                     ui.label(label);
                     let r = ui
-                        .add(egui::Slider::new(v, range).suffix(suffix).fixed_decimals(1).update_while_editing(false));
+                        .add(egui::Slider::new(v, range).suffix(suffix).fixed_decimals(2).update_while_editing(false));
                     if r.drag_started() {
                         edits.push(GeoEdit::Begin);
                     }
@@ -332,7 +358,12 @@ impl GeometryUi {
                         -core_model::MAX_ANGLE..=core_model::MAX_ANGLE,
                         "\u{b0}",
                     ));
-                    ui.label(egui::RichText::new("or drag along a line that should be level").weak());
+                    ui.label(
+                        egui::RichText::new(
+                            "or drag along a line that should be level or plumb; \u{2190}/\u{2192} fine-tune",
+                        )
+                        .weak(),
+                    );
                 }
                 _ => {
                     changes.push(slider(ui, "Vertical", &mut next.vertical, -100.0..=100.0, ""));

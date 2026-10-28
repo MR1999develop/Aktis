@@ -471,8 +471,9 @@ fn arrows_id() -> Id {
     Id::unique("rne-wheel-arrows")
 }
 
-/// A colour wheel under the pointer keeps the arrow keys for the next frame.
-fn take_arrows(ctx: &egui::Context) {
+/// The arrow keys are taken, for this frame or the next, from the
+/// filmstrip: a colour wheel under the pointer, or the Straighten tool.
+pub(crate) fn take_arrows(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(arrows_id(), true));
 }
 

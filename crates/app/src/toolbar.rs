@@ -32,7 +32,7 @@ impl ViewerTool {
         match self {
             Self::Crop => "Crop",
             Self::Perspective => "Perspective",
-            Self::Level => "Level",
+            Self::Level => "Straighten",
             Self::Masks => "Masks",
             Self::AiSelect => "AI Select",
             Self::Heal => "Heal",
@@ -46,7 +46,7 @@ impl ViewerTool {
         match self {
             Self::Crop => Key::C,
             Self::Perspective => Key::K,
-            Self::Level => Key::L,
+            Self::Level => Key::R,
             Self::Masks => Key::M,
             Self::AiSelect => Key::A,
             Self::Heal => Key::H,
@@ -60,7 +60,7 @@ impl ViewerTool {
         match self {
             Self::Crop => "C",
             Self::Perspective => "K",
-            Self::Level => "L",
+            Self::Level => "R",
             Self::Masks => "M",
             Self::AiSelect => "A",
             Self::Heal => "H",
@@ -74,7 +74,7 @@ impl ViewerTool {
         match self {
             Self::Crop => "Crop and straighten the photo",
             Self::Perspective => "Correct converging lines",
-            Self::Level => "Draw a line along the horizon to level the photo",
+            Self::Level => "Draw a line along the horizon or a vertical to straighten the photo",
             Self::Masks => "Paint or draw a gradient mask on the selected node",
             Self::AiSelect => "Select the subject, objects or people for the selected node",
             Self::Heal => "Click a spot to remove it",
