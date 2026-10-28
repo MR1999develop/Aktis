@@ -22,7 +22,8 @@ const ROWS_PER_THREAD: usize = 16;
 ///    picture, before resizing, so the size applies to the framed picture;
 /// 2. resizing in linear light ([`resample`]), the target computed on the
 ///    upright size;
-/// 3. the output render to 16-bit sRGB, then turning upright;
+/// 3. the output render through the base curve `curve` to 16-bit sRGB,
+///    then turning upright;
 /// 4. the watermark, on the final pixels.
 ///
 /// # Errors
@@ -33,6 +34,7 @@ pub fn finish_for_export(
     geometry: &core_model::Geometry,
     size: &Size,
     watermark: Option<&Watermark>,
+    curve: core_model::BaseCurve,
 ) -> Result<RgbImage16, EngineError> {
     // 1. Geometry (straighten, keystone, crop), worked out on the upright
     //    picture as the viewer shows it; then nothing is left to turn.
@@ -54,7 +56,7 @@ pub fn finish_for_export(
     let sized = if (rw, rh) == (w, h) { Cow::Borrowed(framed) } else { Cow::Owned(resample(framed, rw, rh)?) };
 
     // 3. Output pixels, upright.
-    let pixels = render_cpu::to_srgb16(&sized);
+    let pixels = render_cpu::to_srgb16_with(&sized, curve);
     let (sw, sh) = (sized.width(), sized.height());
     drop(sized);
     let mut out = orient_rgb16(pixels, sw, sh, orientation);
@@ -253,10 +255,26 @@ mod tests {
         // A portrait shot stored landscape (6 × 4 turned 90°): 3 pixels on the long edge.
         let img = ramp(6, 4);
         let size = Size { resize: Resize::LongEdge(3), upscale: false };
-        let out = finish_for_export(&img, Orientation::Rotate90, &Geometry::default(), &size, None).unwrap();
+        let out = finish_for_export(
+            &img,
+            Orientation::Rotate90,
+            &Geometry::default(),
+            &size,
+            None,
+            core_model::BaseCurve::Auto,
+        )
+        .unwrap();
         assert_eq!((out.width, out.height), (2, 3));
         assert_eq!(out.pixels.len(), 2 * 3 * 3);
-        let same = finish_for_export(&img, Orientation::Normal, &Geometry::default(), &Size::default(), None).unwrap();
+        let same = finish_for_export(
+            &img,
+            Orientation::Normal,
+            &Geometry::default(),
+            &Size::default(),
+            None,
+            core_model::BaseCurve::Auto,
+        )
+        .unwrap();
         assert_eq!((same.width, same.height), (6, 4));
     }
 
@@ -264,7 +282,9 @@ mod tests {
     fn turning_upright_moves_pixels_like_the_image_does() {
         let img = ramp(5, 3);
         for o in [Orientation::Rotate90, Orientation::Rotate180, Orientation::Transverse, Orientation::FlipHorizontal] {
-            let out = finish_for_export(&img, o, &Geometry::default(), &Size::default(), None).unwrap();
+            let out =
+                finish_for_export(&img, o, &Geometry::default(), &Size::default(), None, core_model::BaseCurve::Auto)
+                    .unwrap();
             let upright = img.oriented(o).unwrap();
             let expected = render_cpu::to_srgb16(&upright);
             assert_eq!((out.width, out.height), (upright.width(), upright.height()), "{o:?}");
@@ -279,10 +299,19 @@ mod tests {
         let img = ramp(6, 4);
         let crop = NormRect::new(NormPoint::new(0.0, 0.0).unwrap(), NormPoint::new(1.0, 0.5).unwrap());
         let geometry = Geometry { crop: Some(crop), ..Geometry::default() };
-        let out = finish_for_export(&img, Orientation::Rotate90, &geometry, &Size::default(), None).unwrap();
+        let out = finish_for_export(
+            &img,
+            Orientation::Rotate90,
+            &geometry,
+            &Size::default(),
+            None,
+            core_model::BaseCurve::Auto,
+        )
+        .unwrap();
         assert_eq!((out.width, out.height), (4, 3));
         let size = Size { resize: Resize::LongEdge(2), upscale: false };
-        let small = finish_for_export(&img, Orientation::Rotate90, &geometry, &size, None).unwrap();
+        let small = finish_for_export(&img, Orientation::Rotate90, &geometry, &size, None, core_model::BaseCurve::Auto)
+            .unwrap();
         assert_eq!(small.width.max(small.height), 2);
     }
 
@@ -291,8 +320,15 @@ mod tests {
         let dark =
             ImageF32::from_pixels(200, 100, WorkingSpace::LinearSrgb, vec![[0.0, 0.0, 0.0, 1.0]; 20_000]).unwrap();
         let mark = Watermark { text: "X".into(), opacity: 1.0, size_percent: 20.0, ..Watermark::default() };
-        let out =
-            finish_for_export(&dark, Orientation::Normal, &Geometry::default(), &Size::default(), Some(&mark)).unwrap();
+        let out = finish_for_export(
+            &dark,
+            Orientation::Normal,
+            &Geometry::default(),
+            &Size::default(),
+            Some(&mark),
+            core_model::BaseCurve::Auto,
+        )
+        .unwrap();
         assert!(out.pixels.iter().any(|&v| v > 60_000));
     }
 }

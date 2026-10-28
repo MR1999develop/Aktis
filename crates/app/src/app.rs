@@ -682,6 +682,7 @@ impl EditorApp {
                     result
                 }
                 UiEdit::Lens(lens) => doc.set_lens_correction(&self.registry, lens),
+                UiEdit::Curve(curve) => doc.set_base_curve(&self.registry, curve),
                 UiEdit::SetMany { node, key, values, in_drag } => {
                     let gesture =
                         self.drag.as_ref().filter(|d| in_drag && d.node == node && d.param == key).map(|d| d.gesture);
@@ -915,6 +916,7 @@ impl EditorApp {
             geometry: doc.recipe().geometry,
             // While the crop is edited the whole frame shows around it.
             crop: self.tool != Some(ViewerTool::Crop),
+            curve: doc.recipe().curve,
         });
         self.plan.requested(doc.generation(), quality);
     }

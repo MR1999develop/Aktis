@@ -73,6 +73,71 @@ pub struct DevelopSettings {
     pub lens: LensSettings,
 }
 
+/// The tone curve of the output render (scene light → display), as Capture
+/// One's Base Characteristics ▸ Curve: the photo's basic look, under every
+/// adjustment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum BaseCurve {
+    /// The camera's default; for now [`BaseCurve::FilmStandard`] for every camera.
+    #[default]
+    Auto,
+    /// Like slide film: deep blacks, bright midtones and highlights.
+    FilmStandard,
+    /// Film Standard with less contrast in the deep shadows (more detail there).
+    FilmExtraShadow,
+    /// More contrast than Film Standard: deeper shadows, brighter highlights.
+    FilmHighContrast,
+    /// Very low contrast with a gentle roll-off near white, to build the look
+    /// with the Curve and Levels nodes.
+    LinearResponse,
+}
+
+impl BaseCurve {
+    /// Every curve, in menu order.
+    pub const ALL: [Self; 5] =
+        [Self::Auto, Self::FilmStandard, Self::FilmExtraShadow, Self::FilmHighContrast, Self::LinearResponse];
+
+    /// Name in menus.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::FilmStandard => "Film Standard",
+            Self::FilmExtraShadow => "Film Extra Shadow",
+            Self::FilmHighContrast => "Film High Contrast",
+            Self::LinearResponse => "Linear Response",
+        }
+    }
+
+    /// Stable name in saved recipes.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::FilmStandard => "film_standard",
+            Self::FilmExtraShadow => "film_extra_shadow",
+            Self::FilmHighContrast => "film_high_contrast",
+            Self::LinearResponse => "linear_response",
+        }
+    }
+
+    /// The curve saved as `id`.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.id() == id)
+    }
+
+    /// The curve actually applied: [`BaseCurve::Auto`] becomes the camera's
+    /// default (Film Standard until per-camera defaults exist).
+    #[must_use]
+    pub fn resolved(self) -> Self {
+        match self {
+            Self::Auto => Self::FilmStandard,
+            other => other,
+        }
+    }
+}
+
 /// Everything needed to rebuild an edited image from its RAW file.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Recipe {
@@ -82,4 +147,6 @@ pub struct Recipe {
     pub graph: NodeGraph,
     /// Perspective, straightening and crop of the finished image.
     pub geometry: crate::Geometry,
+    /// Tone curve of the output render.
+    pub curve: BaseCurve,
 }

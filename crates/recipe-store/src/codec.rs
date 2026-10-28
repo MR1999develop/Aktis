@@ -7,9 +7,9 @@
 
 use commands::{Edit, SavedHistory, SavedStep};
 use core_model::{
-    AiMask, AiTarget, BodyPart, BrushMask, BrushStroke, DevelopSettings, Geometry, LensSettings, Link, MaskComponent,
-    MaskDef, MaskOp, MaskSource, ModelId, Node, NodeGraph, NodeId, NodeKind, NormPoint, NormRect, ParamId, ParamValue,
-    Params, ProfileChoice, PromptPoint, RasterKey, Recipe, Style, StyleNode, ToolId, WhiteBalance,
+    AiMask, AiTarget, BaseCurve, BodyPart, BrushMask, BrushStroke, DevelopSettings, Geometry, LensSettings, Link,
+    MaskComponent, MaskDef, MaskOp, MaskSource, ModelId, Node, NodeGraph, NodeId, NodeKind, NormPoint, NormRect,
+    ParamId, ParamValue, Params, ProfileChoice, PromptPoint, RasterKey, Recipe, Style, StyleNode, ToolId, WhiteBalance,
 };
 
 use crate::Layout;
@@ -518,7 +518,12 @@ fn read_graph(v: &Value) -> Result<NodeGraph, String> {
 
 /// A recipe as a JSON value.
 pub(crate) fn recipe(r: &Recipe) -> Value {
-    Value::object([("develop", develop(&r.develop)), ("graph", graph(&r.graph)), ("geometry", geometry(&r.geometry))])
+    Value::object([
+        ("develop", develop(&r.develop)),
+        ("graph", graph(&r.graph)),
+        ("geometry", geometry(&r.geometry)),
+        ("curve", Value::text(r.curve.id())),
+    ])
 }
 
 /// A recipe read back.
@@ -529,7 +534,14 @@ pub(crate) fn read_recipe(v: &Value) -> Result<Recipe, String> {
         graph: read_graph(required(f, "graph")?)?,
         // Recipes saved before geometry existed have none.
         geometry: optional(f, "geometry").map(read_geometry).transpose()?.unwrap_or_default(),
+        // Recipes saved before the base curve existed use the camera's default.
+        curve: optional(f, "curve").map(read_curve).transpose()?.unwrap_or_default(),
     })
+}
+
+fn read_curve(v: &Value) -> Result<BaseCurve, String> {
+    let id = v.as_str("curve")?;
+    BaseCurve::from_id(id).ok_or_else(|| format!("unknown base curve \"{id}\""))
 }
 
 // ----- edits -----
@@ -568,6 +580,7 @@ pub(crate) fn edit(e: &Edit) -> Value {
         Edit::SetCameraProfile(p) => o("set_camera_profile", vec![kv("profile", profile(p))]),
         Edit::SetLensCorrection(l) => o("set_lens_correction", vec![kv("lens", lens(l))]),
         Edit::SetGeometry(g) => o("set_geometry", vec![kv("geometry", geometry(g))]),
+        Edit::SetBaseCurve(c) => o("set_base_curve", vec![kv("curve", Value::text(c.id()))]),
         Edit::AddMask { to, def } => o("add_mask", vec![kv("to", id(*to)), kv("mask", mask_def(def))]),
         Edit::SetMask { node, def } => o("set_mask", vec![kv("node", id(*node)), kv("mask", mask_def(def))]),
         Edit::ApplyStyle { name, style: st } => {
@@ -616,6 +629,7 @@ pub(crate) fn read_edit(v: &Value) -> Result<Edit, String> {
         "set_camera_profile" => Edit::SetCameraProfile(read_profile(required(f, "profile")?)?),
         "set_lens_correction" => Edit::SetLensCorrection(read_lens(required(f, "lens")?)?),
         "set_geometry" => Edit::SetGeometry(read_geometry(required(f, "geometry")?)?),
+        "set_base_curve" => Edit::SetBaseCurve(read_curve(required(f, "curve")?)?),
         "add_mask" => Edit::AddMask { to: node("to")?, def: read_mask_def(required(f, "mask")?)? },
         "set_mask" => Edit::SetMask { node: node("node")?, def: read_mask_def(required(f, "mask")?)? },
         "apply_style" => Edit::ApplyStyle {

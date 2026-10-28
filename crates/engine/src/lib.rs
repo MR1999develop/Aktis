@@ -31,7 +31,7 @@ use core_color::ProfileLibrary;
 use lens_db::LensDatabase;
 use platform::{APP_DIR, Os};
 
-use core_model::{Geometry, ImageError, ImageF32, NodeGraph, NodeId, Orientation, Rgba, ToolId};
+use core_model::{BaseCurve, Geometry, ImageError, ImageF32, NodeGraph, NodeId, Orientation, Rgba, ToolId};
 use tool_api::{RegistryError, ToolError, ToolRegistry};
 
 /// Every tool compiled into this build, registered once.
@@ -337,6 +337,19 @@ pub fn downscale(image: &ImageF32, max_side: u32) -> Result<ImageF32, ImageError
 /// # Errors
 /// [`EngineError::Image`] when `max_side` is 0.
 pub fn to_display(image: &ImageF32, orientation: Orientation, max_side: u32) -> Result<Rgb8Image, EngineError> {
+    to_display_with(image, orientation, max_side, BaseCurve::FilmStandard)
+}
+
+/// [`to_display`] through base curve `curve`.
+///
+/// # Errors
+/// [`EngineError::Image`] when `max_side` is 0.
+pub fn to_display_with(
+    image: &ImageF32,
+    orientation: Orientation,
+    max_side: u32,
+    curve: BaseCurve,
+) -> Result<Rgb8Image, EngineError> {
     if max_side == 0 {
         return Err(EngineError::Image(ImageError::Empty));
     }
@@ -346,13 +359,13 @@ pub fn to_display(image: &ImageF32, orientation: Orientation, max_side: u32) -> 
     } else {
         Cow::Borrowed(image)
     };
-    let (width, height, pixels) = render_cpu::to_srgb8_oriented(&fitted, orientation);
+    let (width, height, pixels) = render_cpu::to_srgb8_oriented_with(&fitted, orientation, curve);
     Ok(Rgb8Image { width, height, pixels })
 }
 
-/// Like [`to_display`], with the recipe's perspective, straightening and
-/// (when `crop`) crop applied to the upright image first; with no geometry
-/// it is exactly [`to_display`].
+/// Like [`to_display_with`], with the recipe's perspective, straightening
+/// and (when `crop`) crop applied to the upright image first; with no
+/// geometry it is exactly [`to_display_with`].
 ///
 /// # Errors
 /// [`EngineError::Image`] when `max_side` is 0.
@@ -362,13 +375,14 @@ pub fn to_display_geometry(
     geometry: &Geometry,
     crop: bool,
     max_side: u32,
+    curve: BaseCurve,
 ) -> Result<Rgb8Image, EngineError> {
     if !geometry.warps() && (geometry.crop.is_none() || !crop) {
-        return to_display(image, orientation, max_side);
+        return to_display_with(image, orientation, max_side, curve);
     }
     let upright = image.oriented(orientation).map_err(EngineError::Image)?;
     let finished = geometry::apply(&upright, geometry, crop).map_err(EngineError::Image)?;
-    to_display(&finished, Orientation::Normal, max_side)
+    to_display_with(&finished, Orientation::Normal, max_side, curve)
 }
 
 /// The upright image with the recipe's geometry (crop included), ready to

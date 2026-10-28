@@ -189,6 +189,22 @@ pub fn to_srgb16(image: &ImageF32) -> Vec<u16> {
     display::to_srgb16(image)
 }
 
+/// [`to_srgb8_oriented`] through base curve `curve` instead of Film Standard.
+#[must_use]
+pub fn to_srgb8_oriented_with(
+    image: &ImageF32,
+    orientation: Orientation,
+    curve: core_model::BaseCurve,
+) -> (u32, u32, Vec<u8>) {
+    display::to_srgb8_oriented_with(image, orientation, curve)
+}
+
+/// [`to_srgb16`] through base curve `curve` instead of Film Standard.
+#[must_use]
+pub fn to_srgb16_with(image: &ImageF32, curve: core_model::BaseCurve) -> Vec<u16> {
+    display::to_srgb16_with(image, curve)
+}
+
 /// Rounds an encoded value in [0, 1] to 0–65 535 (never truncates).
 fn quantize_u16(v: f32) -> u16 {
     let scaled = (v * 65_535.0).round().clamp(0.0, 65_535.0);

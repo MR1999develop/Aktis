@@ -7,7 +7,7 @@
 //! the other nodes.
 
 use commands::GestureId;
-use core_model::{LensSettings, NodeId, NodeKind, ParamId, ParamValue};
+use core_model::{BaseCurve, LensSettings, NodeId, NodeKind, ParamId, ParamValue};
 use editor::adjust::Pick;
 use editor::{Document, Histogram};
 use eframe::egui::{self, Align, Layout, RichText};
@@ -66,6 +66,8 @@ pub enum UiEdit {
     },
     /// New lens-correction settings.
     Lens(LensSettings),
+    /// Another base curve (Base Characteristics).
+    Curve(BaseCurve),
     /// Several values of one node at once (one undo step; while dragging,
     /// merged with the drag started with `key`).
     SetMany {
@@ -136,6 +138,8 @@ pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
                     .size(FONT[1])
                     .color(t.text_weak),
             );
+            ui.add_space(SPACE[2]);
+            base_characteristics(ui, doc, edits);
             ui.add_space(SPACE[2]);
             lens_section(ui, doc, cx.developing, edits);
         }
@@ -214,6 +218,39 @@ pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
 
 /// Lens corrections (lensfun data built into the editor): on/off, what to
 /// correct, and the lens when the file does not name it correctly.
+/// Base Characteristics, as in Capture One: the curve that gives the photo
+/// its basic look, under every adjustment.
+fn base_characteristics(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdit>) {
+    let t = Tokens::of(ui.ctx().theme());
+    ui.label(RichText::new("Base characteristics").size(FONT[2]).strong());
+    ui.add_space(SPACE[0]);
+    let current = doc.recipe().curve;
+    ui.horizontal(|ui| {
+        ui.label("Curve");
+        egui::ComboBox::from_id_salt("rne-base-curve").selected_text(current.label()).show_ui(ui, |ui| {
+            for curve in BaseCurve::ALL {
+                if ui.selectable_label(curve == current, curve.label()).on_hover_text(curve_hint(curve)).clicked()
+                    && curve != current
+                {
+                    edits.push(UiEdit::Curve(curve));
+                }
+            }
+        });
+    });
+    ui.label(RichText::new(curve_hint(current)).size(FONT[0]).color(t.text_weak));
+}
+
+/// What a base curve does, in one line.
+fn curve_hint(curve: BaseCurve) -> &'static str {
+    match curve {
+        BaseCurve::Auto => "The camera's default curve (Film Standard)",
+        BaseCurve::FilmStandard => "Like slide film: deep blacks, bright midtones and highlights",
+        BaseCurve::FilmExtraShadow => "Film Standard with more detail in the deep shadows",
+        BaseCurve::FilmHighContrast => "More contrast: deeper shadows, brighter highlights",
+        BaseCurve::LinearResponse => "Very low contrast, to build the look with Curve and Levels",
+    }
+}
+
 fn lens_section(ui: &mut egui::Ui, doc: &Document, developing: bool, edits: &mut Vec<UiEdit>) {
     let current = doc.recipe().develop.lens.clone();
     let mut next = current.clone();

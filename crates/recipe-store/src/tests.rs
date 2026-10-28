@@ -115,6 +115,7 @@ fn every_recipe() -> Recipe {
                 core_model::NormPoint::new(0.85, 0.9).unwrap(),
             )),
         },
+        curve: core_model::BaseCurve::FilmExtraShadow,
     }
 }
 
@@ -148,6 +149,7 @@ fn every_edit() -> Vec<Edit> {
         Edit::SetLensCorrection(LensSettings::off()),
         Edit::SetLensCorrection(LensSettings::default()),
         Edit::SetGeometry(core_model::Geometry { angle: 2.0, ..core_model::Geometry::default() }),
+        Edit::SetBaseCurve(core_model::BaseCurve::LinearResponse),
         Edit::AddMask { to: n, def: every_mask() },
         Edit::SetMask { node: NodeId::from_raw(5), def: MaskDef::default() },
         Edit::ApplyStyle {

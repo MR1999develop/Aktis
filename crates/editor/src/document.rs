@@ -598,6 +598,20 @@ impl Document {
         Ok(())
     }
 
+    /// Chooses the base curve of the output render (an undoable edit).
+    ///
+    /// # Errors
+    /// [`EditError`] when the document is read-only.
+    pub fn set_base_curve(&mut self, registry: &ToolRegistry, curve: core_model::BaseCurve) -> Result<(), EditError> {
+        self.writable()?;
+        if self.recipe().curve == curve {
+            return Ok(());
+        }
+        self.session.apply(registry, Edit::SetBaseCurve(curve))?;
+        self.generation += 1;
+        Ok(())
+    }
+
     /// The mask node feeding the key input of tool node `node`, with its definition.
     #[must_use]
     pub fn mask_of(&self, node: NodeId) -> Option<(NodeId, &core_model::MaskDef)> {

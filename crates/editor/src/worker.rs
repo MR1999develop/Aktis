@@ -101,6 +101,8 @@ pub struct RenderRequest {
     /// Apply the crop (off while the crop is being edited, so the whole
     /// frame shows around it).
     pub crop: bool,
+    /// Tone curve of the output render.
+    pub curve: core_model::BaseCurve,
 }
 
 /// What the worker reports back.
@@ -609,7 +611,14 @@ fn render_for_screen(engine: &Engine, req: &RenderRequest) -> Event {
         Err(e) => return Event::RenderFailed { generation: req.generation, message: e.to_string() },
     };
     let rendered_at = Instant::now();
-    match engine::to_display_geometry(&rendered.image, req.orientation, &req.geometry, req.crop, req.max_side) {
+    match engine::to_display_geometry(
+        &rendered.image,
+        req.orientation,
+        &req.geometry,
+        req.crop,
+        req.max_side,
+        req.curve,
+    ) {
         Ok(image) => Event::Rendered {
             generation: req.generation,
             quality: req.quality,
@@ -894,6 +903,7 @@ mod tests {
             max_side: 4096,
             geometry: core_model::Geometry::default(),
             crop: true,
+            curve: core_model::BaseCurve::Auto,
         });
         let events = wait_for(&worker, |e| matches!(e, Event::Rendered { .. } | Event::RenderFailed { .. }));
         let Some(Event::Rendered { generation, image, .. }) = events.last() else { panic!("{events:?}") };

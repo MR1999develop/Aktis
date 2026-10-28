@@ -9,7 +9,7 @@
 use std::sync::OnceLock;
 use std::thread;
 
-use core_model::{ImageF32, Orientation, WorkingSpace};
+use core_model::{BaseCurve, ImageF32, Orientation, WorkingSpace};
 
 /// Cells of the table over linear [0, 1). Narrower than the gap between two
 /// codes anywhere on the curve, so a cell holds at most one threshold.
@@ -106,8 +106,13 @@ fn for_each_row(
     });
 }
 
-/// 8-bit sRGB pixels of `image`, row by row.
+/// 8-bit sRGB pixels of `image`, row by row, through Film Standard.
 pub fn to_srgb8(image: &ImageF32) -> Vec<u8> {
+    to_srgb8_with(image, BaseCurve::FilmStandard)
+}
+
+/// [`to_srgb8`] through base curve `curve`.
+pub fn to_srgb8_with(image: &ImageF32, curve: BaseCurve) -> Vec<u8> {
     let (w, h) = (image.width() as usize, image.height() as usize);
     let m = core_color::rgb_to_rgb(image.space(), WorkingSpace::LinearSrgb);
     let enc = encoder();
@@ -115,7 +120,7 @@ pub fn to_srgb8(image: &ImageF32) -> Vec<u8> {
     let mut out = vec![0_u8; w * h * 3];
     for_each_row(&mut out, h, w * 3, ROWS_PER_THREAD, &|y, bytes| {
         for (p, o) in src[y * w..(y + 1) * w].iter().zip(bytes.chunks_exact_mut(3)) {
-            let rgb = crate::tone::output_rgb([p[0], p[1], p[2]], &m);
+            let rgb = crate::tone::output_rgb_with([p[0], p[1], p[2]], &m, curve);
             o[0] = enc.encode(rgb[0]);
             o[1] = enc.encode(rgb[1]);
             o[2] = enc.encode(rgb[2]);
@@ -124,9 +129,14 @@ pub fn to_srgb8(image: &ImageF32) -> Vec<u8> {
     out
 }
 
-/// 16-bit sRGB values of `image`, row by row (the curve computed directly:
-/// a table would need 65 536 thresholds per code).
+/// 16-bit sRGB values of `image`, row by row, through Film Standard (the
+/// curve computed directly: a table would need 65 536 thresholds per code).
 pub fn to_srgb16(image: &ImageF32) -> Vec<u16> {
+    to_srgb16_with(image, BaseCurve::FilmStandard)
+}
+
+/// [`to_srgb16`] through base curve `curve`.
+pub fn to_srgb16_with(image: &ImageF32, curve: BaseCurve) -> Vec<u16> {
     let (w, h) = (image.width() as usize, image.height() as usize);
     let m = core_color::rgb_to_rgb(image.space(), WorkingSpace::LinearSrgb);
     let src = image.pixels();
@@ -143,7 +153,7 @@ pub fn to_srgb16(image: &ImageF32) -> Vec<u16> {
             let first = chunk * rows_per_chunk * w;
             scope.spawn(move || {
                 for (p, o) in src[first..].iter().zip(part.chunks_exact_mut(3)) {
-                    let rgb = crate::tone::output_rgb([p[0], p[1], p[2]], m);
+                    let rgb = crate::tone::output_rgb_with([p[0], p[1], p[2]], m, curve);
                     for (dst, v) in o.iter_mut().zip(rgb) {
                         *dst = crate::quantize_u16(core_color::srgb_encode(v.clamp(0.0, 1.0)));
                     }
@@ -158,10 +168,16 @@ pub fn to_srgb16(image: &ImageF32) -> Vec<u16> {
 /// source pixels they read then stay in the processor's cache.
 const TILE: usize = 64;
 
-/// 8-bit sRGB pixels of `image` turned upright by `o`: width, height, pixels.
+/// 8-bit sRGB pixels of `image` turned upright by `o`: width, height,
+/// pixels, through Film Standard.
 pub fn to_srgb8_oriented(image: &ImageF32, o: Orientation) -> (u32, u32, Vec<u8>) {
+    to_srgb8_oriented_with(image, o, BaseCurve::FilmStandard)
+}
+
+/// [`to_srgb8_oriented`] through base curve `curve`.
+pub fn to_srgb8_oriented_with(image: &ImageF32, o: Orientation, curve: BaseCurve) -> (u32, u32, Vec<u8>) {
     if o == Orientation::Normal {
-        return (image.width(), image.height(), to_srgb8(image));
+        return (image.width(), image.height(), to_srgb8_with(image, curve));
     }
     let (w, h) = (image.width() as usize, image.height() as usize);
     let (ow, oh) = if o.swaps_axes() { (h, w) } else { (w, h) };
@@ -183,7 +199,7 @@ pub fn to_srgb8_oriented(image: &ImageF32, o: Orientation) -> (u32, u32, Vec<u8>
                 for x in x0..x1 {
                     let (sx, sy) = o.source(x, y, w, h);
                     let p = src[sy * w + sx];
-                    let rgb = crate::tone::output_rgb([p[0], p[1], p[2]], &m);
+                    let rgb = crate::tone::output_rgb_with([p[0], p[1], p[2]], &m, curve);
                     let o3 = &mut line[x * 3..x * 3 + 3];
                     o3[0] = enc.encode(rgb[0]);
                     o3[1] = enc.encode(rgb[1]);

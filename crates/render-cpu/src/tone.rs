@@ -12,18 +12,45 @@
 //! moving them towards the grey of the same luminance, never by clipping
 //! one channel.
 
-use core_model::Matrix3;
+use core_model::{BaseCurve, Matrix3};
 
 /// Middle grey of the scene (linear).
 pub const GREY: f32 = 0.18;
-/// Displayed value (sRGB-encoded) per stop through the midtones.
+/// Displayed value (sRGB-encoded) per stop through the midtones of Film Standard.
 pub const SLOPE: f32 = 0.2;
-/// Stops above middle grey where the shoulder starts (white is +2.47).
+/// Stops above middle grey where Film Standard's shoulder starts (white is +2.47).
 pub const SHOULDER_FROM: f32 = 2.0;
 /// Brightest-channel value from which a colour starts fading to white…
 pub const WHITE_FROM: f32 = 1.0;
 /// …and at which it has turned fully white (3 stops over white).
 pub const WHITE_AT: f32 = 8.0;
+
+/// The shape of one base curve: every curve passes through middle grey at
+/// its displayed value, with `slope` through the midtones.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Shape {
+    /// Displayed value per stop at middle grey.
+    slope: f32,
+    /// Stops above grey where the shoulder starts.
+    shoulder_from: f32,
+    /// How the toe reaches black: `None` exponentially (Film Standard);
+    /// `Some(p)` with `p > 0` a power law that keeps the deep shadows
+    /// brighter (less contrast there).
+    toe_power: Option<f32>,
+}
+
+impl Shape {
+    fn of(curve: BaseCurve) -> Self {
+        match curve.resolved() {
+            BaseCurve::FilmExtraShadow => Self { slope: SLOPE, shoulder_from: SHOULDER_FROM, toe_power: Some(2.5) },
+            BaseCurve::FilmHighContrast => Self { slope: 0.24, shoulder_from: 1.8, toe_power: None },
+            BaseCurve::LinearResponse => Self { slope: 0.15, shoulder_from: 2.3, toe_power: Some(4.0) },
+            BaseCurve::Auto | BaseCurve::FilmStandard => {
+                Self { slope: SLOPE, shoulder_from: SHOULDER_FROM, toe_power: None }
+            }
+        }
+    }
+}
 
 /// Middle grey as displayed: the sRGB encoding of [`GREY`], so midtones
 /// keep their brightness.
@@ -31,29 +58,43 @@ fn grey_out() -> f32 {
     core_color::srgb_encode(GREY)
 }
 
-/// The tone curve on one value: scene-linear in, display-linear out (to be
-/// sRGB-encoded). Monotonic, continuous with a continuous slope; black stays
-/// black and the top approaches 1 without reaching it.
+/// Film Standard on one value: scene-linear in, display-linear out (to be
+/// sRGB-encoded). See [`curve_value`].
 #[must_use]
 pub fn film_curve(n: f32) -> f32 {
+    curve_value(BaseCurve::FilmStandard, n)
+}
+
+/// Base curve `curve` on one value: scene-linear in, display-linear out (to
+/// be sRGB-encoded). It works on stops from middle grey: a straight line
+/// through the midtones, a toe into black and a shoulder towards white.
+/// Monotonic, continuous with a continuous slope; black stays black and the
+/// top approaches 1 without reaching it.
+#[must_use]
+pub fn curve_value(curve: BaseCurve, n: f32) -> f32 {
     if n.is_nan() || n <= 0.0 {
         return 0.0;
     }
     if n.is_infinite() {
         return 1.0;
     }
+    let shape = Shape::of(curve);
     let e = (n / GREY).log2();
     let g = grey_out();
+    let s = shape.slope;
     let y = if e <= 0.0 {
-        // Toe: same slope as the midtones at grey, fading to black.
-        g * (SLOPE / g * e).exp()
-    } else if e <= SHOULDER_FROM {
-        g + SLOPE * e
+        // Toe: the midtone slope at grey, fading to black.
+        match shape.toe_power {
+            None => g * (s / g * e).exp(),
+            Some(p) => g * (1.0 - s / (g * p) * e).powf(-p),
+        }
+    } else if e <= shape.shoulder_from {
+        g + s * e
     } else {
-        // Shoulder: same slope at its start, approaching 1.
-        let y1 = g + SLOPE * SHOULDER_FROM;
+        // Shoulder: the same slope at its start, approaching 1.
+        let y1 = g + s * shape.shoulder_from;
         let room = 1.0 - y1;
-        y1 + room * (1.0 - (-(e - SHOULDER_FROM) * SLOPE / room).exp())
+        y1 + room * (1.0 - (-(e - shape.shoulder_from) * s / room).exp())
     };
     core_color::srgb_decode(y.clamp(0.0, 1.0))
 }
@@ -63,15 +104,21 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// One pixel of the working space as linear sRGB in [0, 1]; `to_srgb` is
-/// the matrix from the working space to linear sRGB.
+/// One pixel of the working space as linear sRGB in [0, 1] through Film
+/// Standard; `to_srgb` is the matrix from the working space to linear sRGB.
 #[must_use]
 pub fn output_rgb(rgb: [f32; 3], to_srgb: &Matrix3) -> [f32; 3] {
+    output_rgb_with(rgb, to_srgb, BaseCurve::FilmStandard)
+}
+
+/// [`output_rgb`] through base curve `curve`.
+#[must_use]
+pub fn output_rgb_with(rgb: [f32; 3], to_srgb: &Matrix3, curve: BaseCurve) -> [f32; 3] {
     let n = rgb[0].max(rgb[1]).max(rgb[2]);
     if n.is_nan() || n <= 0.0 || n.is_infinite() {
         return [0.0; 3];
     }
-    let f = film_curve(n);
+    let f = curve_value(curve, n);
     let scale = f / n;
     // Towards white as the light grows far above white.
     let w = smoothstep(WHITE_FROM, WHITE_AT, n);
@@ -165,6 +212,43 @@ mod tests {
         let b = output_rgb([1.5, 0.75, 0.15], &ID);
         assert!(b.iter().zip(&a).all(|(b, a)| b >= a));
         assert_eq!(output_rgb([-0.1, -0.2, -0.3], &ID), [0.0; 3]);
+    }
+
+    #[test]
+    fn every_base_curve_keeps_grey_rises_steadily_and_stays_below_white() {
+        for curve in BaseCurve::ALL {
+            assert!((curve_value(curve, GREY) - GREY).abs() < 1e-4, "{curve:?} moves middle grey");
+            let mut last = curve_value(curve, 0.004);
+            for i in 2..6000 {
+                #[allow(clippy::cast_precision_loss)]
+                let n = i as f32 * 0.004;
+                let y = curve_value(curve, n);
+                assert!(y >= last && y < 1.0, "{curve:?}: {n} → {y}");
+                assert!(y - last < 0.01, "{curve:?}: no jump at {n}");
+                last = y;
+            }
+            assert!(curve_value(curve, 1e-4) < 0.01, "{curve:?}: black stays near black");
+        }
+        assert_eq!(curve_value(BaseCurve::Auto, 0.05), film_curve(0.05), "Auto is Film Standard for now");
+    }
+
+    #[test]
+    fn the_curves_differ_as_their_names_say() {
+        let at = |c: BaseCurve, stops: f32| core_color::srgb_encode(curve_value(c, GREY * stops.exp2()));
+        let (std, shadow, high, linear) = (
+            BaseCurve::FilmStandard,
+            BaseCurve::FilmExtraShadow,
+            BaseCurve::FilmHighContrast,
+            BaseCurve::LinearResponse,
+        );
+        // Extra Shadow: brighter deep shadows, the same midtones and highlights.
+        assert!(at(shadow, -4.0) > at(std, -4.0) + 0.02);
+        assert!((at(shadow, 1.0) - at(std, 1.0)).abs() < 1e-5);
+        // High Contrast: darker shadows, brighter highlights.
+        assert!(at(high, -2.0) < at(std, -2.0) && at(high, 1.5) > at(std, 1.5));
+        // Linear Response: the flattest midtones, shadows kept, highlights gentler.
+        assert!(at(linear, 1.0) - at(linear, -1.0) < at(std, 1.0) - at(std, -1.0));
+        assert!(at(linear, -4.0) > at(std, -4.0) && at(linear, 2.0) < at(std, 2.0));
     }
 
     #[test]

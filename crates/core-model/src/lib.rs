@@ -32,6 +32,6 @@ pub use mask::{
 pub use math::Matrix3;
 pub use orientation::Orientation;
 pub use params::{ParamValue, Params};
-pub use recipe::{DevelopSettings, LensSettings, ProfileChoice, Recipe, WhiteBalance};
+pub use recipe::{BaseCurve, DevelopSettings, LensSettings, ProfileChoice, Recipe, WhiteBalance};
 pub use sensor::{BayerPattern, CfaPattern, SensorError, SensorImage};
 pub use style::{Style, StyleNode, StyleSelection, tool_nodes};

@@ -195,6 +195,7 @@ fn export_one(
         &recipe.geometry,
         &options.size,
         options.watermark.as_ref(),
+        recipe.curve,
     )
     .map_err(|e| format!("{name}: {e}"))?;
     drop(rendered);
