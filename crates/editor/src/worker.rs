@@ -41,6 +41,28 @@ pub const EXPORT_QUALITY: u8 = 92;
 /// Longer side of filmstrip thumbnails (twice the card width, for sharp HiDPI screens).
 pub const THUMBNAIL_SIDE: u32 = 320;
 
+/// The cache of AI mask results shared by the renders and the AI Select
+/// tool: `masks` in the editor's data folder (as the command line uses).
+/// `None` when the folder cannot be made; AI masks then render empty.
+#[must_use]
+pub fn mask_store() -> Option<&'static masks::DiskRasters> {
+    static STORE: OnceLock<Option<masks::DiskRasters>> = OnceLock::new();
+    STORE
+        .get_or_init(|| {
+            let dir = platform::editor_data_dir().unwrap_or_else(|| PathBuf::from(".rne")).join("masks");
+            masks::DiskRasters::open(dir).ok()
+        })
+        .as_ref()
+}
+
+/// The rasters renders read AI masks from.
+fn rasters() -> &'static dyn masks::RasterSource {
+    match mask_store() {
+        Some(store) => store,
+        None => &masks::NoRasters,
+    }
+}
+
 /// Longest side of the large previews shown when several photos fill the viewer.
 pub const TILE_PREVIEW_SIDE: u32 = 1600;
 
@@ -363,7 +385,7 @@ impl Worker {
         let spawned = thread::Builder::new().name("export".into()).spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 let engine = engine.wait();
-                let rendered = engine.render(&graph, &source).map_err(|e| e.to_string())?;
+                let rendered = engine.render_with_masks(&graph, &source, rasters()).map_err(|e| e.to_string())?;
                 let finished = engine::finish(&rendered.image, orientation, &geometry).map_err(|e| e.to_string())?;
                 engine::export_jpeg(&finished, Orientation::Normal, EXPORT_QUALITY, &wanted).map_err(|e| e.to_string())
             }))
@@ -460,7 +482,7 @@ fn preview_loop(
 
 fn render_for_screen(engine: &Engine, req: &RenderRequest) -> Event {
     let started = Instant::now();
-    let rendered = match engine.render(&req.graph, &req.source) {
+    let rendered = match engine.render_with_masks(&req.graph, &req.source, rasters()) {
         Ok(r) => r,
         Err(e) => return Event::RenderFailed { generation: req.generation, message: e.to_string() },
     };

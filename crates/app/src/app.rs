@@ -28,11 +28,13 @@ use engine::{Backend, EngineChoice};
 use tool_api::ToolRegistry;
 
 use crate::actions::Command;
+use crate::ai_mask_job::AiMaskJob;
 use crate::geometry_ui::{GeoEdit, GeometryUi};
 use crate::graph_ui::{GraphAction, GraphUi};
 use crate::history_ui::{LeftTab, TabAction, Tabs};
 use crate::inspector::{self, Drag, UiEdit};
 use crate::library_ui::{Library, LibraryAction, TaggingProgress};
+use crate::mask_ui::{MaskEdit, MaskUi};
 use crate::models_ui::ModelsUi;
 use crate::prefs_ui::Preferences;
 use crate::scopes::{ScopeKind, Scopes};
@@ -139,6 +141,10 @@ pub struct EditorApp {
     prev_tool: Option<ViewerTool>,
     /// Crop box, aspect and Level line of the geometry tools.
     geometry_ui: GeometryUi,
+    /// The Masks and AI Select tools.
+    mask_ui: MaskUi,
+    /// AI masks being computed.
+    ai_job: Option<AiMaskJob>,
     /// The Preferences window, while open.
     prefs: Preferences,
     /// The slider drag of a geometry tool, one undo step.
@@ -224,6 +230,8 @@ impl EditorApp {
             geometry_ui: GeometryUi::default(),
             geometry_gesture: None,
             prefs: Preferences::default(),
+            mask_ui: MaskUi::default(),
+            ai_job: None,
             probe: None,
             histogram: None,
             scopes: Scopes::default(),
@@ -979,6 +987,7 @@ impl EditorApp {
 
         let mut picked = None;
         let mut geo_edits = Vec::new();
+        let mut mask_edits = Vec::new();
         let mut crop_apply = false;
         if let Some(doc) = &self.doc {
             let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -1090,6 +1099,34 @@ impl EditorApp {
                             self.geometry_ui.level_overlay(ui, &response, screen, image, &geometry, &mut geo_edits);
                     }
                     Some(ViewerTool::Perspective) => crate::geometry_ui::grid_overlay(ui, screen, &t),
+                    Some(tool @ (ViewerTool::Masks | ViewerTool::AiSelect)) => {
+                        let node = self.selected_node.filter(|n| {
+                            matches!(doc.recipe().graph.node(*n).map(|x| &x.kind), Some(NodeKind::Tool(_)))
+                        });
+                        // The mask in red over the photo.
+                        if let Some(n) = node {
+                            let key = (doc.generation(), n, cropped);
+                            self.mask_ui.draw_overlay(ui, screen, key, || {
+                                let (_, def) = doc.mask_of(n)?;
+                                let guide = engine::downscale(doc.preview(), 1024).ok()?;
+                                let rasters: &dyn masks::RasterSource = match editor::worker::mask_store() {
+                                    Some(s) => s,
+                                    None => &masks::NoRasters,
+                                };
+                                let m = masks::evaluate(def, rasters, &guide).mask;
+                                editor::masking::shown_mask(&m, doc.orientation(), &geometry, cropped).ok()
+                            });
+                        }
+                        let crop = match geometry.crop.filter(|_| cropped) {
+                            Some(c) => [c.width(), c.height()],
+                            None => [1.0, 1.0],
+                        };
+                        let scale = if geometry.warps() { geometry.warp(frame_aspect).scale() } else { 1.0 };
+                        let long_side = crate::mask_ui::long_side_on_screen(screen, crop, scale);
+                        let to_developed = |p: egui::Pos2| at(p).and_then(|u| doc.developed_point(u));
+                        tool_drag =
+                            self.mask_ui.overlay(ui, &response, tool, node, long_side, &to_developed, &mut mask_edits);
+                    }
                     _ => {}
                 }
                 // The left button pans; the right one is the eyedropper, the middle one the loupe.
@@ -1135,6 +1172,16 @@ impl EditorApp {
                 Some(tool @ (ViewerTool::Level | ViewerTool::Perspective)) => {
                     self.geometry_ui.sliders(ui.ctx(), rect, tool, &geometry, &mut geo_edits);
                 }
+                Some(tool @ (ViewerTool::Masks | ViewerTool::AiSelect)) => {
+                    let node = self.selected_node.and_then(|n| {
+                        let node = doc.recipe().graph.node(n)?;
+                        matches!(node.kind, NodeKind::Tool(_))
+                            .then(|| (n, crate::graph_ui::node_title(node, &self.registry)))
+                    });
+                    let def = node.as_ref().and_then(|(n, _)| doc.mask_of(*n)).map(|(_, d)| d.clone());
+                    let busy = self.ai_job.is_some();
+                    self.mask_ui.options(ui.ctx(), rect, tool, node, def.as_ref(), busy, &mut mask_edits);
+                }
                 _ => {}
             }
         }
@@ -1142,6 +1189,7 @@ impl EditorApp {
             self.leave_crop(true);
         }
         self.apply_geometry(geo_edits);
+        self.apply_mask_edits(mask_edits, ui.ctx());
 
         if ui.input(|i| !i.raw.hovered_files.is_empty()) {
             let painter = ui.painter_at(rect);
@@ -1370,6 +1418,100 @@ impl EditorApp {
         }
     }
 
+    /// Applies what the Masks and AI Select tools asked for: the new mask
+    /// definition (one undo step; a new mask node the first time), then the
+    /// AI models in the background when the mask has new AI parts.
+    fn apply_mask_edits(&mut self, edits: Vec<MaskEdit>, ctx: &egui::Context) {
+        for edit in edits {
+            let Some(doc) = &mut self.doc else { return };
+            let brush = self.mask_ui.brush;
+            let node = match &edit {
+                MaskEdit::Stroke { node, .. }
+                | MaskEdit::Click { node, .. }
+                | MaskEdit::Subject { node }
+                | MaskEdit::Def { node, .. } => *node,
+            };
+            let current = doc.mask_of(node).map(|(_, d)| d.clone());
+            let def = match edit {
+                MaskEdit::Stroke { points, erase, .. } => {
+                    editor::masking::add_stroke(current.as_ref(), points, brush, erase)
+                }
+                MaskEdit::Click { at, include, new_object, .. } => {
+                    editor::masking::add_click(current.as_ref(), at, include, new_object)
+                }
+                MaskEdit::Subject { .. } => editor::masking::add_subject(current.as_ref()),
+                MaskEdit::Def { def, .. } => def,
+            };
+            let result = match doc.mask_of(node).map(|(id, _)| id) {
+                Some(mask) => doc.set_mask(&self.registry, mask, def, None).map(|()| mask),
+                None => doc.add_mask(&self.registry, node, def),
+            };
+            match result {
+                Ok(mask) => self.start_ai_mask(mask, ctx),
+                Err(e) => self.toast = Some(error_toast(format!("That change was refused: {e}"))),
+            }
+        }
+    }
+
+    /// Runs the AI models for the parts of mask node `mask` that have no
+    /// result yet (one job at a time; the next starts when it ends).
+    fn start_ai_mask(&mut self, mask: NodeId, ctx: &egui::Context) {
+        if self.ai_job.is_some() {
+            return;
+        }
+        let Some(doc) = &self.doc else { return };
+        let graph = &doc.recipe().graph;
+        let Some(def) = graph.node(mask).and_then(|n| n.mask.clone()) else { return };
+        let mut features = Vec::new();
+        for (_, ai) in def.pending_ai() {
+            features.push(match ai.target {
+                core_model::AiTarget::Subject => ai_models::Feature::Subject,
+                core_model::AiTarget::Object { .. } => ai_models::Feature::Objects,
+                core_model::AiTarget::PersonPart { .. } => ai_models::Feature::PersonParts,
+            });
+        }
+        if features.is_empty() {
+            return;
+        }
+        for feature in features {
+            if !self.models.require(feature) {
+                return; // the download is offered; click again once it is done
+            }
+        }
+        let photo = crate::ai_mask_job::Photo {
+            path: doc.path().to_owned(),
+            settings: doc.recipe().develop.clone(),
+            image: Arc::clone(doc.developed()),
+            orientation: doc.orientation(),
+        };
+        let repaint = ctx.clone();
+        match AiMaskJob::start(photo, mask, def, move || repaint.request_repaint()) {
+            Ok(job) => self.ai_job = Some(job),
+            Err(e) => self.toast = Some(error_toast(format!("The AI selection could not start: {e}"))),
+        }
+    }
+
+    /// A finished AI mask job: its rasters go into the mask as it is now.
+    fn poll_ai_mask(&mut self, ctx: &egui::Context) {
+        let Some(result) = self.ai_job.as_ref().and_then(AiMaskJob::poll) else { return };
+        let Some(job) = self.ai_job.take() else { return };
+        let Some(doc) = &mut self.doc else { return };
+        match result {
+            Ok(computed) => {
+                let Some(current) = doc.recipe().graph.node(job.mask).and_then(|n| n.mask.clone()) else { return };
+                let filled = editor::masking::fill_rasters(&current, &computed);
+                if filled != current
+                    && let Err(e) = doc.set_mask(&self.registry, job.mask, filled, None)
+                {
+                    self.toast = Some(error_toast(format!("The AI mask could not be kept: {e}")));
+                }
+                // Clicks made while the models ran.
+                self.start_ai_mask(job.mask, ctx);
+            }
+            Err(message) => self.toast = Some(error_toast(message)),
+        }
+    }
+
     /// Reacts to the viewer tool changing: entering the crop tool starts
     /// the box at the recipe's crop, leaving it (for another tool) applies
     /// the box; the photo is shown again with or without its crop.
@@ -1503,6 +1645,7 @@ impl eframe::App for EditorApp {
         self.handle_events(&ctx);
         self.handle_dropped_files(&ctx);
         self.poll_tagging();
+        self.poll_ai_mask(&ctx);
         let mut commands = Self::consume_shortcuts(&ctx);
         let mut edits = Vec::new();
         let mut library = Vec::new();
@@ -1530,6 +1673,9 @@ impl eframe::App for EditorApp {
             }
         }
         self.tool_changed();
+        if matches!(self.tool, Some(ViewerTool::Masks | ViewerTool::AiSelect)) {
+            self.mask_ui.keys(&ctx);
+        }
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::left("library")
             .resizable(true)

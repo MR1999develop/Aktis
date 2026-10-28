@@ -17,6 +17,10 @@ lens-db.workspace = true
 catalog.workspace = true
 core-color.workspace = true
 tool-adjust.workspace = true
+masks.workspace = true
+platform.workspace = true
+# Only the mask components and the model catalog; no ONNX Runtime here.
+ai-segment = { path = "../ai-segment", default-features = false }
 
 [lints]
 workspace = true

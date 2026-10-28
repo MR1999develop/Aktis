@@ -193,7 +193,12 @@ pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
         }
         NodeKind::Mask => {
             section_title(ui, "Mask");
-            ui.label(RichText::new("Masks are drawn with the Masks tool (M), coming soon.").color(t.text_weak));
+            ui.label(
+                RichText::new(
+                    "Select the node this mask restricts, then paint with Masks (M) or click with AI Select (A).",
+                )
+                .color(t.text_weak),
+            );
         }
         NodeKind::Parallel { .. } => {
             section_title(ui, "Parallel");

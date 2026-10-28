@@ -15,6 +15,7 @@
 
 mod actions;
 mod adjust_ui;
+mod ai_mask_job;
 mod app;
 mod dialog;
 mod geometry_ui;
@@ -23,6 +24,7 @@ mod history_ui;
 mod icons;
 mod inspector;
 mod library_ui;
+mod mask_ui;
 mod models_ui;
 mod prefs_ui;
 mod scopes;

@@ -27,6 +27,7 @@ pub mod history_order;
 pub mod inspect;
 pub mod lenses;
 pub mod library;
+pub mod masking;
 pub mod overview;
 pub mod thumbs;
 pub mod view;

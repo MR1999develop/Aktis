@@ -545,6 +545,54 @@ impl Document {
         Ok(())
     }
 
+    /// The mask node feeding the key input of tool node `node`, with its definition.
+    #[must_use]
+    pub fn mask_of(&self, node: NodeId) -> Option<(NodeId, &core_model::MaskDef)> {
+        let graph = &self.recipe().graph;
+        let port = graph
+            .node(node)?
+            .kind
+            .inputs()
+            .iter()
+            .position(|k| *k == core_model::PortKind::Mask)
+            .and_then(|p| u8::try_from(p).ok())?;
+        let link = graph.input_link(node, port)?;
+        let mask = graph.node(link.from)?;
+        Some((mask.id, mask.mask.as_ref()?))
+    }
+
+    /// Gives tool node `to` a new mask (one undo step); returns the mask node.
+    ///
+    /// # Errors
+    /// [`EditError`] when `to` has no mask input; nothing changes.
+    pub fn add_mask(
+        &mut self,
+        registry: &ToolRegistry,
+        to: NodeId,
+        def: core_model::MaskDef,
+    ) -> Result<NodeId, EditError> {
+        self.session.apply(registry, Edit::AddMask { to, def })?;
+        self.generation += 1;
+        self.mask_of(to).map(|(id, _)| id).ok_or(EditError::NoMaskInput(to))
+    }
+
+    /// Replaces the definition of mask node `mask` (one undo step, merged
+    /// with the previous one in the same `gesture`).
+    ///
+    /// # Errors
+    /// [`EditError`] when `mask` is not a mask node; nothing changes.
+    pub fn set_mask(
+        &mut self,
+        registry: &ToolRegistry,
+        mask: NodeId,
+        def: core_model::MaskDef,
+        gesture: Option<GestureId>,
+    ) -> Result<(), EditError> {
+        self.session.apply_in_gesture(registry, Edit::SetMask { node: mask, def }, gesture)?;
+        self.generation += 1;
+        Ok(())
+    }
+
     /// Returns a parameter to its default (one undo step).
     ///
     /// # Errors
