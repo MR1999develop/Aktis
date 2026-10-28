@@ -176,7 +176,8 @@ pub struct NodeChoice {
     pub category: Option<tool_api::Category>,
 }
 
-/// The tool nodes of `recipe` that can go into a preset, in acting order.
+/// The tool nodes of `recipe` that can go into a preset, in acting order
+/// (not the retouch nodes, whose spots belong to one photo).
 #[must_use]
 pub fn node_choices(recipe: &Recipe, registry: &ToolRegistry) -> Vec<NodeChoice> {
     let g = &recipe.graph;
@@ -185,6 +186,10 @@ pub fn node_choices(recipe: &Recipe, registry: &ToolRegistry) -> Vec<NodeChoice>
         .filter_map(|id| {
             let node = g.node(id)?;
             let NodeKind::Tool(tool) = &node.kind else { return None };
+            // Heal and clone spots are places in one photo: never in a preset.
+            if tool.as_str() == "retouch" {
+                return None;
+            }
             let found = registry.get(tool);
             let tool_name = found.map_or_else(|| tool.as_str().to_owned(), |t| t.descriptor().name.to_owned());
             let category = found.map(|t| t.descriptor().category);
