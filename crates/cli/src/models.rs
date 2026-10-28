@@ -204,6 +204,7 @@ pub fn list(verify: bool, runtime_line: &str) -> Result<(), BoxError> {
         let optional = if p.optional { ", optional" } else { "" };
         println!("\n{}  {}  [{}, {}{optional}]  {state}", p.id, p.name, p.license, p.size_text());
         println!("  {}", p.purpose);
+        println!("  from {}", p.source);
         if !p.optional && (!missing.is_empty() || !damaged.is_empty()) {
             all_ready = false;
         }

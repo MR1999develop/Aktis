@@ -10,6 +10,8 @@ publish.workspace = true
 platform.workspace = true
 # Only the selection catalog and SHA-256; no ONNX Runtime.
 ai-segment = { path = "../ai-segment", default-features = false }
+# Makes the SCUNet ONNX models from the original weights (pure Rust).
+scunet-onnx.workspace = true
 
 [lints]
 workspace = true

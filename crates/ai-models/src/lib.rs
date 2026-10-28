@@ -35,6 +35,36 @@ pub struct Download {
     pub sha256: Option<String>,
     /// For an archive (`.zip`, `.nupkg`, `.tgz`): the file to take from it.
     pub extract: Option<String>,
+    /// For a file made on this computer from what is downloaded (the
+    /// original weights): how to make it.
+    pub convert: Option<Convert>,
+}
+
+/// How an installed file is made from the downloaded original.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Convert {
+    /// The KAIR SCUNet checkpoint (`.pth`) becomes an ONNX model for tiles of
+    /// `tile` pixels, with [`scunet_onnx::convert`].
+    ScunetOnnx {
+        /// Tile side in pixels.
+        tile: u32,
+        /// SHA-256 of the ONNX file the conversion makes (it is deterministic).
+        sha256: &'static str,
+    },
+}
+
+impl Download {
+    /// SHA-256 of the installed file, when the catalog knows it: the
+    /// download's for a plain file, the conversion's for a converted one,
+    /// none for a file taken from an archive.
+    #[must_use]
+    pub fn installed_sha256(&self) -> Option<&str> {
+        match (&self.convert, &self.extract) {
+            (Some(Convert::ScunetOnnx { sha256, .. }), _) => Some(sha256),
+            (None, None) => self.sha256.as_deref(),
+            (None, Some(_)) => None,
+        }
+    }
 }
 
 /// A set of files that is installed together.
@@ -48,6 +78,10 @@ pub struct Pack {
     pub purpose: &'static str,
     /// Licence (SPDX identifier).
     pub license: &'static str,
+    /// Home of the model or program: its authors' page, where every file
+    /// is downloaded from (or, for the few models the authors publish only
+    /// in another format, where the converted file is listed).
+    pub source: &'static str,
     /// Not needed by any tool, only makes one faster.
     pub optional: bool,
     /// Its files.
@@ -167,9 +201,12 @@ const SCUNET_ID: &str = "scunet";
 const SCUNET_FAST_ID: &str = "scunet-960";
 const SIGLIP2_ID: &str = "siglip2";
 
-/// Where this project publishes the files it generates (the SCUNet models
-/// are converted from the original KAIR weights by `scripts/scunet`).
-const PROJECT_RELEASE: &str = "https://github.com/MR1999develop/RawNodeEditor/releases/download/models-v1";
+/// The SCUNet weights as their authors publish them (KAIR, release v1.0).
+/// The ONNX models are made from this file on the user's computer.
+const SCUNET_WEIGHTS: &str = "https://github.com/cszn/KAIR/releases/download/v1.0/scunet_color_real_psnr.pth";
+const SCUNET_WEIGHTS_BYTES: u64 = 71_982_841;
+const SCUNET_WEIGHTS_SHA256: &str = "fa78899ba2caec9d235a900e91d96c689da71c42029230c2028b00f09f809c2e";
+const SCUNET_HOME: &str = "https://github.com/cszn/SCUNet";
 
 const SIGLIP2_REPO: &str = "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/main";
 
@@ -182,26 +219,18 @@ pub fn catalog() -> Vec<Pack> {
         name: "SCUNet (AI denoise)",
         purpose: "Removes noise; needed by the AI denoise node",
         license: "Apache-2.0",
+        source: SCUNET_HOME,
         optional: false,
-        files: vec![file(
-            "scunet_color_real_448.onnx",
-            format!("{PROJECT_RELEASE}/scunet_color_real_448.onnx"),
-            Some(76_725_198),
-            Some("b39fe6660b7952ad078ddeab9eaa2f593d99b1aa4ea6c929ccd174f1099a9eae"),
-        )],
+        files: vec![scunet_file(448, "b39fe6660b7952ad078ddeab9eaa2f593d99b1aa4ea6c929ccd174f1099a9eae")],
     });
     packs.push(Pack {
         id: SCUNET_FAST_ID,
         name: "SCUNet, large tiles (faster AI denoise on a GPU)",
         purpose: "Optional: the GPU works on 960 px tiles instead of 448",
         license: "Apache-2.0",
+        source: SCUNET_HOME,
         optional: true,
-        files: vec![file(
-            "scunet_color_real_960.onnx",
-            format!("{PROJECT_RELEASE}/scunet_color_real_960.onnx"),
-            Some(80_657_358),
-            Some("9cf5d9ee24ebf1f466fd7d7893a0632529486485cc7622f07a4c648c90b366ae"),
-        )],
+        files: vec![scunet_file(960, "9cf5d9ee24ebf1f466fd7d7893a0632529486485cc7622f07a4c648c90b366ae")],
     });
     for spec in ai_segment::catalog::CATALOG {
         packs.push(Pack {
@@ -214,6 +243,7 @@ pub fn catalog() -> Vec<Pack> {
                 ai_segment::catalog::Task::PersonParts => "Splits a person into hair, skin, clothes and features",
             },
             license: spec.license,
+            source: spec.homepage,
             // The small Segment Anything is an alternative no tool asks for by default.
             optional: spec.id == ai_segment::catalog::SAM21_SMALL.id,
             files: spec.files.iter().map(|f| file(f.name, f.url.to_owned(), Some(f.bytes), Some(f.sha256))).collect(),
@@ -224,6 +254,7 @@ pub fn catalog() -> Vec<Pack> {
         name: "SigLIP 2 (AI keywords)",
         purpose: "Recognises what a photo shows, to suggest keywords",
         license: "Apache-2.0",
+        source: "https://huggingface.co/google/siglip2-base-patch16-224",
         optional: false,
         files: ["onnx/vision_model.onnx", "onnx/text_model.onnx", "tokenizer.json"]
             .into_iter()
@@ -243,7 +274,20 @@ pub fn pack(id: &str) -> Option<Pack> {
 }
 
 fn file(path: &str, url: String, bytes: Option<u64>, sha256: Option<&str>) -> Download {
-    Download { path: path.to_owned(), url, bytes, sha256: sha256.map(str::to_owned), extract: None }
+    Download { path: path.to_owned(), url, bytes, sha256: sha256.map(str::to_owned), extract: None, convert: None }
+}
+
+/// The SCUNet model for `tile` px tiles, made from the KAIR weights.
+fn scunet_file(tile: u32, sha256: &'static str) -> Download {
+    Download {
+        convert: Some(Convert::ScunetOnnx { tile, sha256 }),
+        ..file(
+            &format!("scunet_color_real_{tile}.onnx"),
+            SCUNET_WEIGHTS.to_owned(),
+            Some(SCUNET_WEIGHTS_BYTES),
+            Some(SCUNET_WEIGHTS_SHA256),
+        )
+    }
 }
 
 /// ONNX Runtime for this system: the DirectML build on Windows (any GPU
@@ -257,6 +301,7 @@ fn runtime_pack() -> Pack {
                 bytes: None,
                 sha256: None,
                 extract: Some("runtimes/win-x64/native/onnxruntime.dll".to_owned()),
+                convert: None,
             },
             Download {
                 path: "DirectML.dll".to_owned(),
@@ -264,6 +309,7 @@ fn runtime_pack() -> Pack {
                 bytes: None,
                 sha256: None,
                 extract: Some("bin/x64-win/DirectML.dll".to_owned()),
+                convert: None,
             },
         ],
         platform::Os::Linux => vec![Download {
@@ -274,6 +320,7 @@ fn runtime_pack() -> Pack {
             bytes: Some(8_155_822),
             sha256: Some("3a211fbea252c1e66290658f1b735b772056149f28321e71c308942cdb54b747".to_owned()),
             extract: Some(format!("onnxruntime-linux-x64-{ORT_VERSION}/lib/libonnxruntime.so.{ORT_VERSION}")),
+            convert: None,
         }],
         platform::Os::MacOs => vec![Download {
             path: "libonnxruntime.dylib".to_owned(),
@@ -283,6 +330,7 @@ fn runtime_pack() -> Pack {
             bytes: Some(30_937_282),
             sha256: Some("93787795f47e1eee369182e43ed51b9e5da0878ab0346aecf4258979b8bba989".to_owned()),
             extract: Some(format!("onnxruntime-osx-arm64-{ORT_VERSION}/lib/libonnxruntime.{ORT_VERSION}.dylib")),
+            convert: None,
         }],
     };
     Pack {
@@ -290,6 +338,7 @@ fn runtime_pack() -> Pack {
         name: "ONNX Runtime",
         purpose: "Runs the AI models, on the GPU when it can; needed by every AI tool",
         license: "MIT",
+        source: "https://github.com/microsoft/onnxruntime",
         optional: false,
         files,
     }
@@ -314,11 +363,12 @@ pub fn installed_path(dir: &Path, file: &Download) -> PathBuf {
 }
 
 /// Whether `file` is installed in `dir`: present, and of the right size when
-/// that is known (an interrupted download is not).
+/// that is known (an interrupted download is not; a converted file is
+/// written only once complete).
 #[must_use]
 pub fn is_installed(dir: &Path, file: &Download) -> bool {
     let Ok(meta) = std::fs::metadata(installed_path(dir, file)) else { return false };
-    let size_ok = match (file.extract.is_none(), file.bytes) {
+    let size_ok = match (file.extract.is_none() && file.convert.is_none(), file.bytes) {
         (true, Some(b)) => meta.len() == b,
         _ => meta.len() > 0,
     };
@@ -337,14 +387,22 @@ pub fn missing_files<'a>(pack: &'a Pack, dir: &Path) -> Vec<&'a Download> {
 pub fn damaged_files<'a>(pack: &'a Pack, dir: &Path) -> Vec<&'a Download> {
     pack.files
         .iter()
-        .filter(|f| f.extract.is_none() && is_installed(dir, f))
+        .filter(|f| is_installed(dir, f))
         .filter(|f| {
-            f.sha256.as_ref().is_some_and(|want| {
+            f.installed_sha256().is_some_and(|want| {
                 let got = std::fs::File::open(installed_path(dir, f)).and_then(ai_segment::sha256_hex);
-                !got.is_ok_and(|h| &h == want)
+                !got.is_ok_and(|h| h == want)
             })
         })
         .collect()
+}
+
+/// Where the original downloaded for `file` is kept while (and after) it is
+/// converted, so a second model made from it does not download it again.
+#[must_use]
+pub fn source_path(dir: &Path, file: &Download) -> PathBuf {
+    let name = file.url.rsplit('/').next().unwrap_or("source");
+    dir.join("sources").join(name)
 }
 
 /// The packs among `ids` with files missing in `dir`.
@@ -371,8 +429,10 @@ mod tests {
         for p in &packs {
             assert!(ids.insert(p.id), "duplicate pack {}", p.id);
             assert!(!p.files.is_empty(), "{}", p.id);
+            assert!(p.source.starts_with("https://"), "{}", p.id);
             for f in &p.files {
                 assert!(f.url.starts_with("https://"), "{}", f.url);
+                assert!(!f.url.contains("MR1999develop"), "{} is not downloaded from its authors", f.path);
                 assert!(!f.path.is_empty() && !f.path.starts_with('/') && !f.path.contains('\\'), "{}", f.path);
                 if let Some(h) = &f.sha256 {
                     assert_eq!(h.len(), 64, "{}", f.path);
@@ -398,7 +458,7 @@ mod tests {
         assert_eq!(megabytes(76_725_198), "77 MB");
         assert_eq!(megabytes(1_200_000_000), "1.2 GB");
         let scunet = pack(SCUNET_ID).expect("scunet");
-        assert_eq!(scunet.size_text(), "77 MB");
+        assert_eq!(scunet.size_text(), "72 MB");
         assert_eq!(pack(SIGLIP2_ID).expect("siglip2").size_text(), "size unknown");
     }
 
@@ -408,8 +468,15 @@ mod tests {
         let scunet = pack(SCUNET_ID).expect("scunet");
         assert_eq!(missing(&[SCUNET_ID], &dir).len(), 1);
         let path = installed_path(&dir, &scunet.files[0]);
-        std::fs::write(&path, b"half a download").expect("write");
-        assert_eq!(missing_files(&scunet, &dir).len(), 1);
+        std::fs::write(&path, b"").expect("write");
+        assert_eq!(missing_files(&scunet, &dir).len(), 1, "an empty converted file is not installed");
+        std::fs::write(&path, b"not the model").expect("write");
+        assert!(missing_files(&scunet, &dir).is_empty());
+        assert_eq!(
+            damaged_files(&scunet, &dir).len(),
+            1,
+            "a converted file is checked against the conversion's checksum"
+        );
         let siglip = pack(SIGLIP2_ID).expect("siglip2");
         let tokenizer = siglip.files.iter().find(|f| f.path.ends_with("tokenizer.json")).expect("tokenizer");
         let tok_path = installed_path(&dir, tokenizer);
@@ -418,5 +485,17 @@ mod tests {
         assert!(is_installed(&dir, tokenizer), "unknown size: any non-empty file counts");
         assert_eq!(missing_files(&siglip, &dir).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn both_scunet_models_are_made_from_one_download_of_the_original() {
+        let (a, b) = (pack(SCUNET_ID).expect("448"), pack(SCUNET_FAST_ID).expect("960"));
+        let (a, b) = (&a.files[0], &b.files[0]);
+        assert_eq!(a.url, b.url);
+        assert!(a.url.starts_with("https://github.com/cszn/KAIR/"));
+        let dir = Path::new("m");
+        assert_eq!(source_path(dir, a), source_path(dir, b));
+        assert_eq!(source_path(dir, a), dir.join("sources").join("scunet_color_real_psnr.pth"));
+        assert_ne!(a.installed_sha256(), a.sha256.as_deref());
     }
 }

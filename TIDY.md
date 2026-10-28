@@ -62,10 +62,14 @@
   option of `get-ai.bat`. The `ai-denoise` and `tagging-model` CI jobs still
   expect a runtime downloaded at build time: give them the ORT download step
   of the `ai-masks` job.
-- `ai-models`: the SCUNet files are served from the release `models-v1` of
-  this repository; create it and upload `scunet_color_real_448.onnx` and
-  `scunet_color_real_960.onnx` (made by `scripts/scunet`, checksums in the
-  catalog). The NuGet ONNX Runtime packages and SigLIP 2 have no pinned size
+- `ai-models`: every file comes from its authors. SCUNet is downloaded as
+  the KAIR checkpoint (`scunet_color_real_psnr.pth`, 72 MB) and made into
+  the ONNX models on the user's computer by `scunet-onnx`; the checkpoint is
+  kept in `models/sources` so the 960 px model needs no second download
+  (delete it once both models are made, if disk space matters). SAM 2.1 and
+  the MediaPipe person-parts model have no ONNX from their authors (only
+  PyTorch and TFLite): they still come from third-party conversions, which
+  the models window says by pointing at the authors' page. The NuGet ONNX Runtime packages and SigLIP 2 have no pinned size
   or SHA-256 yet: pin them once downloaded.
 - Downloads use the system's `curl` and `tar` (Windows 10 and later have
   both); an in-process HTTP client would avoid depending on them.

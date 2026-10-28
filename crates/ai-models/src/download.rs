@@ -13,7 +13,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::{Download, Pack, installed_path, missing_files};
+use crate::{Convert, Download, Pack, installed_path, missing_files, source_path};
 
 /// How a download is going.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +69,13 @@ pub enum DownloadError {
     Cancelled,
     /// Writing to the models folder failed.
     Io(String),
+    /// The downloaded original could not be turned into the model.
+    Convert {
+        /// The file being made.
+        file: String,
+        /// What went wrong.
+        message: String,
+    },
 }
 
 impl fmt::Display for DownloadError {
@@ -80,6 +87,7 @@ impl fmt::Display for DownloadError {
             Self::Archive { file, message } => write!(f, "{file} could not be taken from its archive: {message}"),
             Self::Cancelled => f.write_str("download cancelled"),
             Self::Io(m) => write!(f, "cannot write to the models folder: {m}"),
+            Self::Convert { file, message } => write!(f, "{file} could not be made from the original: {message}"),
         }
     }
 }
@@ -131,6 +139,9 @@ fn install(
     let target = installed_path(dir, file);
     let folder = target.parent().map_or_else(|| dir.to_path_buf(), Path::to_path_buf);
     fs::create_dir_all(&folder).map_err(io)?;
+    if let Some(convert) = &file.convert {
+        return install_converted(file, convert, dir, &target, on_bytes, cancel);
+    }
     let part = with_suffix(&target, ".part");
     fetch(&file.url, &part, on_bytes, cancel)?;
 
@@ -149,6 +160,54 @@ fn install(
             result
         }
     }
+}
+
+/// Downloads the original (unless a checked copy is already kept), makes
+/// the model from it, checks the result and puts it in place.
+fn install_converted(
+    file: &Download,
+    convert: &Convert,
+    dir: &Path,
+    target: &Path,
+    on_bytes: &mut dyn FnMut(u64),
+    cancel: &AtomicBool,
+) -> Result<(), DownloadError> {
+    let source = source_path(dir, file);
+    if check(file, &source).is_err() {
+        let folder = source.parent().map_or_else(|| dir.to_path_buf(), Path::to_path_buf);
+        fs::create_dir_all(&folder).map_err(io)?;
+        let part = with_suffix(&source, ".part");
+        fetch(&file.url, &part, on_bytes, cancel)?;
+        if let Err(e) = check(file, &part) {
+            let _ = fs::remove_file(&part);
+            return Err(e);
+        }
+        let _ = fs::remove_file(&source);
+        fs::rename(&part, &source).map_err(io)?;
+    } else {
+        on_bytes(file.bytes.unwrap_or(0));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(DownloadError::Cancelled);
+    }
+    let original = fs::read(&source).map_err(io)?;
+    let made = match convert {
+        Convert::ScunetOnnx { tile, .. } => scunet_onnx::convert(&original, *tile),
+    }
+    .map_err(|e| DownloadError::Convert { file: file.path.clone(), message: e.to_string() })?;
+    drop(original);
+    if let Some(want) = file.installed_sha256()
+        && ai_segment::sha256_hex(made.as_slice()).map_err(io)? != want
+    {
+        return Err(DownloadError::Convert {
+            file: file.path.clone(),
+            message: "the result is not the expected model".to_owned(),
+        });
+    }
+    let part = with_suffix(target, ".part");
+    fs::write(&part, &made).map_err(io)?;
+    let _ = fs::remove_file(target);
+    fs::rename(&part, target).map_err(io)
 }
 
 /// `path` with `suffix` appended to its file name.
@@ -304,6 +363,7 @@ mod tests {
             // SHA-256 of "abc" (FIPS 180-2 test vector).
             sha256: Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_owned()),
             extract: None,
+            convert: None,
         };
         let cancel = AtomicBool::new(false);
         let mut seen = Vec::new();

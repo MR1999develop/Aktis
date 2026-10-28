@@ -64,7 +64,7 @@ cargo fmt --all --check
 | `crates/tagging-onnx` | SigLIP 2 image/text encoders on ONNX Runtime (local, offline). |
 | `tools/exposure` | First tool: exposure in stops, CPU reference + WGSL kernel. |
 | `tools/denoise-ai` | AI denoise: the SCUNet network on ONNX Runtime (TensorRT for RTX, DirectML, CPU), ported from an earlier denoiser. A host tool: runs outside the WGSL kernels. |
-| `scripts/scunet` | Python + NumPy scripts that make the SCUNet ONNX models from the original weights. |
+| `scripts/scunet` | Python + NumPy reference for `scunet-onnx`, which makes the SCUNet ONNX models from the original weights. |
 
 Pixel data inside the editor are linear, scene-referred `f32` in Rec.2020;
 quantisation happens only on output.
@@ -133,9 +133,10 @@ is instant. Place it after the exposure: the network judges the noise at the
 final brightness.
 
 - **Models** are not in the repository: the editor downloads
+  the original SCUNet weights from their authors (KAIR, 72 MB) and makes
   `scunet_color_real_448.onnx` (and on request the faster 960 px one) from
-  the project's `models-v1` release, made with `scripts/scunet` (see its
-  README); an earlier denoiser's are used too. They are looked for in
+  them on this computer, with the `scunet-onnx` crate (`scripts/scunet` is
+  the Python reference it is tested against); an earlier denoiser's are used too. They are looked for in
   `RNE_DENOISE_MODELS`, a `models` folder next to the program (or up to
   three folders above it), then the editor's models folder
   (`%LOCALAPPDATA%\raw-node-editor\models`) and an earlier denoiser's

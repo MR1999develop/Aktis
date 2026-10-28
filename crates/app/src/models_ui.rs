@@ -229,6 +229,8 @@ impl ModelsUi {
                         ui.vertical(|ui| {
                             pack_line(ui, &t, p);
                             ui.label(RichText::new(p.purpose).size(FONT[0]).color(t.text_weak));
+                            ui.hyperlink_to(RichText::new(source_text(p.source)).size(FONT[0]), p.source)
+                                .on_hover_text(p.source);
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if installed {
@@ -326,7 +328,13 @@ impl ModelsUi {
     }
 }
 
-/// "SCUNet (AI denoise) · 77 MB · Apache-2.0".
+/// "From github.com/cszn/SCUNet": where a pack comes from, without the scheme.
+fn source_text(url: &str) -> String {
+    let bare = url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
+    format!("From {bare}")
+}
+
+/// "SCUNet (AI denoise) · 72 MB · Apache-2.0".
 fn pack_line(ui: &mut egui::Ui, t: &Tokens, p: &Pack) {
     let optional = if p.optional { " \u{b7} optional" } else { "" };
     ui.horizontal_wrapped(|ui| {
