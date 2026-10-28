@@ -17,11 +17,14 @@
 //! - [`variants`]: saving edits in the catalog and reopening them, per variant;
 //! - [`history_order`]: History-tab gestures as step orders;
 //! - [`histogram`]: levels of the displayed image;
-//! - [`retouch`]: where the spots of the Heal and Clone tools go.
+//! - [`retouch`]: where the spots of the Heal and Clone tools go;
+//! - [`adjust`] and [`color_wheel`]: what the adjustment panels' handles,
+//!   pickers and colour wheels set.
 //!
 //! The `app` crate draws these with egui and turns gestures into calls here.
 
 pub mod adjust;
+pub mod color_wheel;
 pub mod crop;
 pub mod document;
 pub mod export_job;

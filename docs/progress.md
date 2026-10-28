@@ -273,6 +273,14 @@ tested offline.
   the window from the shared raster cache.
 - Edit ▸ Preferences…: theme, viewer background (interface, white as in
   Capture One, greys, black), export folder.
+- Panels like Capture One's for the colour and detail nodes
+  (`app::color_ui`): Colour editor (Basic chips; Advanced and Skin Tone
+  ranges as wedges on a hue wheel, dragged or picked on the photo; skin
+  uniformity), Colour balance (Master, 3-Way and per-band wheels with a
+  draggable puck and lightness/saturation arcs), Black & white (colour
+  sensitivity, split tones), Clarity, Dehaze (shadow tone Auto or picked)
+  and Vignetting. Wheel geometry in `editor::color_wheel`; new pickers
+  `PickKind::ColorRange` and `PickKind::ShadowTone`.
 ## Heal and Clone (spot retouching): written, to be compiled and checked on Windows
 
 - `tool-adjust::retouch`: a graph node holding up to 16 spots as plain

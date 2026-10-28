@@ -28,6 +28,8 @@ pub const TONE_RGB: [&str; 3] = ["tone_red", "tone_green", "tone_blue"];
 /// neutral (any colour cast the haze left in them removed), or a colour
 /// chosen by the user (typed or picked on the photo).
 pub const SHADOW_TONES: [&str; 2] = ["Auto", "Custom"];
+/// Index of Custom in [`SHADOW_TONES`].
+pub const CUSTOM_TONE: u32 = 1;
 
 static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     id: ToolId::new("dehaze").expect("constant id is valid"),
@@ -143,7 +145,7 @@ impl Tool for Dehaze {
             }
         }
         let tone = match params.choice(SHADOW_TONE) {
-            1 => Some(TONE_RGB.map(|id| params.float(id))),
+            CUSTOM_TONE => Some(TONE_RGB.map(|id| params.float(id))),
             _ => None,
         };
         shadow_tone(image, tone, amount / 100.0);

@@ -24,6 +24,8 @@ pub mod retouch;
 pub mod vignetting;
 pub mod white_balance;
 
+pub use common::hue_chroma;
+
 use std::sync::Arc;
 
 use tool_api::Tool;

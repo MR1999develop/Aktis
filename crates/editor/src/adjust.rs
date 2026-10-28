@@ -1,11 +1,11 @@
-//! The editing logic behind the white balance, levels and curve panels,
-//! kept apart from the drawing so it is tested without a window: which
-//! parameters a mode, a picked colour, a moved handle or a dragged curve
-//! point set.
+//! The editing logic behind the white balance, levels, curve, colour
+//! editor and dehaze panels, kept apart from the drawing so it is tested
+//! without a window: which parameters a mode, a picked colour, a moved
+//! handle or a dragged curve point set.
 
 use core_model::{NodeId, ParamId, ParamValue};
 use tool_adjust::curve::{self, MAX_POINTS, Spline};
-use tool_adjust::{levels, white_balance};
+use tool_adjust::{color_editor, dehaze, levels, white_balance};
 use tool_api::{Params, ResolvedParams, ToolRegistry};
 
 use crate::Document;
@@ -21,6 +21,12 @@ pub enum PickKind {
     LevelsWhite,
     /// Curve: a point is added where the clicked colour sits on the curve.
     CurvePoint,
+    /// Colour editor: a range (the Advanced range [`Pick::channel`], or
+    /// the skin tone range when it is [`color_editor::ADVANCED`]) is
+    /// centred on the clicked colour's hue and turned on.
+    ColorRange,
+    /// Dehaze: the shadow tone becomes Custom, with the clicked colour.
+    ShadowTone,
 }
 
 /// A picker waiting for a click in the viewer.
@@ -31,7 +37,8 @@ pub struct Pick {
     /// What it sets.
     pub kind: PickKind,
     /// The levels set or curve it edits (an index into
-    /// [`levels::CHANNELS`] or [`curve::CURVES`]).
+    /// [`levels::CHANNELS`] or [`curve::CURVES`]), or the colour editor's
+    /// range (see [`PickKind::ColorRange`]); 0 for the other pickers.
     pub channel: usize,
 }
 
@@ -152,8 +159,42 @@ pub fn pick_values(
             let (pts, _) = insert_point(&pts, [x, y])?;
             Some(curve_values(c, &pts))
         }
+        PickKind::ColorRange => {
+            let (hue, chroma) = tool_adjust::hue_chroma(rgb);
+            if chroma < MIN_RANGE_CHROMA {
+                return None;
+            }
+            let id = |v: &str| {
+                if pick.channel >= color_editor::ADVANCED {
+                    color_editor::skin_id(v)
+                } else {
+                    color_editor::advanced_id(pick.channel, v)
+                }
+            };
+            Some(vec![
+                (pid(&id("on")), ParamValue::Bool(true)),
+                (pid(&id("center")), ParamValue::Float(hue.round().rem_euclid(360.0))),
+            ])
+        }
+        PickKind::ShadowTone => {
+            let max = rgb[0].max(rgb[1]).max(rgb[2]);
+            if max <= 1e-6 {
+                return None;
+            }
+            let mut values = vec![(pid(dehaze::SHADOW_TONE), ParamValue::Choice(dehaze::CUSTOM_TONE))];
+            for (id, v) in dehaze::TONE_RGB.iter().zip(rgb) {
+                // Its brightness is ignored: the strongest channel at 1, to the slider's step.
+                values.push((pid(id), ParamValue::Float(((v / max).clamp(0.0, 1.0) * 100.0).round() / 100.0)));
+            }
+            Some(values)
+        }
     }
 }
+
+/// Least chroma (0–1, as [`tool_adjust::hue_chroma`] measures it) a picked
+/// colour needs to centre a colour range on its hue: the hue of a near grey
+/// means nothing.
+pub const MIN_RANGE_CHROMA: f32 = 0.05;
 
 /// The parameters storing `points` as curve `c`.
 #[must_use]
@@ -335,6 +376,44 @@ mod tests {
         assert_eq!(v[0], (pid("mode"), ParamValue::Choice(white_balance::Mode::Custom.index())));
         let ParamValue::Float(k) = v[1].1 else { panic!() };
         assert!(k < 5500.0, "{k}");
+    }
+
+    #[test]
+    fn colour_pickers_centre_a_range_and_set_the_shadow_tone() {
+        let (mut doc, reg) = doc();
+        let ce = add(&mut doc, &reg, "color_editor");
+        let pick = |channel| Pick { node: ce, kind: PickKind::ColorRange, channel };
+        // A green: hue 120°.
+        let v = pick_values(&doc, &reg, pick(1), [0.1, 0.6, 0.1]).unwrap();
+        assert_eq!(v, vec![(pid("adv2_on"), ParamValue::Bool(true)), (pid("adv2_center"), ParamValue::Float(120.0))]);
+        // A skin colour sets the skin tone range.
+        let v = pick_values(&doc, &reg, pick(color_editor::ADVANCED), [0.6, 0.3, 0.2]).unwrap();
+        assert_eq!(v[0], (pid("skin_on"), ParamValue::Bool(true)));
+        let ParamValue::Float(h) = v[1].1 else { panic!() };
+        assert!((h - 15.0).abs() < 1e-3, "{h}");
+        // Near red on the other side of 0° wraps into 0–360.
+        let v = pick_values(&doc, &reg, pick(0), [0.6, 0.1, 0.104]).unwrap();
+        assert_eq!(v[1], (pid("adv1_center"), ParamValue::Float(0.0)));
+        let v = pick_values(&doc, &reg, pick(0), [0.6, 0.1, 0.15]).unwrap();
+        assert_eq!(v[1], (pid("adv1_center"), ParamValue::Float(354.0)));
+        assert!(pick_values(&doc, &reg, pick(0), [0.3, 0.3, 0.3]).is_none(), "a grey has no hue");
+        // The values are valid for the tool: the document takes them.
+        doc.set_params(&reg, ce, pick_values(&doc, &reg, pick(2), [0.1, 0.2, 0.6]).unwrap(), None).unwrap();
+
+        let dh = add(&mut doc, &reg, "dehaze");
+        let tone = Pick { node: dh, kind: PickKind::ShadowTone, channel: 0 };
+        let v = pick_values(&doc, &reg, tone, [0.1, 0.2, 0.4]).unwrap();
+        assert_eq!(
+            v,
+            vec![
+                (pid("shadow_tone"), ParamValue::Choice(1)),
+                (pid("tone_red"), ParamValue::Float(0.25)),
+                (pid("tone_green"), ParamValue::Float(0.5)),
+                (pid("tone_blue"), ParamValue::Float(1.0)),
+            ]
+        );
+        assert!(pick_values(&doc, &reg, tone, [0.0; 3]).is_none(), "black has no colour");
+        doc.set_params(&reg, dh, v, None).unwrap();
     }
 
     #[test]
