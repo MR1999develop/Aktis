@@ -1,5 +1,7 @@
-//! The histogram shown above the tool settings: how many pixels of the
-//! displayed image fall at each 8-bit level, per channel and for luminance.
+//! The scopes shown above the tool settings: the histogram (how many
+//! pixels of the displayed image fall at each 8-bit level, per channel and
+//! for luminance) and the waveform and parade (the same counted per column
+//! of the image, so a level can be traced back to where it is).
 
 /// Counts per level (0–255) for red, green, blue and luminance.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,11 +14,91 @@ pub struct Histogram {
     pub blue: [u32; 256],
     /// Luminance (Rec. 709 weights on the encoded values).
     pub luma: [u32; 256],
+    /// Levels per column of the image; empty when not computed.
+    pub waveform: Waveform,
 }
 
 impl Default for Histogram {
     fn default() -> Self {
-        Self { red: [0; 256], green: [0; 256], blue: [0; 256], luma: [0; 256] }
+        Self { red: [0; 256], green: [0; 256], blue: [0; 256], luma: [0; 256], waveform: Waveform::default() }
+    }
+}
+
+/// Columns of the waveform and of each parade channel.
+pub const WAVEFORM_COLUMNS: usize = 256;
+/// Levels (rows) of the waveform.
+pub const WAVEFORM_LEVELS: usize = 128;
+
+/// Counts per (level, column): for each of [`WAVEFORM_COLUMNS`] vertical
+/// strips of the image, how many pixels fall at each of
+/// [`WAVEFORM_LEVELS`] levels; luminance for the waveform, red, green and
+/// blue for the parade. Index `level * WAVEFORM_COLUMNS + column`, level 0
+/// is black.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Waveform {
+    /// Luminance.
+    pub luma: Vec<u32>,
+    /// Red.
+    pub red: Vec<u32>,
+    /// Green.
+    pub green: Vec<u32>,
+    /// Blue.
+    pub blue: Vec<u32>,
+}
+
+impl Waveform {
+    /// Counts packed `R G B` pixels of an image `width` pixels wide.
+    #[must_use]
+    pub fn of_rgb8(rgb: &[u8], width: usize) -> Self {
+        let n = WAVEFORM_COLUMNS * WAVEFORM_LEVELS;
+        let mut w = Self { luma: vec![0; n], red: vec![0; n], green: vec![0; n], blue: vec![0; n] };
+        if width == 0 {
+            return w;
+        }
+        for (i, p) in rgb.chunks_exact(3).enumerate() {
+            let column = (i % width) * WAVEFORM_COLUMNS / width;
+            let at = |v: u32| (v as usize * WAVEFORM_LEVELS / 256) * WAVEFORM_COLUMNS + column;
+            let (r, g, b) = (u32::from(p[0]), u32::from(p[1]), u32::from(p[2]));
+            w.red[at(r)] += 1;
+            w.green[at(g)] += 1;
+            w.blue[at(b)] += 1;
+            w.luma[at(((2126 * r + 7152 * g + 722 * b + 5000) / 10_000).min(255))] += 1;
+        }
+        w
+    }
+
+    /// Whether nothing was counted.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.luma.is_empty()
+    }
+
+    /// Brightness (0–1) of each cell of one plot, `columns` wide and
+    /// [`WAVEFORM_LEVELS`] high, top row (white) first: `counts` scaled by
+    /// [`Self::scale`] with a square root, so sparse levels still show.
+    #[must_use]
+    pub fn intensities(&self, counts: &[u32]) -> Vec<f32> {
+        #[allow(clippy::cast_precision_loss)] // counts, for drawing
+        let scale = self.scale() as f32;
+        let mut out = Vec::with_capacity(counts.len());
+        for level in (0..WAVEFORM_LEVELS).rev() {
+            let row = &counts[level * WAVEFORM_COLUMNS..(level + 1) * WAVEFORM_COLUMNS];
+            #[allow(clippy::cast_precision_loss)] // counts, for drawing
+            out.extend(row.iter().map(|&c| (c as f32 / scale).min(1.0).sqrt()));
+        }
+        out
+    }
+
+    /// The count most cells stay below (the 99th percentile of the non-empty
+    /// cells), for scaling the brightness of the plot.
+    #[must_use]
+    pub fn scale(&self) -> u32 {
+        let mut counts: Vec<u32> = self.luma.iter().copied().filter(|&c| c > 0).collect();
+        if counts.is_empty() {
+            return 1;
+        }
+        counts.sort_unstable();
+        counts[(counts.len() - 1) * 99 / 100].max(1)
     }
 }
 
@@ -35,6 +117,13 @@ impl Histogram {
             h.luma[usize::try_from(l.min(255)).unwrap_or(255)] += 1;
         }
         h
+    }
+
+    /// Counts packed `R G B` pixels of an image `width` pixels wide,
+    /// waveform and parade included.
+    #[must_use]
+    pub fn of_image(rgb: &[u8], width: usize) -> Self {
+        Self { waveform: Waveform::of_rgb8(rgb, width), ..Self::of_rgb8(rgb) }
     }
 
     /// Number of pixels counted.
@@ -75,6 +164,37 @@ impl Histogram {
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_waveform_counts_each_column_at_its_level() {
+        // A 4 × 2 image: black on the left half, white on the right; one red pixel.
+        let mut rgb = Vec::new();
+        for y in 0..2 {
+            for x in 0..4 {
+                let v = if x < 2 { 0 } else { 255 };
+                if (x, y) == (0, 1) {
+                    rgb.extend([255, 0, 0]);
+                } else {
+                    rgb.extend([v, v, v]);
+                }
+            }
+        }
+        let h = Histogram::of_image(&rgb, 4);
+        let w = &h.waveform;
+        let top = WAVEFORM_LEVELS - 1;
+        // Column 0 of the image is in waveform column 0, column 3 in the last quarter.
+        assert_eq!(w.luma[0], 1, "one black pixel in the first column");
+        assert_eq!(w.luma[top * WAVEFORM_COLUMNS + 3 * WAVEFORM_COLUMNS / 4], 2, "two white pixels");
+        assert_eq!(w.red[top * WAVEFORM_COLUMNS], 1, "the red pixel is at the top of the red parade");
+        assert_eq!(w.green[0], 2);
+        assert_eq!(w.luma.iter().map(|&c| u64::from(c)).sum::<u64>(), 8);
+        assert!(w.scale() >= 1);
+        assert!(Histogram::of_rgb8(&rgb).waveform.is_empty());
+        let cells = w.intensities(&w.luma);
+        assert_eq!(cells.len(), WAVEFORM_COLUMNS * WAVEFORM_LEVELS);
+        assert!(cells[3 * WAVEFORM_COLUMNS / 4] > 0.5, "white is in the top row");
+        assert!(cells[(WAVEFORM_LEVELS - 1) * WAVEFORM_COLUMNS] > 0.5, "black is in the bottom row");
+    }
 
     #[test]
     fn levels_are_counted_per_channel_and_for_luminance() {

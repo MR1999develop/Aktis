@@ -455,7 +455,7 @@ fn render_for_screen(engine: &Engine, req: &RenderRequest) -> Event {
         Ok(image) => Event::Rendered {
             generation: req.generation,
             quality: req.quality,
-            histogram: Box::new(Histogram::of_rgb8(&image.pixels)),
+            histogram: Box::new(Histogram::of_image(&image.pixels, image.width as usize)),
             timing: RenderTiming { render: rendered_at - started, display: rendered_at.elapsed() },
             image,
             backend: rendered.backend,

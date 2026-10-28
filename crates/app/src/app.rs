@@ -28,11 +28,12 @@ use engine::{Backend, EngineChoice};
 use tool_api::ToolRegistry;
 
 use crate::actions::Command;
-use crate::graph_ui::{self, GraphAction, GraphUi};
+use crate::graph_ui::{GraphAction, GraphUi};
 use crate::history_ui::{LeftTab, TabAction, Tabs};
 use crate::inspector::{self, Drag, UiEdit};
 use crate::library_ui::{Library, LibraryAction, TaggingProgress};
 use crate::models_ui::ModelsUi;
+use crate::scopes::{ScopeKind, Scopes};
 use crate::settings::{STORAGE_KEY, Settings, ThemeChoice};
 use crate::tagging_job::{Progress, TaggingJob};
 use crate::theme::{
@@ -136,6 +137,8 @@ pub struct EditorApp {
     probe: Option<[f32; 3]>,
     /// Levels of the image on screen.
     histogram: Option<Box<Histogram>>,
+    /// The waveform or parade texture.
+    scopes: Scopes,
     /// "AI-tag this folder", while it runs.
     tagging: Option<TaggingJob>,
     /// Time, kind and size of the last render shown.
@@ -205,6 +208,7 @@ impl EditorApp {
             pick: None,
             probe: None,
             histogram: None,
+            scopes: Scopes::default(),
             tagging: None,
             last_render: None,
         };
@@ -373,6 +377,7 @@ impl EditorApp {
                     }
                     self.last_render = Some((timing, quality, [image.width, image.height]));
                     self.histogram = Some(histogram);
+                    self.scopes.changed();
                     let size = [image.width as usize, image.height as usize];
                     let color = egui::ColorImage::from_rgb(size, &image.pixels);
                     let options = TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
@@ -1145,11 +1150,11 @@ impl EditorApp {
         );
     }
 
-    /// The histogram above the settings of the selected node.
-    fn right_panel(&self, ui: &mut egui::Ui, edits: &mut Vec<UiEdit>) {
+    /// The histogram (or waveform, or parade) above the settings of the
+    /// selected node; returns the scope chosen with its tabs.
+    fn right_panel(&self, ui: &mut egui::Ui, edits: &mut Vec<UiEdit>) -> ScopeKind {
         let t = Tokens::of(ui.ctx().theme());
-        graph_ui::section_title(ui, "Histogram");
-        graph_ui::histogram(ui, self.histogram.as_deref(), HISTOGRAM_HEIGHT);
+        let scope = self.scopes.show(ui, self.settings.scope, self.histogram.as_deref(), HISTOGRAM_HEIGHT);
         ui.add_space(SPACE[1]);
         ui.separator();
         egui::ScrollArea::vertical().id_salt("node-settings").auto_shrink([false, false]).show(ui, |ui| {
@@ -1178,6 +1183,7 @@ impl EditorApp {
                 }
             }
         });
+        scope
     }
 
     /// The photo, with the node graph under it when a photo is open.
@@ -1332,12 +1338,17 @@ impl eframe::App for EditorApp {
             .size_range(LEFT_WIDTH[1]..=LEFT_WIDTH[2])
             .frame(Frame::NONE.fill(t.bg))
             .show(ui, |ui| self.left_panel(ui, &mut library, &mut tabs));
-        egui::Panel::right("inspector")
+        let scope = egui::Panel::right("inspector")
             .resizable(true)
             .default_size(INSPECTOR_WIDTH[0])
             .size_range(INSPECTOR_WIDTH[1]..=INSPECTOR_WIDTH[2])
             .frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(10, 4)))
-            .show(ui, |ui| self.right_panel(ui, &mut edits));
+            .show(ui, |ui| self.right_panel(ui, &mut edits))
+            .inner;
+        if scope != self.settings.scope {
+            self.settings.scope = scope;
+        }
+        self.scopes.update(&ctx, self.settings.scope, self.histogram.as_deref());
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(t.canvas))
             .show(ui, |ui| self.center(ui, &mut commands, &mut library));

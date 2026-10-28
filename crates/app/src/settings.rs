@@ -41,6 +41,8 @@ pub struct Settings {
     pub recent: Vec<PathBuf>,
     /// Folder shown in the filmstrip, opened again at start-up.
     pub library_dir: Option<PathBuf>,
+    /// Scope above the node settings: histogram, waveform or parade.
+    pub scope: crate::scopes::ScopeKind,
 }
 
 impl Settings {
