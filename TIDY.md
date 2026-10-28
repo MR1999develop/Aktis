@@ -92,9 +92,8 @@
   GPU kernel would avoid the read-back when the GPU renders. A very large
   spot copies two patches of its size (about 220 MB at the largest radius
   on a 24 MP image).
-- Retouch: the undo label of a spot lists its parameters ("Change spot0
-  kind, spot0 x, …"); give `Edit::SetParams` a label from the tool (for
-  example "Add heal spot", "Move spot").
+- Retouch: the undo label of a spot is "Change spot 4"; "Add heal spot"
+  or "Move spot" would need a label from the tool in `Edit::SetParams`.
 - Retouch: the automatic source is searched in the developed preview, not
   in the image entering the retouch node (earlier spots and tools are not
   seen), and only the selected retouch node's spots are drawn.

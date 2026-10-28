@@ -128,6 +128,33 @@ pub enum Edit {
     },
 }
 
+/// "Change …" for several parameters at once: the parameters of one item
+/// of a list (`spot3_x`, `spot3_kind`) are named by the item ("Change
+/// spot 4"); otherwise the first names, then how many more.
+fn params_label<'a>(ids: impl Iterator<Item = &'a str>) -> String {
+    /// `spot3_x` → ("spot", 3); `None` when the id is not of that shape.
+    fn item(id: &str) -> Option<(&str, u32)> {
+        let (head, _) = id.split_once('_')?;
+        let digits = head.find(|c: char| c.is_ascii_digit())?;
+        let (word, number) = head.split_at(digits);
+        (!word.is_empty()).then_some(())?;
+        Some((word, number.parse().ok()?))
+    }
+    let ids: Vec<&str> = ids.collect();
+    let items: Vec<Option<(&str, u32)>> = ids.iter().map(|id| item(id)).collect();
+    if let Some(Some(first)) = items.first()
+        && items.iter().all(|i| i.as_ref() == Some(first))
+    {
+        return format!("Change {} {}", first.0, first.1.saturating_add(1));
+    }
+    let names: Vec<String> = ids.iter().map(|id| id.replace('_', " ")).collect();
+    match names.len() {
+        0 => "Change settings".to_owned(),
+        1..=3 => format!("Change {}", names.join(", ")),
+        n => format!("Change {} and {} more", names[..2].join(", "), n - 2),
+    }
+}
+
 impl Edit {
     /// Text for "Undo …" / "Redo …", sentence case.
     #[must_use]
@@ -135,10 +162,7 @@ impl Edit {
         match self {
             Self::SetParam { param, .. } => format!("Change {}", param.as_str().replace('_', " ")),
             Self::ResetParam { param, .. } => format!("Reset {}", param.as_str().replace('_', " ")),
-            Self::SetParams { values, .. } => {
-                let names: Vec<String> = values.iter().map(|(p, _)| p.as_str().replace('_', " ")).collect();
-                format!("Change {}", names.join(", "))
-            }
+            Self::SetParams { values, .. } => params_label(values.iter().map(|(p, _)| p.as_str())),
             Self::InsertSerial { .. } => "Add serial node".to_owned(),
             Self::RemoveNode { .. } => "Remove node".to_owned(),
             Self::Connect(_) => "Connect nodes".to_owned(),
@@ -1204,6 +1228,16 @@ fn same_param(a: &Edit, b: &Edit) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn several_values_are_named_by_their_item_or_counted() {
+        let ids = |v: &[&'static str]| params_label(v.iter().copied());
+        assert_eq!(ids(&["spot3_x", "spot3_y", "spot3_kind"]), "Change spot 4");
+        assert_eq!(ids(&["kelvin", "tint"]), "Change kelvin, tint");
+        assert_eq!(ids(&["spot0_x", "spot1_x"]), "Change spot0 x, spot1 x");
+        assert_eq!(ids(&["a", "b", "c", "d", "e"]), "Change a, b and 3 more");
+        assert_eq!(ids(&[]), "Change settings");
+    }
 
     #[test]
     fn numbers_in_the_history_have_a_sign_and_no_minus_zero() {
