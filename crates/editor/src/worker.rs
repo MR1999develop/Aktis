@@ -25,6 +25,7 @@ use engine::{Backend, Engine, EngineChoice, Rgb8Image};
 use tool_api::ToolRegistry;
 
 use crate::document::{DevelopedImage, Opened, RawData};
+use crate::export_job::{ExportHandle, ExportJob, ExportSummary};
 use crate::histogram::Histogram;
 use crate::library::{FolderListing, list_folder};
 
@@ -34,9 +35,6 @@ pub const PREVIEW_SIDE: u32 = 2560;
 /// Longest side of the draft copy rendered while a slider is dragged: about
 /// the size of the viewer on a full-HD screen, a quarter of the preview's pixels.
 pub const DRAFT_SIDE: u32 = 1280;
-
-/// JPEG quality of exports.
-pub const EXPORT_QUALITY: u8 = 92;
 
 /// Longer side of filmstrip thumbnails (twice the card width, for sharp HiDPI screens).
 pub const THUMBNAIL_SIDE: u32 = 320;
@@ -129,11 +127,17 @@ pub enum Event {
         /// Message for the user.
         message: String,
     },
-    /// An export finished (or failed).
-    Exported {
-        /// The file written, or a message for the user.
-        result: Result<PathBuf, String>,
+    /// An export moved on to its next photo.
+    ExportProgress {
+        /// Photos finished so far.
+        done: usize,
+        /// Photos in the export.
+        total: usize,
+        /// File name of the photo now being exported.
+        current: String,
     },
+    /// An export ended: what was written, what failed, whether it was stopped.
+    ExportFinished(ExportSummary),
     /// A folder was listed for the Explorer.
     FolderListed {
         /// The folder.
@@ -342,24 +346,30 @@ impl Worker {
         self.queue.wake.notify_one();
     }
 
-    /// Renders `graph` on the full-size `source` and writes a JPEG at
-    /// `wanted` (or a free name next to it). Reported as [`Event::Exported`].
-    pub fn export(&self, graph: NodeGraph, source: Arc<ImageF32>, orientation: Orientation, wanted: PathBuf) {
+    /// Exports the photos of `job` one after another on a background
+    /// thread: [`Event::ExportProgress`] before each photo, then
+    /// [`Event::ExportFinished`]. The handle stops it.
+    pub fn export(&self, job: ExportJob) -> ExportHandle {
+        let handle = ExportHandle::default();
         let (tx, notify, engine) = (self.tx.clone(), Arc::clone(&self.notify), Arc::clone(&self.engine));
         let fallback = tx.clone();
+        let total = job.photos.len();
+        let stop = handle.clone();
         let spawned = thread::Builder::new().name("export".into()).spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                let engine = engine.wait();
-                let rendered = engine.render(&graph, &source).map_err(|e| e.to_string())?;
-                engine::export_jpeg(&rendered.image, orientation, EXPORT_QUALITY, &wanted).map_err(|e| e.to_string())
-            }))
-            .unwrap_or_else(|_| Err("the export stopped because of an internal error".to_owned()));
-            let _ = tx.send(Event::Exported { result });
+            let engine = engine.wait();
+            let mut progress = |done: usize, current: String| {
+                let _ = tx.send(Event::ExportProgress { done, total, current });
+                notify();
+            };
+            let summary = crate::export_job::run(engine, &job, stop.flag(), &mut progress);
+            let _ = tx.send(Event::ExportFinished(summary));
             notify();
         });
         if let Err(e) = spawned {
-            let _ = fallback.send(Event::Exported { result: Err(format!("cannot start the export: {e}")) });
+            let failed = vec![format!("cannot start the export: {e}")];
+            let _ = fallback.send(Event::ExportFinished(ExportSummary { total, failed, ..ExportSummary::default() }));
         }
+        handle
     }
 }
 
@@ -497,10 +507,13 @@ fn open_file(path: &std::path::Path) -> Result<Opened, String> {
     })
 }
 
-/// Runs the development stage on `raw` with `settings` and makes the
-/// preview copy. Errors are user messages.
-fn develop_raw(raw: &RawData, settings: &core_model::DevelopSettings) -> Result<DevelopedImage, String> {
-    let (lens_db, mut notes) = engine::lens_database();
+/// Runs the development stage on `raw` with `settings`: the developed
+/// image and the lens database's notes. Errors are user messages.
+pub(crate) fn develop_stage(
+    raw: &RawData,
+    settings: &core_model::DevelopSettings,
+) -> Result<(develop::prepare::Developed, Vec<String>), String> {
+    let (lens_db, notes) = engine::lens_database();
     let library = engine::profile_library();
     let result = develop::prepare::develop_capture(
         &raw.sensor,
@@ -511,6 +524,13 @@ fn develop_raw(raw: &RawData, settings: &core_model::DevelopSettings) -> Result<
         Some(&library),
     )
     .map_err(|e| format!("could not be developed: {e}"))?;
+    Ok((result, notes))
+}
+
+/// Runs the development stage on `raw` with `settings` and makes the
+/// preview copy. Errors are user messages.
+fn develop_raw(raw: &RawData, settings: &core_model::DevelopSettings) -> Result<DevelopedImage, String> {
+    let (result, mut notes) = develop_stage(raw, settings)?;
     let lens = result.lens.correction.as_ref().and(result.lens.lens.clone());
     if let Some(lens_name) = &lens {
         let a = result.lens.applied;
@@ -729,16 +749,33 @@ mod tests {
     }
 
     #[test]
-    fn exports_are_written_and_reported() {
+    fn exports_report_progress_and_their_files() {
         let worker = cpu_worker();
         let dir = std::env::temp_dir().join(format!("rne-worker-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = ImageF32::from_pixels(4, 2, WorkingSpace::LinearRec2020, vec![[0.5, 0.2, 0.1, 1.0]; 8]).unwrap();
-        worker.export(NodeGraph::new(), Arc::new(img), Orientation::Normal, dir.join("a.jpg"));
-        let events = wait_for(&worker, |e| matches!(e, Event::Exported { .. }));
-        let Some(Event::Exported { result: Ok(path) }) = events.last() else { panic!("{events:?}") };
-        assert_eq!(path, &dir.join("a.jpg"));
-        assert!(path.exists());
+        let photo = crate::export_job::ExportPhoto {
+            path: dir.join("a.NEF"),
+            recipe: None,
+            open: Some(crate::export_job::OpenPhoto {
+                raw: None,
+                developed: Some(Arc::new(img)),
+                orientation: Orientation::Normal,
+                info: raw_io::PhotoInfo::default(),
+            }),
+            rating: None,
+            keywords: Vec::new(),
+        };
+        let options = engine::export::ExportOptions::default();
+        let handle = worker.export(ExportJob { photos: vec![photo], options, software: "test".into() });
+        assert!(!handle.is_cancelled());
+        let events = wait_for(&worker, |e| matches!(e, Event::ExportFinished(_)));
+        let progress =
+            |e: &Event| matches!(e, Event::ExportProgress { done: 0, total: 1, current } if current == "a.NEF");
+        assert!(events.iter().any(progress), "{events:?}");
+        let Some(Event::ExportFinished(summary)) = events.last() else { panic!("{events:?}") };
+        assert_eq!(summary.written, vec![dir.join("a.jpg")]);
+        assert!(dir.join("a.jpg").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

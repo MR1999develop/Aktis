@@ -6,6 +6,8 @@
 //! - [`document`]: an open image, its recipe and undo history;
 //! - [`worker`]: opening, previews and exports on background threads, and
 //!   the plan that decides which preview to render next;
+//! - [`export_job`]: exports with the export window's options, one photo
+//!   or many, with progress and cancel;
 //! - [`view`]: zoom and pan geometry of the viewer;
 //! - [`library`]: the Explorer's folder tree and the filmstrip with its filters;
 //! - [`graph_layout`] and [`graph_view`]: where the node graph's nodes are
@@ -19,6 +21,7 @@
 
 pub mod adjust;
 pub mod document;
+pub mod export_job;
 pub mod graph_layout;
 pub mod graph_view;
 pub mod histogram;
@@ -32,6 +35,7 @@ pub mod view;
 pub mod worker;
 
 pub use document::{DevelopedImage, Document, NodeRow, Opened, ParamRow, RawData};
+pub use export_job::{ExportHandle, ExportJob, ExportPhoto, ExportSummary, OpenPhoto};
 pub use graph_layout::{NodePlace, layout};
 pub use graph_view::GraphView;
 pub use histogram::Histogram;
