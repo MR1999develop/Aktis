@@ -153,6 +153,9 @@ pub struct EditorApp {
     tabs: Tabs,
     /// The node whose settings are shown on the right.
     selected_node: Option<NodeId>,
+    /// The last nodes selected, newest first (the selected one included):
+    /// their settings are shown on the right, up to [`RECENT_NODES`].
+    recent_nodes: Vec<NodeId>,
     /// Node positions, panning and menus of the node graph.
     graph: GraphUi,
     /// The tool of the bar in use in the viewer.
@@ -266,6 +269,7 @@ impl EditorApp {
             library: Library::new(),
             tabs: Tabs::default(),
             selected_node: None,
+            recent_nodes: Vec::new(),
             graph: GraphUi::default(),
             tool: None,
             pick: None,
@@ -826,6 +830,8 @@ impl EditorApp {
         if self.selected_node.is_some_and(|id| !exists(id)) {
             self.selected_node = None;
         }
+        let kept: Vec<NodeId> = self.recent_nodes.iter().copied().filter(|id| exists(*id)).collect();
+        self.recent_nodes = remember_recent(kept, self.selected_node);
     }
 
     /// Offers the download for the first enabled node whose tool lacks its
@@ -927,6 +933,7 @@ impl EditorApp {
         }
         // Show the Source's settings, as for a new photo.
         self.selected_node = Some(doc.recipe().graph.source());
+        self.recent_nodes.clear();
         self.graph.restore(view);
         // A style brush armed on the photo being left is not carried over.
         self.mask_ui.disarm();
@@ -1901,7 +1908,25 @@ impl EditorApp {
                         pick: self.pick,
                         probe: self.probe,
                     };
-                    inspector::settings(ui, doc, cx, edits);
+                    // The selected node first, then the ones used just before it.
+                    let shown: Vec<NodeId> = if self.recent_nodes.is_empty() {
+                        self.selected_node.into_iter().collect()
+                    } else {
+                        self.recent_nodes.clone()
+                    };
+                    if shown.is_empty() {
+                        inspector::settings(ui, doc, cx, edits);
+                    }
+                    for (i, id) in shown.into_iter().enumerate() {
+                        if i > 0 {
+                            ui.add_space(SPACE[2]);
+                            ui.separator();
+                            ui.add_space(SPACE[1]);
+                        }
+                        ui.push_id(("rne-recent-node", id), |ui| {
+                            inspector::settings(ui, doc, inspector::Context { selected: Some(id), ..cx }, edits);
+                        });
+                    }
                 }
             }
         });
@@ -2550,6 +2575,20 @@ fn error_toast(text: String) -> Toast {
     }
 }
 
+/// Settings panels shown on the right: the selected node and the ones used before it.
+const RECENT_NODES: usize = 3;
+
+/// `recent` (newest first) with `selected` moved or added to the front,
+/// at most [`RECENT_NODES`] long.
+fn remember_recent(mut recent: Vec<NodeId>, selected: Option<NodeId>) -> Vec<NodeId> {
+    if let Some(id) = selected {
+        recent.retain(|&n| n != id);
+        recent.insert(0, id);
+    }
+    recent.truncate(RECENT_NODES);
+    recent
+}
+
 /// The second line of the GPU tooltip: how the open photo was opened.
 fn open_timing_text(t: &OpenTiming) -> String {
     let how = if t.ahead { "opened ahead in the background" } else { "opened" };
@@ -2697,6 +2736,21 @@ fn to_egui_rect(r: editor::Rect) -> egui::Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_right_panel_keeps_the_last_three_nodes_newest_first() {
+        let n = NodeId::from_raw;
+        let mut recent = Vec::new();
+        for id in [1, 2, 3, 4] {
+            recent = remember_recent(recent, Some(n(id)));
+        }
+        assert_eq!(recent, vec![n(4), n(3), n(2)]);
+        // Selecting one already shown moves it to the top, nothing is lost.
+        recent = remember_recent(recent, Some(n(2)));
+        assert_eq!(recent, vec![n(2), n(4), n(3)]);
+        // Nothing selected: the panels stay.
+        assert_eq!(remember_recent(recent.clone(), None), recent);
+    }
 
     #[test]
     fn undo_labels_read_naturally_in_menus() {
