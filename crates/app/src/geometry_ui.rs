@@ -371,8 +371,8 @@ pub fn grid_overlay(ui: &egui::Ui, screen: Rect, t: &Tokens) {
     }
 }
 
-/// A floating bar at the top centre of the viewer.
-fn options_bar(ctx: &egui::Context, viewer: Rect, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+/// A floating bar at the top centre of the viewer (also the Heal and Clone tools').
+pub(crate) fn options_bar(ctx: &egui::Context, viewer: Rect, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     let t = Tokens::of(ctx.theme());
     egui::Area::new(Id::unique(id))
         .order(Order::Foreground)

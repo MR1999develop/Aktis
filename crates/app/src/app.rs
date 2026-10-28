@@ -145,6 +145,8 @@ pub struct EditorApp {
     mask_ui: MaskUi,
     /// AI masks being computed.
     ai_job: Option<AiMaskJob>,
+    /// Retouch (T4): brush size and the selected spot of the Heal and Clone tools.
+    retouch_ui: crate::retouch_ui::RetouchUi,
     /// The Preferences window, while open.
     prefs: Preferences,
     /// The slider drag of a geometry tool, one undo step.
@@ -228,6 +230,7 @@ impl EditorApp {
             pick: None,
             prev_tool: None,
             geometry_ui: GeometryUi::default(),
+            retouch_ui: crate::retouch_ui::RetouchUi::default(), // Retouch (T4)
             geometry_gesture: None,
             prefs: Preferences::default(),
             mask_ui: MaskUi::default(),
@@ -988,6 +991,7 @@ impl EditorApp {
         let mut picked = None;
         let mut geo_edits = Vec::new();
         let mut mask_edits = Vec::new();
+        let mut retouch_edits = Vec::new(); // Retouch (T4)
         let mut crop_apply = false;
         if let Some(doc) = &self.doc {
             let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -1127,6 +1131,12 @@ impl EditorApp {
                         tool_drag =
                             self.mask_ui.overlay(ui, &response, tool, node, long_side, &to_developed, &mut mask_edits);
                     }
+                    // Retouch (T4): the Heal and Clone spots.
+                    Some(tool @ (ViewerTool::Heal | ViewerTool::Clone)) => {
+                        let (reg, node) = (&self.registry, self.selected_node);
+                        tool_drag =
+                            self.retouch_ui.overlay(ui, &response, screen, doc, reg, node, tool, &mut retouch_edits);
+                    }
                     _ => {}
                 }
                 // The left button pans; the right one is the eyedropper, the middle one the loupe.
@@ -1134,7 +1144,10 @@ impl EditorApp {
                     let d = response.drag_delta();
                     self.view.pan([d.x, d.y], image, &vp);
                 }
-                if response.double_clicked() && self.tool != Some(ViewerTool::Crop) {
+                // Retouch (T4): no double-click zoom while clicks place spots.
+                if response.double_clicked()
+                    && !matches!(self.tool, Some(ViewerTool::Crop | ViewerTool::Heal | ViewerTool::Clone))
+                {
                     match self.view.zoom() {
                         Zoom::Fit => {
                             let at = response.interact_pointer_pos().map(|p| [p.x, p.y]);
@@ -1182,6 +1195,15 @@ impl EditorApp {
                     let busy = self.ai_job.is_some();
                     self.mask_ui.options(ui.ctx(), rect, tool, node, def.as_ref(), busy, &mut mask_edits);
                 }
+                // Retouch (T4): the Heal and Clone options bar.
+                Some(tool @ (ViewerTool::Heal | ViewerTool::Clone)) => {
+                    let (reg, node) = (&self.registry, self.selected_node);
+                    if let Some(next) =
+                        self.retouch_ui.options(ui.ctx(), rect, tool, doc, reg, node, &mut retouch_edits)
+                    {
+                        self.tool = Some(next);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1190,6 +1212,12 @@ impl EditorApp {
         }
         self.apply_geometry(geo_edits);
         self.apply_mask_edits(mask_edits, ui.ctx());
+        // Retouch (T4): apply the Heal and Clone changes.
+        if let Some(doc) = &mut self.doc
+            && let Some(problem) = self.retouch_ui.apply(doc, &self.registry, &mut self.selected_node, retouch_edits)
+        {
+            self.toast = Some(error_toast(problem));
+        }
 
         if ui.input(|i| !i.raw.hovered_files.is_empty()) {
             let painter = ui.painter_at(rect);

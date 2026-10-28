@@ -13,7 +13,8 @@
 //! - [`overview`]: the viewer's grid when several photos are selected;
 //! - [`thumbs`]: the filmstrip's thumbnail cache;
 //! - [`history_order`]: History-tab gestures as step orders;
-//! - [`histogram`]: levels of the displayed image.
+//! - [`histogram`]: levels of the displayed image;
+//! - [`retouch`]: where the spots of the Heal and Clone tools go.
 //!
 //! The `app` crate draws these with egui and turns gestures into calls here.
 
@@ -29,6 +30,7 @@ pub mod lenses;
 pub mod library;
 pub mod masking;
 pub mod overview;
+pub mod retouch;
 pub mod thumbs;
 pub mod view;
 pub mod worker;
