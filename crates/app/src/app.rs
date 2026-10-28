@@ -1182,10 +1182,7 @@ impl EditorApp {
         let save_why = if has_doc { None } else { Some("Open a photo first") };
         // The selected node, when it is one that can be bypassed or deleted
         // (the same commands as its right-click menu in the graph).
-        let editable_node = self.selected_node.and_then(|id| {
-            let node = self.doc.as_ref()?.recipe().graph.node(id)?;
-            matches!(node.kind, NodeKind::Tool(_) | NodeKind::Mask).then_some((id, node.enabled))
-        });
+        let editable_node = self.editable_node();
 
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -1235,7 +1232,7 @@ impl EditorApp {
                     ui.close();
                 }
                 if ui
-                    .add_enabled(editable_node.is_some(), Button::new("Delete node"))
+                    .add_enabled(editable_node.is_some(), Button::new("Delete node").shortcut_text("Del"))
                     .on_disabled_hover_text(why)
                     .clicked()
                     && let Some((id, _)) = editable_node
@@ -2243,6 +2240,18 @@ impl EditorApp {
                 return;
             }
         }
+        // Delete removes the selected node; Heal and Clone keep the key for their spots.
+        if !matches!(self.tool, Some(ViewerTool::Heal | ViewerTool::Clone))
+            && let Some((id, _)) = self.editable_node()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
+        {
+            self.apply_graph(vec![GraphAction::Remove(id)]);
+            if self.selected_node.is_none() {
+                let undo = ctx.format_shortcut(&Command::Undo.shortcuts()[0]);
+                self.toast = Some(info_toast(format!("Node deleted. Undo with {undo}")));
+            }
+            return;
+        }
         for &tool in TOOL_GROUPS.iter().flat_map(|g| g.iter()) {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, tool.key())) {
                 self.tool = if self.tool == Some(tool) { None } else { Some(tool) };
@@ -2251,6 +2260,14 @@ impl EditorApp {
         if self.tool.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.tool = None;
         }
+    }
+
+    /// The selected node and whether it is on, when it is one that can be
+    /// bypassed or deleted (a tool or a mask, not the Source or the Output).
+    fn editable_node(&self) -> Option<(NodeId, bool)> {
+        let id = self.selected_node?;
+        let node = self.doc.as_ref()?.recipe().graph.node(id)?;
+        matches!(node.kind, NodeKind::Tool(_) | NodeKind::Mask).then_some((id, node.enabled))
     }
 
     /// Applies what the user did in the node graph.
