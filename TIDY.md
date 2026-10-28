@@ -105,3 +105,22 @@
   every render, and creates its buffers each time; keep the source on the
   GPU between renders of the same image (and draw the result straight from
   a texture, see above) if the timings in the status bar show it matters.
+- `engine::geometry` warps on the CPU after the render, for every screen
+  render while a geometry is set; move it to the GPU with the display
+  transform. The fill enlargement is found by bisection on 64 border points.
+- High dynamic range is a per-pixel tone curve; Capture One's is local
+  (neighbourhood-aware): add a local version (guided filter on log luminance).
+- The white-balance node re-balances with one Bradford matrix in the working
+  space; re-developing with new multipliers (and the profile's illuminant
+  interpolation) would match Capture One more closely for strong changes.
+- Levels and Curve read the histogram of the image on screen (after the
+  output curve), not of the node's input.
+- The mask overlay is evaluated on the UI thread at up to 1024 px when the
+  mask changes; move it to the worker if it is felt.
+- AI Select loads ONNX Runtime and the models in its first job (seconds);
+  they stay loaded. Person parts and "select people" are not offered in the
+  window yet (the command line has them).
+- WGSL kernels of `tools/adjust` were validated with Chromium's WebGPU
+  (SwiftShader) in the sandbox, not in the gpu crate's tests; add a GPU test
+  per tool to `crates/gpu/tests` (it runs on llvmpipe in CI).
+

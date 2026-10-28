@@ -239,6 +239,41 @@ tested offline.
 - Open dialog: ARI, DCS, FFF, ORI, QTK and RAW added; README lists the
   supported cameras and rawler 0.8.0's known limits per brand.
 
+## Tasks of 28 October 2026
+
+- AI models are downloaded from their authors: SCUNet as the KAIR
+  checkpoint, converted on the user's computer by `scunet-onnx` (pure Rust,
+  byte-identical to the Python reference); each pack names its home page.
+- Output render: a film curve on stops, hue kept (max-RGB norm), highlights
+  rolled to white and gamut mapped by desaturation, so exposure moves every
+  tone by the same amount, as in Capture One, and no longer clips colours.
+- Top bar: Undo/Redo on the left, tools centred (Crop C, Perspective K,
+  Level L, Masks M, AI Select A, Heal H, Clone S), Export on the right.
+- Node graph zooms with the wheel (and pinch) around the pointer.
+- History/Metadata panel keeps its size; interface greys follow a photo viewer.
+- Adjustment nodes (`tools/adjust`, CPU reference + WGSL, every kernel run on
+  WebGPU/SwiftShader against the CPU): White balance (mode, picker, kelvin,
+  tint; the Source develops as shot), Exposure v2 (contrast, brightness,
+  saturation), High dynamic range, Levels, Curve; prepared: Colour balance,
+  Colour editor, Black & white, Clarity and Dehaze (CPU), Vignetting.
+  Panels like Capture One's for white balance, levels and curve, with
+  pickers in the viewer and the pointer's colour marked on them.
+- Several selected photos fill the viewer (grid shape for the largest
+  tiles, 1600 px previews, up to 24).
+- Scopes: histogram, waveform and parade.
+- Viewer: right button eyedropper, middle button 4× loupe (a photo viewer).
+- Lens corrections: every lens, fitting ones first then others by maker,
+  type to filter, tick for fitting lenses only.
+- Geometry in the recipe (`core_model::Geometry`, applied by
+  `engine::geometry` after the graph, for screen and export): Crop as in
+  a photo viewer (aspect presets, handles, Enter/Esc), Level (drag a line
+  or slider), Perspective (keystone sliders).
+- Masks (brush) and AI Select (SAM clicks, subject) build the selected
+  node's mask; the models run in the background; AI masks now render in
+  the window from the shared raster cache.
+- Edit ▸ Preferences…: theme, viewer background (interface, white as in
+  Capture One, greys, black), export folder.
+
 ## Tests and CI
 
 GitHub Actions (`.github/workflows/ci.yml`) on every push:
