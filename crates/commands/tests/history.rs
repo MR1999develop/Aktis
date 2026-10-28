@@ -37,7 +37,8 @@ fn last_node(s: &EditSession) -> NodeId {
 fn three_changes(reg: &ToolRegistry) -> (EditSession, NodeId) {
     let mut s = EditSession::new(Recipe::default());
     let source = s.recipe().graph.source();
-    s.apply(reg, Edit::InsertSerial { after: source, tool: exposure_tool() }).expect("insert");
+    s.apply(reg, Edit::InsertSerial { after: source, tool: exposure_tool(), params: core_model::Params::new() })
+        .expect("insert");
     let node = last_node(&s);
     for v in [0.5, 1.0, -0.25] {
         s.apply(reg, set(node, v)).expect("set");
@@ -113,9 +114,11 @@ fn later_steps_follow_their_node_when_an_earlier_node_is_deleted() {
     let reg = registry();
     let mut s = EditSession::new(Recipe::default());
     let source = s.recipe().graph.source();
-    s.apply(&reg, Edit::InsertSerial { after: source, tool: exposure_tool() }).expect("first");
+    s.apply(&reg, Edit::InsertSerial { after: source, tool: exposure_tool(), params: core_model::Params::new() })
+        .expect("first");
     let first = last_node(&s);
-    s.apply(&reg, Edit::InsertSerial { after: first, tool: exposure_tool() }).expect("second");
+    s.apply(&reg, Edit::InsertSerial { after: first, tool: exposure_tool(), params: core_model::Params::new() })
+        .expect("second");
     let second = last_node(&s);
     s.apply(&reg, set(second, 2.0)).expect("set");
 
@@ -133,7 +136,8 @@ fn a_replayed_insert_keeps_later_edits_on_the_new_node() {
     let reg = registry();
     let mut s = EditSession::new(Recipe::default());
     let source = s.recipe().graph.source();
-    s.apply(&reg, Edit::InsertSerial { after: source, tool: exposure_tool() }).expect("insert");
+    s.apply(&reg, Edit::InsertSerial { after: source, tool: exposure_tool(), params: core_model::Params::new() })
+        .expect("insert");
     let node = last_node(&s);
     s.apply(&reg, set(node, 0.75)).expect("set 1");
     s.apply(&reg, set(node, 1.25)).expect("set 2");

@@ -111,6 +111,113 @@ pub fn bradford(from: [f64; 3], to: [f64; 3]) -> Matrix3 {
     inv * diag * mb
 }
 
+/// Tint units per unit of Duv (distance from the Planckian locus in CIE
+/// 1960 uv): the scale photo editors use, about ±150 for strong casts.
+pub const TINT_PER_DUV: f64 = 3000.0;
+
+/// Lowest and highest temperature the Planckian approximation covers.
+pub const KELVIN_RANGE: [f64; 2] = [1500.0, 25000.0];
+
+/// CIE 1960 uv of a black body at `kelvin` (Krystek's rational
+/// approximation, within 1e-4 of the exact locus from 1000 to 15000 K).
+#[must_use]
+pub fn planck_uv(kelvin: f64) -> [f64; 2] {
+    let t = kelvin.clamp(KELVIN_RANGE[0], KELVIN_RANGE[1]);
+    let t2 = t * t;
+    let u = (0.860_117_757 + 1.541_182_54e-4 * t + 1.286_412_12e-7 * t2)
+        / (1.0 + 8.424_202_35e-4 * t + 7.081_451_63e-7 * t2);
+    let v = (0.317_398_726 + 4.228_062_45e-5 * t + 4.204_816_91e-8 * t2)
+        / (1.0 - 2.897_418_16e-5 * t + 1.614_560_53e-7 * t2);
+    [u, v]
+}
+
+/// Unit normal to the locus at `kelvin`, pointing to the green side.
+fn green_normal(kelvin: f64) -> [f64; 2] {
+    let h = kelvin * 1e-3;
+    let (a, b) = (planck_uv(kelvin - h), planck_uv(kelvin + h));
+    let (du, dv) = (b[0] - a[0], b[1] - a[1]);
+    let len = du.hypot(dv).max(1e-12);
+    // The locus runs towards lower u and v as the temperature rises; this
+    // normal has a positive v component, the green side.
+    let n = [dv / len, -du / len];
+    if n[1] < 0.0 { [-n[0], -n[1]] } else { n }
+}
+
+/// xy → CIE 1960 uv.
+#[must_use]
+pub fn xy_to_uv(xy: [f64; 2]) -> [f64; 2] {
+    let d = -2.0 * xy[0] + 12.0 * xy[1] + 3.0;
+    [4.0 * xy[0] / d, 6.0 * xy[1] / d]
+}
+
+/// CIE 1960 uv → xy.
+#[must_use]
+pub fn uv_to_xy(uv: [f64; 2]) -> [f64; 2] {
+    let d = 2.0 * uv[0] - 8.0 * uv[1] + 4.0;
+    [3.0 * uv[0] / d, 2.0 * uv[1] / d]
+}
+
+/// The white of a light at `kelvin` with `tint` (positive = greener light,
+/// which a photo editor corrects towards magenta), as xy.
+#[must_use]
+pub fn kelvin_tint_to_xy(kelvin: f64, tint: f64) -> [f64; 2] {
+    let p = planck_uv(kelvin);
+    let n = green_normal(kelvin);
+    let duv = tint / TINT_PER_DUV;
+    uv_to_xy([p[0] + n[0] * duv, p[1] + n[1] * duv])
+}
+
+/// Temperature and tint of the white `xy`: the nearest point of the
+/// locus, and the signed distance from it ([`kelvin_tint_to_xy`] inverted).
+#[must_use]
+pub fn xy_to_kelvin_tint(xy: [f64; 2]) -> (f64, f64) {
+    let uv = xy_to_uv(xy);
+    let dist = |mired: f64| {
+        let p = planck_uv(1.0e6 / mired);
+        (p[0] - uv[0]).powi(2) + (p[1] - uv[1]).powi(2)
+    };
+    // The distance has one minimum along the locus: golden-section search in mired.
+    let (mut lo, mut hi) = (1.0e6 / KELVIN_RANGE[1], 1.0e6 / KELVIN_RANGE[0]);
+    let g = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..80 {
+        let a = hi - g * (hi - lo);
+        let b = lo + g * (hi - lo);
+        if dist(a) < dist(b) { hi = b } else { lo = a }
+    }
+    let kelvin = 1.0e6 / ((lo + hi) / 2.0);
+    let p = planck_uv(kelvin);
+    let n = green_normal(kelvin);
+    let duv = (uv[0] - p[0]) * n[0] + (uv[1] - p[1]) * n[1];
+    (kelvin, duv * TINT_PER_DUV)
+}
+
+/// The matrix that re-balances an image developed for the light `shot`
+/// (whose white became the working space's D65 white) as if it had been
+/// lit by `target`: scene colours are recovered under `shot`, then
+/// adapted from `target` to D65 (Bradford). `to_xyz` is the working
+/// space's RGB → XYZ matrix.
+#[must_use]
+pub fn rebalance(to_xyz: Matrix3, shot: [f64; 2], target: [f64; 2]) -> Matrix3 {
+    let Some(from_xyz) = to_xyz.inverse() else { return Matrix3::IDENTITY };
+    let (shot, target) = (xy_to_xyz(shot), xy_to_xyz(target));
+    from_xyz * bradford(target, D65_XYZ) * bradford(D65_XYZ, shot) * to_xyz
+}
+
+/// The light that makes `rgb` (a colour of an image developed for the
+/// light `shot`) neutral: what a white-balance picker or a grey-world
+/// estimate looks for. `None` for black or colours without a white.
+#[must_use]
+pub fn white_of(to_xyz: Matrix3, rgb: [f32; 3], shot: [f64; 2]) -> Option<[f64; 2]> {
+    let xyz = to_xyz.apply(rgb).map(f64::from);
+    if !(xyz.iter().all(|v| v.is_finite()) && xyz[1] > 1e-9) {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)] // the matrix precision
+    let scene = bradford(D65_XYZ, xy_to_xyz(shot)).apply(xyz.map(|v| v as f32)).map(f64::from);
+    let xy = xyz_to_xy(scene);
+    (xy[0] > 0.0 && xy[1] > 0.0 && xy[0] + xy[1] < 1.0).then_some(xy)
+}
+
 #[allow(clippy::cast_possible_truncation)] // f64 → f32 is the matrix precision
 fn mat(m: [[f64; 3]; 3]) -> Matrix3 {
     Matrix3::from_rows(m.map(|r| r.map(|v| v as f32)))
@@ -136,6 +243,60 @@ mod tests {
         let xy = [0.3127, 0.329];
         let back = xyz_to_xy(xy_to_xyz(xy));
         assert!((back[0] - xy[0]).abs() < 1e-12 && (back[1] - xy[1]).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_locus_passes_near_the_standard_whites() {
+        // D65 sits 0.0032 above the locus at about 6504 K; illuminant A on it at 2856 K.
+        let (k, tint) = xy_to_kelvin_tint([0.312_71, 0.329_02]);
+        assert!((k - 6504.0).abs() < 30.0, "{k}");
+        assert!((tint - 0.0032 * TINT_PER_DUV).abs() < 1.5, "{tint}");
+        let (k, tint) = xy_to_kelvin_tint([0.447_57, 0.407_45]);
+        assert!((k - 2856.0).abs() < 10.0, "{k}");
+        assert!(tint.abs() < 1.0, "{tint}");
+    }
+
+    #[test]
+    fn kelvin_and_tint_round_trip() {
+        for k in [2000.0, 3200.0, 5500.0, 7500.0, 12000.0] {
+            for tint in [-100.0, -10.0, 0.0, 25.0, 120.0] {
+                let (k2, t2) = xy_to_kelvin_tint(kelvin_tint_to_xy(k, tint));
+                assert!((k2 - k).abs() / k < 2e-3, "{k} {tint} → {k2}");
+                assert!((t2 - tint).abs() < 0.2, "{k} {tint} → {t2}");
+            }
+        }
+        // A positive tint is a greener light (larger v).
+        assert!(xy_to_uv(kelvin_tint_to_xy(5000.0, 50.0))[1] > planck_uv(5000.0)[1]);
+    }
+
+    #[test]
+    fn rebalancing_to_the_same_light_changes_nothing_and_a_warmer_target_cools_the_image() {
+        let to_xyz = crate::REC2020_TO_XYZ;
+        let shot = kelvin_tint_to_xy(5500.0, 0.0);
+        let same = rebalance(to_xyz, shot, shot);
+        for (i, row) in same.0.iter().enumerate() {
+            for (j, v) in row.iter().enumerate() {
+                let want = if i == j { 1.0 } else { 0.0 };
+                assert!((v - want).abs() < 1e-4, "{:?}", same.0);
+            }
+        }
+        // Saying the light was warmer (3000 K) makes the image bluer.
+        let grey = rebalance(to_xyz, shot, kelvin_tint_to_xy(3000.0, 0.0)).apply([0.5, 0.5, 0.5]);
+        assert!(grey[2] > grey[0], "{grey:?}");
+        // Saying it was greener makes it more magenta.
+        let grey = rebalance(to_xyz, shot, kelvin_tint_to_xy(5500.0, 60.0)).apply([0.5, 0.5, 0.5]);
+        assert!(grey[1] < grey[0] && grey[1] < grey[2], "{grey:?}");
+    }
+
+    #[test]
+    fn the_white_of_a_colour_makes_it_neutral() {
+        let to_xyz = crate::REC2020_TO_XYZ;
+        let shot = kelvin_tint_to_xy(5000.0, 5.0);
+        let warm = [0.6_f32, 0.45, 0.3];
+        let white = white_of(to_xyz, warm, shot).expect("a white");
+        let fixed = rebalance(to_xyz, shot, white).apply(warm);
+        assert!((fixed[0] - fixed[1]).abs() < 2e-3 && (fixed[1] - fixed[2]).abs() < 2e-3, "{fixed:?}");
+        assert_eq!(white_of(to_xyz, [0.0; 3], shot), None);
     }
 
     #[test]

@@ -101,7 +101,10 @@ fn append_node(
 ) -> Result<NodeId, BoxError> {
     let output = session.recipe().graph.output();
     let last = session.recipe().graph.input_link(output, 0).ok_or("the output is not connected")?.from;
-    session.apply(registry, Edit::InsertSerial { after: last, tool: ToolId::new(tool)? })?;
+    session.apply(
+        registry,
+        Edit::InsertSerial { after: last, tool: ToolId::new(tool)?, params: core_model::Params::new() },
+    )?;
     let node = session.recipe().graph.input_link(output, 0).ok_or("new node not connected")?.from;
     for (param, value) in values {
         session

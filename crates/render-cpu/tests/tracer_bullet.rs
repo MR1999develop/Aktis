@@ -23,7 +23,14 @@ fn a_grey_card_one_stop_under_comes_out_as_middle_grey_after_plus_one_stop() {
     let mut session = EditSession::new(Recipe::default());
     let source = session.recipe().graph.source();
     session
-        .apply(&registry, Edit::InsertSerial { after: source, tool: ToolId::new("exposure").expect("id") })
+        .apply(
+            &registry,
+            Edit::InsertSerial {
+                after: source,
+                tool: ToolId::new("exposure").expect("id"),
+                params: core_model::Params::new(),
+            },
+        )
         .expect("insert exposure");
     let node = session.recipe().graph.input_link(session.recipe().graph.output(), 0).expect("fed").from;
     let param = ParamId::new("exposure").expect("id");
@@ -71,7 +78,14 @@ fn a_bypassed_node_passes_the_image_through() {
     let mut session = EditSession::new(Recipe::default());
     let source = session.recipe().graph.source();
     session
-        .apply(&registry, Edit::InsertSerial { after: source, tool: ToolId::new("exposure").expect("id") })
+        .apply(
+            &registry,
+            Edit::InsertSerial {
+                after: source,
+                tool: ToolId::new("exposure").expect("id"),
+                params: core_model::Params::new(),
+            },
+        )
         .expect("insert");
     let node = session.recipe().graph.input_link(session.recipe().graph.output(), 0).expect("fed").from;
     let param = ParamId::new("exposure").expect("id");
@@ -93,7 +107,14 @@ fn a_masked_exposure_brightens_only_inside_the_mask_and_reports_missing_rasters(
     let mut session = EditSession::new(Recipe::default());
     let source = session.recipe().graph.source();
     session
-        .apply(&registry, Edit::InsertSerial { after: source, tool: ToolId::new("exposure").expect("id") })
+        .apply(
+            &registry,
+            Edit::InsertSerial {
+                after: source,
+                tool: ToolId::new("exposure").expect("id"),
+                params: core_model::Params::new(),
+            },
+        )
         .expect("insert");
     let node = session.recipe().graph.input_link(session.recipe().graph.output(), 0).expect("fed").from;
     let param = ParamId::new("exposure").expect("id");

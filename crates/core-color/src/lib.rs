@@ -17,7 +17,10 @@ pub use library::{CameraNames, LoadError, ProfileEntry, ProfileLibrary, load_dcp
 pub use profile::{
     Calibration, ColorProfile, HsvTable, MAX_TABLE_ENTRIES, ProfileError, ProfileSource, ProfileTransform,
 };
-pub use temperature::{D50_XY, D50_XYZ, D65_XYZ, bradford, xy_to_temperature, xy_to_xyz, xyz_to_xy};
+pub use temperature::{
+    D50_XY, D50_XYZ, D65_XYZ, KELVIN_RANGE, TINT_PER_DUV, bradford, kelvin_tint_to_xy, planck_uv, rebalance, uv_to_xy,
+    white_of, xy_to_kelvin_tint, xy_to_temperature, xy_to_uv, xy_to_xyz, xyz_to_xy,
+};
 
 use core_model::{Matrix3, WorkingSpace};
 

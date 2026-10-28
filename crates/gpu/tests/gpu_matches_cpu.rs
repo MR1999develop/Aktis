@@ -52,9 +52,10 @@ fn recipe(reg: &ToolRegistry, a: f32, b: f32, second_enabled: bool) -> Recipe {
     let tool = ToolId::new("exposure").expect("id");
     let param = ParamId::new("exposure").expect("id");
     let source = s.recipe().graph.source();
-    s.apply(reg, Edit::InsertSerial { after: source, tool: tool.clone() }).expect("first");
+    s.apply(reg, Edit::InsertSerial { after: source, tool: tool.clone(), params: core_model::Params::new() })
+        .expect("first");
     let first = s.recipe().graph.input_link(s.recipe().graph.output(), 0).expect("fed").from;
-    s.apply(reg, Edit::InsertSerial { after: first, tool }).expect("second");
+    s.apply(reg, Edit::InsertSerial { after: first, tool, params: core_model::Params::new() }).expect("second");
     let second = s.recipe().graph.input_link(s.recipe().graph.output(), 0).expect("fed").from;
     s.apply(reg, Edit::SetParam { node: first, param: param.clone(), value: ParamValue::Float(a) }).expect("a");
     s.apply(reg, Edit::SetParam { node: second, param, value: ParamValue::Float(b) }).expect("b");
@@ -169,12 +170,18 @@ fn host_recipe(reg: &ToolRegistry, host: &str) -> Recipe {
     let param = ParamId::new("exposure").expect("id");
     let last = |s: &EditSession| s.recipe().graph.input_link(s.recipe().graph.output(), 0).expect("fed").from;
     let source = s.recipe().graph.source();
-    s.apply(reg, Edit::InsertSerial { after: source, tool: exposure.clone() }).expect("first");
+    s.apply(reg, Edit::InsertSerial { after: source, tool: exposure.clone(), params: core_model::Params::new() })
+        .expect("first");
     let first = last(&s);
     s.apply(reg, Edit::SetParam { node: first, param: param.clone(), value: ParamValue::Float(1.0) }).expect("+1");
-    s.apply(reg, Edit::InsertSerial { after: first, tool: ToolId::new(host).expect("id") }).expect("host");
+    s.apply(
+        reg,
+        Edit::InsertSerial { after: first, tool: ToolId::new(host).expect("id"), params: core_model::Params::new() },
+    )
+    .expect("host");
     let host_node = last(&s);
-    s.apply(reg, Edit::InsertSerial { after: host_node, tool: exposure }).expect("second");
+    s.apply(reg, Edit::InsertSerial { after: host_node, tool: exposure, params: core_model::Params::new() })
+        .expect("second");
     let second = last(&s);
     s.apply(reg, Edit::SetParam { node: second, param, value: ParamValue::Float(-0.5) }).expect("-0.5");
     s.recipe().clone()

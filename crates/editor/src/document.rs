@@ -272,6 +272,104 @@ impl Document {
         self.opened.raw.as_ref()
     }
 
+    /// The light the camera measured (kelvin, tint): its white balance read
+    /// through the sensor's colour matrix. `None` without RAW data.
+    #[must_use]
+    pub fn shot_light(&self) -> Option<(f32, f32)> {
+        let raw = self.opened.raw.as_ref()?;
+        let m = raw.sensor.as_shot_wb();
+        let neutral = m.map(|v| if v > 0.0 { 1.0 / v } else { 1.0 });
+        let xyz = raw.sensor.xyz_to_camera().inverse()?.apply(neutral);
+        if !(xyz.iter().all(|v| v.is_finite()) && xyz[1] > 0.0) {
+            return None;
+        }
+        Some(tool_adjust::white_balance::light_of(core_color::xyz_to_xy(xyz.map(f64::from))))
+    }
+
+    /// The colour entering `node` at the upright point `at` (0–1 from the
+    /// top-left corner): a 5 × 5 average of the developed preview, passed
+    /// through the enabled tools between the Source and `node` (those that
+    /// work pixel by pixel; the others, and masks, are left out). `None`
+    /// outside the image.
+    #[must_use]
+    pub fn probe(&self, registry: &ToolRegistry, node: NodeId, at: [f32; 2]) -> Option<[f32; 3]> {
+        let rgb = self.sample_preview(at)?;
+        let graph = &self.recipe().graph;
+        let mut chain = Vec::new();
+        let mut cur = node;
+        while let Some(link) = graph.input_link(cur, 0) {
+            let from = graph.node(link.from)?;
+            match &from.kind {
+                NodeKind::Tool(id) => chain.push((from, id)),
+                _ => break,
+            }
+            cur = link.from;
+        }
+        let mut px = ImageF32::from_pixels(1, 1, self.preview().space(), vec![[rgb[0], rgb[1], rgb[2], 1.0]]).ok()?;
+        for (n, id) in chain.into_iter().rev() {
+            let Some(tool) = registry.get(id) else { continue };
+            if !n.enabled || tool.gpu_kernel() == tool_api::GpuKernel::Host {
+                continue;
+            }
+            tool.apply_cpu(&mut px, &tool_api::ResolvedParams::resolve(tool.descriptor(), &n.params));
+        }
+        let p = px.pixels()[0];
+        Some([p[0], p[1], p[2]])
+    }
+
+    /// A 5 × 5 average of the developed preview at the upright point `at`.
+    #[must_use]
+    pub fn sample_preview(&self, at: [f32; 2]) -> Option<[f32; 3]> {
+        if !(0.0..=1.0).contains(&at[0]) || !(0.0..=1.0).contains(&at[1]) {
+            return None;
+        }
+        let stored = self.opened.orientation.inverse().to_upright(core_model::NormPoint::new(at[0], at[1])?);
+        let img = self.preview();
+        let (w, h) = (img.width(), img.height());
+        if w == 0 || h == 0 {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+        // pixel positions
+        let (x, y) = (((stored.x() * w as f32) as u32).min(w - 1), ((stored.y() * h as f32) as u32).min(h - 1));
+        let (mut sum, mut n) = ([0.0_f32; 3], 0.0_f32);
+        for yy in y.saturating_sub(2)..=(y + 2).min(h - 1) {
+            for xx in x.saturating_sub(2)..=(x + 2).min(w - 1) {
+                if let Some(p) = img.get(xx, yy) {
+                    for (s, v) in sum.iter_mut().zip(p) {
+                        *s += v;
+                    }
+                    n += 1.0;
+                }
+            }
+        }
+        (n > 0.0).then(|| sum.map(|s| s / n))
+    }
+
+    /// The light (kelvin, tint) that makes the photo's average colour grey
+    /// ("Auto" white balance, grey world): bright clipped and very dark
+    /// pixels are left out. `None` without RAW data or for a black image.
+    #[must_use]
+    pub fn auto_light(&self) -> Option<(f32, f32)> {
+        let shot = self.shot_light()?;
+        let (mut sum, mut n) = ([0.0_f64; 3], 0_u32);
+        for p in self.preview().pixels() {
+            let m = p[0].max(p[1]).max(p[2]);
+            if m < 0.95 && p[0].min(p[1]).min(p[2]) > 0.002 {
+                for (s, v) in sum.iter_mut().zip(p) {
+                    *s += f64::from(*v);
+                }
+                n += 1;
+            }
+        }
+        if n == 0 {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation)] // a colour
+        let mean = sum.map(|s| (s / f64::from(n)) as f32);
+        tool_adjust::white_balance::neutral_light(mean, shot)
+    }
+
     /// `true` when the recipe's development settings differ from those of
     /// the shown image, so it must be developed again.
     #[must_use]
@@ -408,8 +506,22 @@ impl Document {
     /// # Errors
     /// [`EditError`] for an unknown node or tool; nothing changes.
     pub fn add_node(&mut self, registry: &ToolRegistry, after: NodeId, tool: ToolId) -> Result<NodeId, EditError> {
+        self.add_node_with(registry, after, tool, Params::new())
+    }
+
+    /// Like [`Self::add_node`], with the new node's first values (one undo step).
+    ///
+    /// # Errors
+    /// [`EditError`] for an unknown node or tool; nothing changes.
+    pub fn add_node_with(
+        &mut self,
+        registry: &ToolRegistry,
+        after: NodeId,
+        tool: ToolId,
+        params: Params,
+    ) -> Result<NodeId, EditError> {
         let before: Vec<NodeId> = self.recipe().graph.nodes().map(|n| n.id).collect();
-        self.session.apply(registry, Edit::InsertSerial { after, tool })?;
+        self.session.apply(registry, Edit::InsertSerial { after, tool, params })?;
         self.generation += 1;
         let created = self.recipe().graph.nodes().map(|n| n.id).find(|id| !before.contains(id));
         // InsertSerial always creates one node; its id is the new one.
@@ -526,6 +638,45 @@ mod tests {
         doc.undo();
         assert_eq!(doc.node_rows(&reg).len(), 2);
         assert!(doc.add_node(&reg, source, ToolId::new("no_such_tool").unwrap()).is_err());
+    }
+
+    #[test]
+    fn a_node_can_start_with_values_in_one_undo_step() {
+        let reg = registry();
+        let mut doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), 1);
+        let source = doc.recipe().graph.source();
+        let mut p = Params::new();
+        p.set(exposure_param(), ParamValue::Float(1.5));
+        p.set(ParamId::new("not_a_param").unwrap(), ParamValue::Float(9.0));
+        let id = doc.add_node_with(&reg, source, ToolId::new("exposure").unwrap(), p).unwrap();
+        let node = doc.recipe().graph.node(id).unwrap();
+        assert_eq!(node.params.get(&exposure_param()), Some(ParamValue::Float(1.5)));
+        assert_eq!(node.params.get(&ParamId::new("not_a_param").unwrap()), None, "unknown keys are dropped");
+        doc.undo();
+        assert!(doc.recipe().graph.node(id).is_none());
+    }
+
+    #[test]
+    fn probing_reads_the_preview_upright_through_the_tools_before_the_node() {
+        let reg = registry();
+        // 6 × 4 stored image, shown rotated 90° clockwise: upright it is 4 × 6.
+        let mut px = vec![[0.1_f32, 0.1, 0.1, 1.0]; 24];
+        px[0] = [1.0, 0.5, 0.25, 1.0]; // stored top-left corner
+        let img = Arc::new(ImageF32::from_pixels(6, 4, WorkingSpace::LinearRec2020, px).unwrap());
+        let mut o = opened("a/DSC_1.NEF", Orientation::Rotate90);
+        o.image.preview = Arc::clone(&img);
+        let mut doc = Document::new(o, 1);
+        let source = doc.recipe().graph.source();
+        let exposure = doc.add_node(&reg, source, ToolId::new("exposure").unwrap()).unwrap();
+        doc.set_param(&reg, exposure, exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        let after = doc.add_node(&reg, exposure, ToolId::new("hdr").unwrap()).unwrap();
+        // Rotated 90° clockwise, the stored top-left corner is at the upright top-right.
+        let at_exposure = doc.probe(&reg, exposure, [0.99, 0.01]).unwrap();
+        let at_after = doc.probe(&reg, after, [0.99, 0.01]).unwrap();
+        assert!(at_after[0] > at_exposure[0] * 1.9, "{at_exposure:?} {at_after:?}");
+        assert!(at_exposure[0] > at_exposure[2], "the corner's colour is in the average");
+        assert_eq!(doc.probe(&reg, after, [1.5, 0.0]), None);
+        assert_eq!(doc.shot_light(), None, "no RAW data in this test");
     }
 
     #[test]

@@ -25,7 +25,8 @@ fn exposure_param() -> ParamId {
 fn session_with_exposure(reg: &ToolRegistry) -> (EditSession, NodeId) {
     let mut s = EditSession::new(Recipe::default());
     let source = s.recipe().graph.source();
-    s.apply(reg, Edit::InsertSerial { after: source, tool: exposure_tool() }).expect("insert");
+    s.apply(reg, Edit::InsertSerial { after: source, tool: exposure_tool(), params: core_model::Params::new() })
+        .expect("insert");
     let node = s.recipe().graph.input_link(s.recipe().graph.output(), 0).expect("output fed").from;
     (s, node)
 }
@@ -55,7 +56,8 @@ fn undo_and_redo_return_exactly_to_the_same_recipe() {
     let mut s = EditSession::new(Recipe::default());
     let source = s.recipe().graph.source();
     let start = s.recipe().clone();
-    s.apply(&reg, Edit::InsertSerial { after: source, tool: exposure_tool() }).expect("insert");
+    s.apply(&reg, Edit::InsertSerial { after: source, tool: exposure_tool(), params: core_model::Params::new() })
+        .expect("insert");
     let after_insert = s.recipe().clone();
     s.undo();
     assert_eq!(s.recipe(), &start);
@@ -119,7 +121,7 @@ fn refused_edits_change_neither_recipe_nor_history() {
     let before = s.recipe().clone();
     let undo_before = s.undo_label();
 
-    let unknown_param = ParamId::new("brightness").expect("valid id");
+    let unknown_param = ParamId::new("warmth").expect("valid id");
     assert_eq!(
         s.apply(&reg, Edit::SetParam { node, param: unknown_param.clone(), value: ParamValue::Float(1.0) }),
         Err(EditError::UnknownParam(exposure_tool(), unknown_param))
@@ -133,7 +135,7 @@ fn refused_edits_change_neither_recipe_nor_history() {
     assert_eq!(s.apply(&reg, Edit::Connect(loop_link)), Err(EditError::Graph(GraphError::Cycle)));
     let curves = ToolId::new("curves").expect("valid id");
     assert_eq!(
-        s.apply(&reg, Edit::InsertSerial { after: source, tool: curves.clone() }),
+        s.apply(&reg, Edit::InsertSerial { after: source, tool: curves.clone(), params: core_model::Params::new() }),
         Err(EditError::UnknownTool(curves))
     );
     assert_eq!(

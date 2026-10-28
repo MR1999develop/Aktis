@@ -43,6 +43,9 @@ pub enum Edit {
         after: NodeId,
         /// Tool of the new node.
         tool: ToolId,
+        /// Values the new node starts with (usually none: every parameter
+        /// at its default). Unknown keys are dropped, values sanitised.
+        params: Params,
     },
     /// Removes a node, reconnecting a serial chain around it.
     RemoveNode {
@@ -157,7 +160,9 @@ impl Edit {
                 Self::SetParam { node: map(*node)?, param: param.clone(), value: *value }
             }
             Self::ResetParam { node, param } => Self::ResetParam { node: map(*node)?, param: param.clone() },
-            Self::InsertSerial { after, tool } => Self::InsertSerial { after: map(*after)?, tool: tool.clone() },
+            Self::InsertSerial { after, tool, params } => {
+                Self::InsertSerial { after: map(*after)?, tool: tool.clone(), params: params.clone() }
+            }
             Self::RemoveNode { node } => Self::RemoveNode { node: map(*node)? },
             Self::Connect(link) => Self::Connect(Link { from: map(link.from)?, to: map(link.to)?, ..*link }),
             Self::Disconnect { to, port } => Self::Disconnect { to: map(*to)?, port: *port },
@@ -641,11 +646,16 @@ fn validate(recipe: &Recipe, registry: &ToolRegistry, edit: Edit) -> Result<Edit
             }
             Ok(Edit::ResetParam { node, param })
         }
-        Edit::InsertSerial { after, tool } => {
-            if registry.get(&tool).is_none() {
-                return Err(EditError::UnknownTool(tool));
+        Edit::InsertSerial { after, tool, params } => {
+            let Some(t) = registry.get(&tool) else { return Err(EditError::UnknownTool(tool)) };
+            let d = t.descriptor();
+            let mut clean = Params::new();
+            for p in &d.params {
+                if let Some(v) = params.get(&p.id) {
+                    clean.set(p.id.clone(), p.sanitize(v));
+                }
             }
-            Ok(Edit::InsertSerial { after, tool })
+            Ok(Edit::InsertSerial { after, tool, params: clean })
         }
         Edit::SetWhiteBalance(WhiteBalance::Multipliers(m)) if !m.iter().all(|v| v.is_finite() && *v > 0.0) => {
             Err(EditError::InvalidWhiteBalance)
@@ -742,8 +752,8 @@ fn perform(recipe: &mut Recipe, edit: &Edit) -> Result<(Undo, Vec<NodeId>), Edit
             let before = graph.clone();
             let mut next = before.clone();
             match edit {
-                Edit::InsertSerial { after, tool } => {
-                    next.insert_serial(*after, tool.clone(), Params::new())?;
+                Edit::InsertSerial { after, tool, params } => {
+                    next.insert_serial(*after, tool.clone(), params.clone())?;
                 }
                 Edit::RemoveNode { node } => {
                     next.remove_node(*node)?;

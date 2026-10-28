@@ -1,6 +1,6 @@
 [package]
 name = "tool-exposure"
-description = "Exposure tool: scales linear light by 2^stops."
+description = "Exposure tool: exposure in stops, contrast, brightness and saturation."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -17,6 +17,7 @@ export.workspace = true
 lens-db.workspace = true
 platform.workspace = true
 tool-exposure.workspace = true
+tool-adjust.workspace = true
 tool-denoise-ai = { workspace = true, optional = true }
 
 # On Windows the AI denoise tool also gets its GPU back ends: DirectML (any

@@ -32,6 +32,9 @@ use tool_api::{RegistryError, ToolError, ToolRegistry};
 pub fn builtin_tools() -> Result<ToolRegistry, RegistryError> {
     let mut r = ToolRegistry::new();
     r.register(tool_exposure::Exposure::shared())?;
+    for tool in tool_adjust::tools() {
+        r.register(tool)?;
+    }
     #[cfg(feature = "ai-denoise")]
     r.register(ai_denoise())?;
     Ok(r)
