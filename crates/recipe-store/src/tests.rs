@@ -135,7 +135,7 @@ fn every_edit() -> Vec<Edit> {
             ],
         },
         Edit::ResetParam { node: n, param: param("exposure") },
-        Edit::InsertSerial { after: NodeId::from_raw(0), tool: tool("exposure"), params: values },
+        Edit::InsertSerial { after: NodeId::from_raw(0), tool: tool("exposure"), params: values.clone() },
         Edit::InsertSerial { after: n, tool: tool("hdr"), params: Params::new() },
         Edit::RemoveNode { node: n },
         Edit::Connect(Link { from: NodeId::from_raw(3), from_port: 0, to: n, to_port: 1 }),
@@ -150,6 +150,23 @@ fn every_edit() -> Vec<Edit> {
         Edit::SetGeometry(core_model::Geometry { angle: 2.0, ..core_model::Geometry::default() }),
         Edit::AddMask { to: n, def: every_mask() },
         Edit::SetMask { node: NodeId::from_raw(5), def: MaskDef::default() },
+        Edit::ApplyStyle {
+            name: "Warm".to_owned(),
+            style: Box::new(core_model::Style {
+                white_balance: Some(WhiteBalance::AsShot),
+                geometry: Some(core_model::Geometry { angle: -1.0, ..core_model::Geometry::default() }),
+                nodes: vec![core_model::StyleNode { tool: tool("exposure"), params: values.clone() }],
+                ..core_model::Style::default()
+            }),
+        },
+        Edit::AddStyleBrush {
+            name: "Dodge".to_owned(),
+            style: Box::new(core_model::Style {
+                nodes: vec![core_model::StyleNode { tool: tool("exposure"), params: values.clone() }],
+                ..core_model::Style::default()
+            }),
+            mask: every_mask(),
+        },
     ]
 }
 

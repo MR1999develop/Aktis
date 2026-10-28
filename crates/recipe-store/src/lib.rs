@@ -12,8 +12,13 @@
 
 mod codec;
 mod json;
+mod preset;
 
 use std::fmt;
+
+pub use preset::{
+    BRUSH_EXTENSION, BrushSettings, PRESET_EXTENSION, PRESET_FORMAT, Preset, decode_preset, encode_preset,
+};
 
 use commands::SavedHistory;
 use core_model::{NodeId, Recipe};

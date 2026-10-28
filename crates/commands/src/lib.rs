@@ -11,7 +11,7 @@ use std::fmt;
 
 use core_model::{
     Geometry, GraphError, LensSettings, Link, MaskDef, NodeGraph, NodeId, NodeKind, ParamId, ParamValue, Params,
-    PortKind, ProfileChoice, Recipe, ToolId, WhiteBalance,
+    PortKind, ProfileChoice, Recipe, Style, ToolId, WhiteBalance,
 };
 use tool_api::ToolRegistry;
 
@@ -102,6 +102,28 @@ pub enum Edit {
         /// The new definition.
         def: MaskDef,
     },
+    /// Applies a style (a preset) to the whole photo, as Capture One does:
+    /// the development settings and geometry it holds replace the photo's,
+    /// and each of its tools sets the photo's node of that tool (the last
+    /// one before the output that has no mask), or is added before the
+    /// output when the photo has none.
+    ApplyStyle {
+        /// The style's name (for the history).
+        name: String,
+        /// The style.
+        style: Box<Style>,
+    },
+    /// Paints a style with a brush (Capture One's style brushes): the
+    /// style's tools are added before the output, named after the brush,
+    /// and all restricted by one new mask.
+    AddStyleBrush {
+        /// The brush's name, given to the new nodes.
+        name: String,
+        /// The tools to add (development settings and geometry are ignored).
+        style: Box<Style>,
+        /// The new mask (usually the first stroke).
+        mask: MaskDef,
+    },
 }
 
 impl Edit {
@@ -127,6 +149,8 @@ impl Edit {
             Self::SetGeometry(_) => "Change crop and straightening".to_owned(),
             Self::AddMask { .. } => "Add mask".to_owned(),
             Self::SetMask { .. } => "Change mask".to_owned(),
+            Self::ApplyStyle { name, .. } => format!("Apply style \u{201c}{name}\u{201d}"),
+            Self::AddStyleBrush { name, .. } => format!("Style brush \u{201c}{name}\u{201d}"),
         }
     }
 
@@ -175,7 +199,8 @@ impl Edit {
             | Self::SetCameraProfile(_)
             | Self::SetLensCorrection(_)
             | Self::SetGeometry(_) => EditKind::Develop,
-            Self::AddMask { .. } | Self::SetMask { .. } => EditKind::Mask,
+            Self::AddMask { .. } | Self::SetMask { .. } | Self::AddStyleBrush { .. } => EditKind::Mask,
+            Self::ApplyStyle { .. } => EditKind::Develop,
             Self::InsertSerial { .. }
             | Self::RemoveNode { .. }
             | Self::Connect(_)
@@ -205,7 +230,9 @@ impl Edit {
             Self::SetWhiteBalance(_)
             | Self::SetCameraProfile(_)
             | Self::SetLensCorrection(_)
-            | Self::SetGeometry(_) => self.clone(),
+            | Self::SetGeometry(_)
+            | Self::ApplyStyle { .. }
+            | Self::AddStyleBrush { .. } => self.clone(),
         })
     }
 }
@@ -268,6 +295,10 @@ pub enum EditError {
     /// The edit was saved by a newer version of the editor and is shown
     /// read-only: nothing can change.
     ReadOnly,
+    /// A style brush without tools to paint.
+    EmptyStyle,
+    /// A style brush holds a tool that cannot be restricted by a mask.
+    ToolTakesNoMask(ToolId),
 }
 
 impl fmt::Display for EditError {
@@ -287,6 +318,8 @@ impl fmt::Display for EditError {
             Self::BadHistoryOrder => write!(f, "the new history order names a step twice or a missing step"),
             Self::NodeFromRemovedStep => write!(f, "it acts on a node made by a removed step"),
             Self::Saved(why) => f.write_str(why),
+            Self::EmptyStyle => write!(f, "this style brush has no adjustments to paint"),
+            Self::ToolTakesNoMask(tool) => write!(f, "tool '{tool}' cannot be painted with a brush"),
             Self::ReadOnly => {
                 write!(f, "this photo is read-only: its edits were saved by a newer version of the editor")
             }
@@ -339,6 +372,8 @@ enum Undo {
         node: NodeId,
         previous: MaskDef,
     },
+    /// Edits that change several parts keep the whole previous recipe.
+    Recipe(Box<Recipe>),
     /// Structural edits keep the whole previous graph: graphs are small and
     /// this restores ids and links exactly.
     Graph(Box<NodeGraph>),
@@ -855,8 +890,137 @@ fn validate(recipe: &Recipe, registry: &ToolRegistry, edit: Edit) -> Result<Edit
             }
             Ok(Edit::SetMask { node, def: def.sanitized() })
         }
+        Edit::ApplyStyle { name, style } => {
+            let style = Box::new(validate_style(recipe, registry, *style)?);
+            Ok(Edit::ApplyStyle { name, style })
+        }
+        Edit::AddStyleBrush { name, style, mask } => {
+            let style = Box::new(validate_style(recipe, registry, style.local())?);
+            if style.nodes.is_empty() {
+                return Err(EditError::EmptyStyle);
+            }
+            for n in &style.nodes {
+                let probe = NodeKind::Tool(n.tool.clone());
+                if !probe.inputs().contains(&PortKind::Mask) {
+                    return Err(EditError::ToolTakesNoMask(n.tool.clone()));
+                }
+            }
+            Ok(Edit::AddStyleBrush { name: name.trim().to_owned(), style, mask: mask.sanitized() })
+        }
         other => Ok(other),
     }
+}
+
+/// `style` with its values checked like the single edits that set them:
+/// tools must exist, unknown parameters are dropped, values clamped.
+fn validate_style(recipe: &Recipe, registry: &ToolRegistry, mut style: Style) -> Result<Style, EditError> {
+    for n in &mut style.nodes {
+        let tool = registry.get(&n.tool).ok_or_else(|| EditError::UnknownTool(n.tool.clone()))?;
+        let mut clean = Params::new();
+        for p in &tool.descriptor().params {
+            if let Some(v) = n.params.get(&p.id) {
+                clean.set(p.id.clone(), p.sanitize(v));
+            }
+        }
+        n.params = clean;
+    }
+    if let Some(wb) = style.white_balance {
+        validate(recipe, registry, Edit::SetWhiteBalance(wb))?;
+    }
+    if let Some(p) = style.profile.take() {
+        let Edit::SetCameraProfile(p) = validate(recipe, registry, Edit::SetCameraProfile(p))? else {
+            unreachable!("validation keeps the kind of edit")
+        };
+        style.profile = Some(p);
+    }
+    if let Some(l) = style.lens.take() {
+        let Edit::SetLensCorrection(l) = validate(recipe, registry, Edit::SetLensCorrection(l))? else {
+            unreachable!("validation keeps the kind of edit")
+        };
+        style.lens = Some(l);
+    }
+    style.geometry = style.geometry.map(|g| g.sanitized());
+    Ok(style)
+}
+
+/// The node feeding the output: new nodes go after it.
+fn last_before_output(graph: &NodeGraph) -> NodeId {
+    graph.input_link(graph.output(), 0).map_or_else(|| graph.source(), |l| l.from)
+}
+
+/// The node of `tool` a style sets: walking back from the output along the
+/// image inputs, the first one without a mask.
+fn style_target(graph: &NodeGraph, tool: &ToolId) -> Option<NodeId> {
+    let mut at = graph.input_link(graph.output(), 0)?.from;
+    let mut seen = 0;
+    while seen <= graph.nodes().count() {
+        let node = graph.node(at)?;
+        if node.kind == NodeKind::Tool(tool.clone()) {
+            let mask_port = node.kind.inputs().iter().position(|k| *k == PortKind::Mask);
+            let masked =
+                mask_port.and_then(|p| u8::try_from(p).ok()).is_some_and(|p| graph.input_link(at, p).is_some());
+            if !masked {
+                return Some(at);
+            }
+        }
+        at = graph.input_link(at, 0)?.from;
+        seen += 1;
+    }
+    None
+}
+
+/// Applies a validated style to `recipe` (see [`Edit::ApplyStyle`]).
+fn apply_style(recipe: &mut Recipe, style: &Style) -> Result<(), EditError> {
+    if let Some(wb) = style.white_balance {
+        recipe.develop.white_balance = wb;
+    }
+    if let Some(p) = &style.profile {
+        recipe.develop.profile = p.clone();
+    }
+    if let Some(l) = &style.lens {
+        recipe.develop.lens = l.clone();
+    }
+    if let Some(g) = style.geometry {
+        recipe.geometry = g;
+    }
+    for n in &style.nodes {
+        match style_target(&recipe.graph, &n.tool) {
+            Some(id) => {
+                let mut node = recipe.graph.node_mut(id).ok_or(GraphError::UnknownNode(id))?;
+                for (param, value) in n.params.iter() {
+                    node.params().set(param.clone(), *value);
+                }
+            }
+            None => {
+                let after = last_before_output(&recipe.graph);
+                recipe.graph.insert_serial(after, n.tool.clone(), n.params.clone())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Adds the nodes of a validated style brush and their shared mask.
+fn add_style_brush(graph: &mut NodeGraph, name: &str, style: &Style, mask: &MaskDef) -> Result<(), EditError> {
+    let mut added = Vec::with_capacity(style.nodes.len());
+    for n in &style.nodes {
+        let after = last_before_output(graph);
+        let id = graph.insert_serial(after, n.tool.clone(), n.params.clone())?;
+        if let Some(mut node) = graph.node_mut(id) {
+            node.set_label(name.to_owned());
+        }
+        added.push(id);
+    }
+    let mask_node = graph.add_mask_node(mask.clone());
+    for id in added {
+        let port = graph
+            .node(id)
+            .and_then(|n| n.kind.inputs().iter().position(|k| *k == PortKind::Mask))
+            .and_then(|p| u8::try_from(p).ok())
+            .ok_or(EditError::NoMaskInput(id))?;
+        graph.connect(Link { from: mask_node, from_port: 0, to: id, to_port: port })?;
+    }
+    Ok(())
 }
 
 fn tool_of(recipe: &Recipe, node: NodeId) -> Result<ToolId, EditError> {
@@ -912,6 +1076,21 @@ fn perform(recipe: &mut Recipe, edit: &Edit) -> Result<(Undo, Vec<NodeId>), Edit
                 .and_then(|p| u8::try_from(p).ok())
                 .ok_or(EditError::NoMaskInput(*to))?;
             next.connect(Link { from: mask, from_port: 0, to: *to, to_port: port })?;
+            *graph = next;
+            return Ok((Undo::Graph(Box::new(before.clone())), new_nodes(&before, graph)));
+        }
+        Edit::ApplyStyle { style, .. } => {
+            let before = recipe.clone();
+            let mut next = before.clone();
+            apply_style(&mut next, style)?;
+            *recipe = next;
+            let created = new_nodes(&before.graph, &recipe.graph);
+            return Ok((Undo::Recipe(Box::new(before)), created));
+        }
+        Edit::AddStyleBrush { name, style, mask } => {
+            let before = graph.clone();
+            let mut next = before.clone();
+            add_style_brush(&mut next, name, style, mask)?;
             *graph = next;
             return Ok((Undo::Graph(Box::new(before.clone())), new_nodes(&before, graph)));
         }
@@ -986,6 +1165,7 @@ fn revert(recipe: &mut Recipe, undo: &Undo) {
             }
         }
         Undo::Graph(g) => recipe.graph = (**g).clone(),
+        Undo::Recipe(r) => *recipe = (**r).clone(),
     }
 }
 

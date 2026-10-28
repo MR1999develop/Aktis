@@ -18,6 +18,7 @@ mod orientation;
 mod params;
 mod recipe;
 mod sensor;
+mod style;
 
 pub use capture::{CalibratedMatrix, CaptureInfo, Illuminant};
 pub use geometry::{Geometry, MAX_ANGLE, Warp, full_frame, level_angle};
@@ -33,3 +34,4 @@ pub use orientation::Orientation;
 pub use params::{ParamValue, Params};
 pub use recipe::{DevelopSettings, LensSettings, ProfileChoice, Recipe, WhiteBalance};
 pub use sensor::{BayerPattern, CfaPattern, SensorError, SensorImage};
+pub use style::{Style, StyleNode, StyleSelection, tool_nodes};

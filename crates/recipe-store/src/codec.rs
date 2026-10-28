@@ -9,7 +9,7 @@ use commands::{Edit, SavedHistory, SavedStep};
 use core_model::{
     AiMask, AiTarget, BodyPart, BrushMask, BrushStroke, DevelopSettings, Geometry, LensSettings, Link, MaskComponent,
     MaskDef, MaskOp, MaskSource, ModelId, Node, NodeGraph, NodeId, NodeKind, NormPoint, NormRect, ParamId, ParamValue,
-    Params, ProfileChoice, PromptPoint, RasterKey, Recipe, ToolId, WhiteBalance,
+    Params, ProfileChoice, PromptPoint, RasterKey, Recipe, Style, StyleNode, ToolId, WhiteBalance,
 };
 
 use crate::Layout;
@@ -214,6 +214,48 @@ fn read_params(v: &Value) -> Result<Params, String> {
         p.set(id, read_param_value(value, k)?);
     }
     Ok(p)
+}
+
+// ----- styles -----
+
+/// A style: each development setting and the geometry `null` when not
+/// included, the tool nodes as `{"tool": …, "params": {…}}` in acting order.
+pub(crate) fn style(st: &Style) -> Value {
+    let nodes = st
+        .nodes
+        .iter()
+        .map(|n| Value::object([("tool", Value::text(n.tool.as_str())), ("params", params(&n.params))]))
+        .collect();
+    Value::object([
+        ("white_balance", opt(st.white_balance.map(white_balance))),
+        ("profile", opt(st.profile.as_ref().map(profile))),
+        ("lens", opt(st.lens.as_ref().map(lens))),
+        ("geometry", opt(st.geometry.as_ref().map(geometry))),
+        ("nodes", Value::Array(nodes)),
+    ])
+}
+
+/// A style read back.
+pub(crate) fn read_style(v: &Value) -> Result<Style, String> {
+    let f = v.as_object("style")?;
+    let nodes = required(f, "nodes")?
+        .as_array("nodes")?
+        .iter()
+        .map(|n| {
+            let nf = n.as_object("style node")?;
+            Ok(StyleNode {
+                tool: read_tool(required(nf, "tool")?, "tool")?,
+                params: read_params(required(nf, "params")?)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Style {
+        white_balance: optional(f, "white_balance").map(read_white_balance).transpose()?,
+        profile: optional(f, "profile").map(read_profile).transpose()?,
+        lens: optional(f, "lens").map(read_lens).transpose()?,
+        geometry: optional(f, "geometry").map(read_geometry).transpose()?,
+        nodes,
+    })
 }
 
 // ----- masks -----
@@ -528,6 +570,13 @@ pub(crate) fn edit(e: &Edit) -> Value {
         Edit::SetGeometry(g) => o("set_geometry", vec![kv("geometry", geometry(g))]),
         Edit::AddMask { to, def } => o("add_mask", vec![kv("to", id(*to)), kv("mask", mask_def(def))]),
         Edit::SetMask { node, def } => o("set_mask", vec![kv("node", id(*node)), kv("mask", mask_def(def))]),
+        Edit::ApplyStyle { name, style: st } => {
+            o("apply_style", vec![kv("name", Value::text(name)), kv("style", style(st))])
+        }
+        Edit::AddStyleBrush { name, style: st, mask } => o(
+            "add_style_brush",
+            vec![kv("name", Value::text(name)), kv("style", style(st)), kv("mask", mask_def(mask))],
+        ),
     }
 }
 
@@ -569,6 +618,15 @@ pub(crate) fn read_edit(v: &Value) -> Result<Edit, String> {
         "set_geometry" => Edit::SetGeometry(read_geometry(required(f, "geometry")?)?),
         "add_mask" => Edit::AddMask { to: node("to")?, def: read_mask_def(required(f, "mask")?)? },
         "set_mask" => Edit::SetMask { node: node("node")?, def: read_mask_def(required(f, "mask")?)? },
+        "apply_style" => Edit::ApplyStyle {
+            name: required(f, "name")?.as_str("name")?.to_owned(),
+            style: Box::new(read_style(required(f, "style")?)?),
+        },
+        "add_style_brush" => Edit::AddStyleBrush {
+            name: required(f, "name")?.as_str("name")?.to_owned(),
+            style: Box::new(read_style(required(f, "style")?)?),
+            mask: read_mask_def(required(f, "mask")?)?,
+        },
         other => return Err(format!("unknown edit '{other}'")),
     })
 }
