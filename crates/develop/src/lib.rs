@@ -1,7 +1,8 @@
 //! The fixed development stage, on the CPU: sensor data → linear working space.
 //!
 //! Order (fixed by the sensor's physics and the optics): white balance on the
-//! raw mosaic, demosaic, lens corrections in camera RGB (vignetting, then
+//! raw mosaic, demosaic, clipped highlights made neutral
+//! ([`neutralise_clipped`]), lens corrections in camera RGB (vignetting, then
 //! distortion and lateral chromatic aberration, which move each colour
 //! channel differently), camera profile into the working space. Bayer
 //! sensors are demosaiced bilinearly, X-Trans sensors with an edge-aware
@@ -127,6 +128,11 @@ pub fn develop_with(
         }
     };
 
+    // Highlights where the sensor saturated: neutral, not the colour of the multipliers.
+    for px in &mut camera {
+        *px = neutralise_clipped(*px, wb);
+    }
+
     // Lens corrections, in camera RGB where each channel is still one colour.
     if let Some(c) = inputs.lens {
         if c.applied().vignetting {
@@ -159,6 +165,34 @@ pub fn develop_with(
         }
     }
     ImageF32::from_pixels(sensor.width(), sensor.height(), space, pixels).map_err(DevelopError::Image)
+}
+
+/// Raw level (relative to the white level) from which a pixel starts
+/// turning neutral…
+pub const CLIP_FROM: f32 = 0.90;
+/// …and at which it is fully neutral: the sensor saturated.
+pub const CLIP_AT: f32 = 0.99;
+
+/// One white-balanced camera pixel with its saturated highlights made neutral.
+///
+/// A saturated photosite reads the white level whatever the light, so after
+/// white balance a burnt highlight takes the colour of the multipliers
+/// (typically pink or magenta) instead of white; lowering the exposure or
+/// recovering highlights would show it. Where any channel, back on the
+/// sensor's scale, nears the white level, the pixel is blended towards the
+/// neutral of its brightest channel: what the camera could not measure
+/// becomes white, and unclipped colours, even bright ones, are untouched.
+#[must_use]
+pub fn neutralise_clipped(px: [f32; 3], wb: [f32; 3]) -> [f32; 3] {
+    let raw = |c: usize| px[c] / wb[c].max(f32::MIN_POSITIVE);
+    let level = raw(0).max(raw(1)).max(raw(2));
+    if level.is_nan() || level <= CLIP_FROM {
+        return px; // NaN is left to the output render
+    }
+    let t = ((level - CLIP_FROM) / (CLIP_AT - CLIP_FROM)).clamp(0.0, 1.0);
+    let t = t * t * (3.0 - 2.0 * t);
+    let white = px[0].max(px[1]).max(px[2]);
+    px.map(|v| v + (white - v) * t)
 }
 
 /// Mirrors an index at the borders without repeating the edge sample
@@ -268,6 +302,51 @@ mod tests {
             DevelopSettings { white_balance: WhiteBalance::Multipliers([1.0, 1.0, 1.0]), ..DevelopSettings::default() };
         let img = develop(&s, &settings, WorkingSpace::LinearRec2020).expect("develops");
         assert_all_close(&img, [0.5; 3], 1e-4);
+    }
+
+    #[test]
+    fn a_burnt_highlight_develops_to_white_not_to_the_colour_of_the_multipliers() {
+        // Every photosite at the white level; multipliers as a daylight camera records them.
+        let s = sensor(6, 6, BayerPattern::Rggb, [1.0, 1.0, 1.0], [2.1, 1.0, 1.5]);
+        let img = develop(&s, &DevelopSettings::default(), WorkingSpace::LinearSrgb).expect("develops");
+        let p = img.pixels()[14];
+        assert!((p[0] - p[1]).abs() < 1e-4 && (p[1] - p[2]).abs() < 1e-4, "neutral: {p:?}");
+        assert!(p[0] >= 2.0, "as bright as its brightest channel: {p:?}");
+    }
+
+    #[test]
+    fn bright_colours_the_sensor_measured_keep_their_colour() {
+        // A strong red below saturation on every channel develops exactly like
+        // the same red one stop darker, scaled: nothing was neutralised.
+        let wb = [2.1, 1.0, 1.5];
+        let develop_red = |k: f32| {
+            let s = sensor(6, 6, BayerPattern::Rggb, [0.85 * k, 0.2 * k, 0.1 * k], wb);
+            develop(&s, &DevelopSettings::default(), WorkingSpace::LinearSrgb).expect("develops")
+        };
+        let (bright, dark) = (develop_red(1.0), develop_red(0.5));
+        for (b, d) in bright.pixels().iter().zip(dark.pixels()) {
+            for c in 0..3 {
+                assert!((b[c] - 2.0 * d[c]).abs() < 1e-4, "{b:?} vs 2 × {d:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn clipping_turns_neutral_gradually_and_never_darkens() {
+        let wb = [2.0, 1.0, 1.5];
+        let mut last = neutralise_clipped([0.5 * 2.0, 0.4, 0.3 * 1.5], wb);
+        for i in 0..=100 {
+            #[allow(clippy::cast_precision_loss)]
+            let r = 0.85 + 0.15 * i as f32 / 100.0;
+            let px = neutralise_clipped([r * 2.0, 0.4, 0.3 * 1.5], wb);
+            assert!(px[0] >= r * 2.0 - 1e-5, "the brightest channel is kept: {px:?}");
+            assert!(px[1] >= 0.4 - 1e-6 && px[2] >= 0.45 - 1e-6, "never darker: {px:?}");
+            assert!((px[1] - last[1]).abs() < 0.15, "no jump at {r}: {last:?} → {px:?}");
+            last = px;
+        }
+        assert!((last[0] - last[1]).abs() < 1e-5 && (last[1] - last[2]).abs() < 1e-5, "{last:?}");
+        let dark = neutralise_clipped([0.2, 0.3, 0.1], wb);
+        assert!(dark.iter().zip([0.2, 0.3, 0.1]).all(|(a, b)| (a - b).abs() < 1e-7), "{dark:?}");
     }
 
     #[test]
