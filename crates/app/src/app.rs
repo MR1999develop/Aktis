@@ -930,14 +930,19 @@ impl EditorApp {
 
     fn request_render(&mut self, ctx: &egui::Context) {
         let (Some(doc), Some(worker)) = (&self.doc, &self.worker) else { return };
-        let busy = self.drag.is_some();
         // The full-size render only when the zoom shows more than the preview has.
         let (w, h) = doc.shown_size(self.tool != Some(ViewerTool::Crop));
+        let screen_scale = self.viewport.as_ref().map(|vp| self.view.scale([w as f32, h as f32], vp));
         let full_adds_detail = doc.preview_is_reduced()
-            && self.viewport.as_ref().is_some_and(|vp| {
-                editor::needs_full_resolution(self.view.scale([w as f32, h as f32], vp), doc.preview_scale())
-            });
-        let Some(quality) = self.plan.next(doc.generation(), busy, doc.draft_is_reduced(), full_adds_detail) else {
+            && screen_scale.is_some_and(|s| editor::needs_full_resolution(s, doc.preview_scale()));
+        // While a control is dragged, the draft only when it is as sharp as
+        // the viewer shows the photo; zoomed in, the GPU keeps rendering the
+        // full image too, so the photo never gets coarser than it was.
+        let draft_helps = doc.draft_is_reduced()
+            && screen_scale.is_some_and(|s| !editor::needs_full_resolution(s, doc.draft_scale()));
+        let gpu = matches!(self.backend, Some(Backend::Gpu(_)));
+        let busy = self.drag.is_some() && !(gpu && full_adds_detail);
+        let Some(quality) = self.plan.next(doc.generation(), busy, draft_helps, full_adds_detail) else {
             return;
         };
         let source = match quality {

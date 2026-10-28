@@ -258,6 +258,15 @@ impl Document {
         scale
     }
 
+    /// The draft's size over the full size (1 when there is no smaller draft).
+    #[must_use]
+    pub fn draft_scale(&self) -> f32 {
+        let (d, f) = (self.opened.image.draft.width(), self.opened.image.developed.width());
+        #[allow(clippy::cast_precision_loss)] // image widths
+        let scale = if f == 0 { 1.0 } else { d as f32 / f as f32 };
+        scale
+    }
+
     /// Width and height of the upright full-size image.
     #[must_use]
     pub fn upright_size(&self) -> (u32, u32) {
