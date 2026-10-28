@@ -8,11 +8,16 @@
 //!   subject" finds the main subject. The models run in the background.
 //!
 //! Both show the mask as a red overlay (O toggles it), and share feather,
-//! invert and clear in the options bar. The editing logic is in
+//! invert and clear in the options bar.
+//!
+//! - **Style brushes** (as in Capture One): choosing one in the options bar
+//!   (or Image \u{25b8} Style brushes) arms the brush with its settings; the
+//!   first stroke adds the brush's adjustments behind a new mask, named
+//!   after the brush, which further strokes extend. The editing logic is in
 //! [`editor::masking`]; this module draws and turns pointer input into
 //! [`MaskEdit`]s.
 
-use core_model::{MaskDef, NodeId, NormPoint};
+use core_model::{MaskDef, NodeId, NormPoint, Style};
 use editor::masking::Brush;
 use eframe::egui::{self, Align2, CornerRadius, Id, Order, Pos2, Rect, Response, RichText, Stroke, TextureHandle};
 
@@ -54,6 +59,28 @@ pub enum MaskEdit {
         /// The definition.
         def: MaskDef,
     },
+    /// The first stroke of an armed style brush: its adjustments are added
+    /// behind a new mask holding the stroke.
+    StyleStroke {
+        /// The brush's name.
+        name: String,
+        /// Its adjustments.
+        style: Style,
+        /// The path (developed-image points).
+        points: Vec<NormPoint>,
+    },
+    /// A style brush was chosen in the options bar (an index into the
+    /// brushes it was given).
+    ChooseStyleBrush(usize),
+}
+
+/// A style brush waiting for its first stroke.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArmedBrush {
+    /// Its name.
+    pub name: String,
+    /// Its adjustments.
+    pub style: Style,
 }
 
 /// State of the mask tools between frames.
@@ -70,6 +97,8 @@ pub struct MaskUi {
     stroke_screen: Vec<Pos2>,
     /// The overlay texture and what it was made for (document generation, node, cropped).
     overlay: Option<((u64, NodeId, bool), TextureHandle)>,
+    /// The style brush the next stroke adds.
+    armed: Option<ArmedBrush>,
 }
 
 impl std::fmt::Debug for MaskUi {
@@ -79,6 +108,28 @@ impl std::fmt::Debug for MaskUi {
 }
 
 impl MaskUi {
+    /// Arms style brush `name`: its settings become the brush's, and the
+    /// next stroke adds `style` behind a new mask.
+    pub fn arm(&mut self, name: String, style: Style, settings: &editor::presets::BrushSettings) {
+        self.brush.radius = settings.radius;
+        self.brush.hardness = settings.hardness;
+        self.brush.opacity = settings.opacity;
+        self.brush.edge_aware = settings.edge_aware;
+        self.erase = false;
+        self.armed = Some(ArmedBrush { name, style });
+    }
+
+    /// Forgets the armed style brush.
+    pub fn disarm(&mut self) {
+        self.armed = None;
+    }
+
+    /// The style brush waiting for its first stroke.
+    #[must_use]
+    pub fn armed(&self) -> Option<&ArmedBrush> {
+        self.armed.as_ref()
+    }
+
     /// Keys of the mask tools: `[`/`]` brush size, O overlay. Not while typing.
     pub fn keys(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
@@ -113,15 +164,18 @@ impl MaskUi {
         edits: &mut Vec<MaskEdit>,
     ) -> bool {
         let t = Tokens::of(ui.ctx().theme());
-        let Some(node) = node else { return false };
+        let painting_style = tool == ViewerTool::Masks && self.armed.is_some();
+        if node.is_none() && !painting_style {
+            return false;
+        }
         let painter = ui.painter_at(response.rect);
-        let alt = ui.input(|i| i.modifiers.alt);
+        let alt = ui.input(|i| i.modifiers.alt) && !painting_style;
         match tool {
             ViewerTool::Masks => {
                 let r = self.brush.radius * long_side;
                 if let Some(p) = response.hover_pos() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::None);
-                    let color = if self.erase || alt { t.error } else { t.text_strong };
+                    let color = if (self.erase && !painting_style) || alt { t.error } else { t.text_strong };
                     painter.circle_stroke(p, r, Stroke::new(1.5, color));
                     painter.circle_stroke(p, r * self.brush.hardness, Stroke::new(1.0, color.gamma_multiply(0.5)));
                 }
@@ -151,12 +205,13 @@ impl MaskUi {
                     {
                         self.stroke.push(d);
                     }
-                    if !self.stroke.is_empty() {
-                        edits.push(MaskEdit::Stroke {
-                            node,
-                            points: std::mem::take(&mut self.stroke),
-                            erase: self.erase || alt,
-                        });
+                    let points = std::mem::take(&mut self.stroke);
+                    if !points.is_empty() {
+                        if let Some(armed) = self.armed.take() {
+                            edits.push(MaskEdit::StyleStroke { name: armed.name, style: armed.style, points });
+                        } else if let Some(node) = node {
+                            edits.push(MaskEdit::Stroke { node, points, erase: self.erase || alt });
+                        }
                     }
                     self.stroke_screen.clear();
                 }
@@ -171,6 +226,7 @@ impl MaskUi {
                     });
                 }
                 if response.clicked()
+                    && let Some(node) = node
                     && let Some(at) = response.interact_pointer_pos().and_then(to_developed)
                 {
                     let shift = ui.input(|i| i.modifiers.shift);
@@ -225,6 +281,7 @@ impl MaskUi {
         node: Option<(NodeId, String)>,
         def: Option<&MaskDef>,
         busy: bool,
+        brushes: &[String],
         edits: &mut Vec<MaskEdit>,
     ) {
         let t = Tokens::of(ctx.theme());
@@ -240,6 +297,22 @@ impl MaskUi {
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            if tool == ViewerTool::Masks {
+                                self.style_brush_picker(ui, &t, brushes, edits);
+                                ui.separator();
+                            }
+                            if let Some(armed) = &self.armed {
+                                ui.label(RichText::new(format!("Paint to add \u{201c}{}\u{201d}", armed.name)).strong());
+                                ui.label("Size");
+                                let mut size = self.brush.radius * 100.0;
+                                if ui
+                                    .add(egui::Slider::new(&mut size, 0.1..=25.0).logarithmic(true).suffix(" %").fixed_decimals(1))
+                                    .changed()
+                                {
+                                    self.brush.radius = size / 100.0;
+                                }
+                                return;
+                            }
                             let Some((node, name)) = node else {
                                 ui.label(RichText::new("Select a node in the graph: its mask is what you draw").color(t.text_weak));
                                 return;
@@ -297,6 +370,35 @@ impl MaskUi {
                         });
                     });
             });
+    }
+}
+
+impl MaskUi {
+    /// The Style brush menu of the options bar: the brushes, and Cancel
+    /// while one is armed.
+    fn style_brush_picker(&mut self, ui: &mut egui::Ui, t: &Tokens, brushes: &[String], edits: &mut Vec<MaskEdit>) {
+        let current = self.armed.as_ref().map_or("Style brush", |a| a.name.as_str());
+        egui::ComboBox::from_id_salt("rne-style-brush")
+            .selected_text(current)
+            .width(150.0)
+            .show_ui(ui, |ui| {
+                if brushes.is_empty() {
+                    ui.label(RichText::new("No style brushes").color(t.text_weak));
+                }
+                for (i, name) in brushes.iter().enumerate() {
+                    if ui.selectable_label(false, name.as_str()).clicked() {
+                        edits.push(MaskEdit::ChooseStyleBrush(i));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Paint adjustments: the first stroke adds a new masked node, as Capture One's style brushes",
+            );
+        if self.armed.is_some() && ui.button("Cancel").on_hover_text("Paint the selected node's mask instead").clicked()
+        {
+            self.armed = None;
+        }
     }
 }
 

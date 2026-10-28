@@ -149,7 +149,7 @@ impl Edit {
             Self::SetGeometry(_) => "Change crop and straightening".to_owned(),
             Self::AddMask { .. } => "Add mask".to_owned(),
             Self::SetMask { .. } => "Change mask".to_owned(),
-            Self::ApplyStyle { name, .. } => format!("Apply style \u{201c}{name}\u{201d}"),
+            Self::ApplyStyle { name, .. } => format!("Apply preset \u{201c}{name}\u{201d}"),
             Self::AddStyleBrush { name, .. } => format!("Style brush \u{201c}{name}\u{201d}"),
         }
     }

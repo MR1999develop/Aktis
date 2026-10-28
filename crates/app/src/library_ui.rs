@@ -61,6 +61,8 @@ pub enum LibraryAction {
     },
     /// A command of the open photo's card menu (its variants).
     Command(Command),
+    /// Apply preset number `.1` (in the order of [`Library::set_presets`]) to these photos.
+    ApplyPreset(Vec<PathBuf>, usize),
     /// Start "AI-tag this folder".
     TagFolder,
     /// Stop it.
@@ -102,6 +104,7 @@ enum CardAction {
     Export(PathBuf),
     ExportAgain(PathBuf),
     Command(Command),
+    ApplyPreset(PathBuf, usize),
 }
 
 /// The Rename dialog.
@@ -135,6 +138,8 @@ pub struct Library {
     scroll_to: Option<PathBuf>,
     /// Filmstrip rows drawn at the last frame.
     shown_rows: std::ops::Range<usize>,
+    /// Names of the presets offered in the card menu ("Group / Name").
+    presets: Vec<String>,
 }
 
 impl std::fmt::Debug for Library {
@@ -180,6 +185,7 @@ impl Library {
             rename: None,
             scroll_to: None,
             shown_rows: 0..0,
+            presets: Vec::new(),
         }
     }
 
@@ -320,6 +326,11 @@ impl Library {
         paths.into_iter().zip(edited).map(|(path, jpeg)| ThumbJob { path, edited: jpeg.map(Arc::from) }).collect()
     }
 
+    /// The presets the card menu offers, in order ("Group / Name").
+    pub fn set_presets(&mut self, names: Vec<String>) {
+        self.presets = names;
+    }
+
     /// Forgets the thumbnail and large preview of `path`, so they are made
     /// again (its edited preview changed).
     pub fn forget_thumbnail(&mut self, path: &Path) {
@@ -373,6 +384,30 @@ impl Library {
         if save.preview.is_some() {
             self.forget_thumbnail(path);
         }
+        Ok(())
+    }
+
+    /// `true` when the catalog keeps a preview of the edit shown for `path`.
+    #[must_use]
+    pub fn has_edited_preview(&self, path: &Path) -> bool {
+        self.catalog
+            .as_ref()
+            .and_then(|c| c.previews(&[path.to_owned()]).ok())
+            .is_some_and(|p| p.first().is_some_and(Option::is_some))
+    }
+
+    /// Writes an edit changed without opening the photo (a preset applied
+    /// from the filmstrip). Its stored preview no longer matches, so it is
+    /// dropped: the filmstrip shows the camera's until the photo is opened.
+    ///
+    /// # Errors
+    /// A message when the catalog refused.
+    pub fn save_restyled(&mut self, path: &Path, save: &Save) -> Result<(), String> {
+        let Some(c) = &mut self.catalog else { return Err("the catalog is not available".to_owned()) };
+        let Some(data) = &save.data else { return Ok(()) };
+        c.save_variant(path, &save.info, data, None).map_err(|e| e.to_string())?;
+        c.clear_variant_preview(path, save.info.number).map_err(|e| e.to_string())?;
+        self.forget_thumbnail(path);
         Ok(())
     }
 
@@ -819,7 +854,8 @@ impl Library {
 
         let mut card_actions = Vec::new();
         let several = self.strip.selection().len() > 1;
-        let Self { strip, thumbs, wanted, shown_rows, .. } = self;
+        let Self { strip, thumbs, wanted, shown_rows, presets, .. } = self;
+        let presets: &[String] = presets;
         let row_count = visible.len().div_ceil(columns);
         area.show_rows(ui, card_h, row_count, |ui, rows| {
             let first = rows.start.saturating_sub(PREFETCH_ROWS) * columns;
@@ -835,8 +871,10 @@ impl Library {
                             selected: strip.is_selected(&photo.path),
                             several,
                             variants: variant_blocks,
+                            presets,
                         };
-                        card(ui, &t, photo, thumbs.get(&photo.path), state, [card_w, card_h], &mut card_actions);
+                        let thumb = thumbs.get(&photo.path);
+                        card(ui, &t, photo, thumb, state, [card_w, card_h], &mut card_actions);
                     }
                 });
             }
@@ -856,6 +894,7 @@ impl Library {
                 CardAction::Export(p) => actions.push(LibraryAction::Export(self.strip.targets(&p))),
                 CardAction::ExportAgain(p) => actions.push(LibraryAction::ExportAgain(self.strip.targets(&p))),
                 CardAction::Command(c) => actions.push(LibraryAction::Command(c)),
+                CardAction::ApplyPreset(p, i) => actions.push(LibraryAction::ApplyPreset(self.strip.targets(&p), i)),
                 // On a card of a multiple selection, stars and menus act on all of it.
                 CardAction::Rate(p, r) => {
                     let targets = self.strip.targets(&p);
@@ -1044,7 +1083,7 @@ impl Library {
 }
 
 /// Runs a program of the system (file manager, default app).
-fn launch(l: &platform::Launch) -> std::io::Result<()> {
+pub(crate) fn launch(l: &platform::Launch) -> std::io::Result<()> {
     std::process::Command::new(l.program).args(&l.args).spawn().map(drop)
 }
 
@@ -1113,7 +1152,7 @@ fn swatch(ui: &mut egui::Ui, t: &Tokens, on: bool, color: Color32) -> egui::Resp
 
 /// How a card is shown.
 #[derive(Debug, Clone, Copy)]
-struct CardState {
+struct CardState<'a> {
     /// The photo is open in the editor.
     open: bool,
     /// The photo is selected.
@@ -1122,6 +1161,8 @@ struct CardState {
     several: bool,
     /// Why the variant commands are unavailable on the open photo.
     variants: VariantBlocks,
+    /// The presets the menu offers.
+    presets: &'a [String],
 }
 
 /// One filmstrip card: thumbnail with badges, name, stars, context menu.
@@ -1130,7 +1171,7 @@ fn card(
     t: &Tokens,
     photo: &StripPhoto,
     thumb: Option<&ThumbState<TextureHandle>>,
-    state: CardState,
+    state: CardState<'_>,
     size: [f32; 2],
     actions: &mut Vec<CardAction>,
 ) {
@@ -1279,11 +1320,14 @@ fn badges(painter: &egui::Painter, t: &Tokens, frame: Rect, meta: &PhotoMeta) {
 }
 
 /// The right-click menu of a card.
-fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState, actions: &mut Vec<CardAction>) {
+fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState<'_>, actions: &mut Vec<CardAction>) {
+    let presets = state.presets;
     // Rating, colour and export apply to the whole selection when this card is in it.
     let group = if state.several && state.selected { " (selected photos)" } else { "" };
     let path = &photo.path;
     let soon = "Coming soon";
+    let is_open = state.open;
+    let open_first = "Open the photo first";
     if ui.add(Button::new("Rename").shortcut_text("F2")).clicked() {
         actions.push(CardAction::Rename(path.clone()));
         ui.close();
@@ -1294,6 +1338,19 @@ fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState, actions: &
     let why = |block: Option<&'static str>| if is_open { block } else { Some(open_first) };
     variant_item(ui, Command::NewVariant, "New Variant", why(state.variants.new), actions);
     variant_item(ui, Command::CloneVariant, "Clone Variant", why(state.variants.clone), actions);
+    // The same presets as Image ▸ Presets ▸ Apply.
+    ui.menu_button(format!("Apply Preset{group}"), |ui| {
+        if presets.is_empty() {
+            ui.add_enabled(false, Button::new("No presets saved yet"))
+                .on_disabled_hover_text("Save one with Image \u{25b8} Presets \u{25b8} Save preset\u{2026}");
+        }
+        for (i, name) in presets.iter().enumerate() {
+            if ui.button(name).clicked() {
+                actions.push(CardAction::ApplyPreset(path.clone(), i));
+                ui.close();
+            }
+        }
+    });
     ui.separator();
     ui.menu_button(format!("Export{group}"), |ui| {
         let keys = |c: Command| ui.ctx().format_shortcut(&c.shortcuts()[0]);

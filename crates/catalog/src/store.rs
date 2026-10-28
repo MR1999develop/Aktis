@@ -392,6 +392,19 @@ impl Catalog {
         Ok(())
     }
 
+    /// Forgets the preview of a stored variant (its edit changed without
+    /// being shown): the camera's preview is shown until a new one is stored.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`].
+    pub fn clear_variant_preview(&mut self, path: &Path, number: u32) -> Result<(), CatalogError> {
+        self.conn.execute(
+            "UPDATE variants SET preview = NULL WHERE path = ?1 AND number = ?2",
+            params![key(path), number],
+        )?;
+        Ok(())
+    }
+
     /// Deletes one variant of `path`.
     ///
     /// # Errors

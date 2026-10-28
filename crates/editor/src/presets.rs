@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 
 use core_model::{NodeId, NodeKind, ParamId, ParamValue, Params, Recipe, Style, StyleNode, StyleSelection, ToolId};
 use engine::export;
-use recipe_store::{BRUSH_EXTENSION, BrushSettings, PRESET_EXTENSION, Preset};
+use recipe_store::{BRUSH_EXTENSION, PRESET_EXTENSION};
+pub use recipe_store::{BrushSettings, Preset};
 use tool_api::ToolRegistry;
 
 /// Name of the default presets folder inside the editor's data folder.

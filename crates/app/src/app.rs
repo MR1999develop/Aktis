@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use catalog::{VariantInfo, next_variant_number, variant_name};
-use core_model::{DevelopSettings, NodeId, NodeKind, Recipe};
+use core_model::{DevelopSettings, NodeId, NodeKind, Recipe, ToolId};
 use editor::adjust::Pick;
 use editor::graph_view::GraphView;
 use editor::variants::{self, Reopened, VariantState};
@@ -47,6 +47,7 @@ use crate::library_ui::{Library, LibraryAction, TaggingProgress, VariantBlocks};
 use crate::mask_ui::{MaskEdit, MaskUi};
 use crate::models_ui::ModelsUi;
 use crate::prefs_ui::Preferences;
+use crate::presets_ui::{PresetAction, PresetsUi};
 use crate::scopes::{ScopeKind, Scopes};
 use crate::settings::{STORAGE_KEY, Settings, ThemeChoice};
 use crate::tagging_job::{Progress, TaggingJob};
@@ -194,6 +195,8 @@ pub struct EditorApp {
     dirty_since: Option<Instant>,
     /// The variant whose deletion waits for confirmation.
     confirm_delete: Option<VariantInfo>,
+    /// Presets and style brushes, and the Save Preset window.
+    presets: PresetsUi,
 }
 
 impl std::fmt::Debug for EditorApp {
@@ -276,7 +279,9 @@ impl EditorApp {
             variants: Vec::new(),
             dirty_since: None,
             confirm_delete: None,
+            presets: PresetsUi::default(),
         };
+        app.reload_presets();
         if let Some(problem) = app.library.catalog_problem.take() {
             app.toast = Some(error_toast(problem));
         }
@@ -471,7 +476,13 @@ impl EditorApp {
                             let first = self.doc.as_ref().map_or(1, |d| d.generation() + 1);
                             let reopened = match self.library.shown_variant(&path) {
                                 Ok((number, stored)) => {
-                                    variants::reopen(*opened, first, &self.registry, number, stored)
+                                    // An edit changed from the filmstrip (a preset) has no preview yet.
+                                    let missing = stored.is_some() && !self.library.has_edited_preview(&path);
+                                    let mut r = variants::reopen(*opened, first, &self.registry, number, stored);
+                                    if missing {
+                                        r.state.preview_missing();
+                                    }
+                                    r
                                 }
                                 Err(e) => {
                                     // Never save over an edit that could not be read.
@@ -680,6 +691,7 @@ impl EditorApp {
                     follow_rename(&mut self.settings.recent, &from, &to);
                 }
                 LibraryAction::Command(command) => self.run(command, ctx),
+                LibraryAction::ApplyPreset(photos, index) => self.apply_preset(index, &photos),
                 LibraryAction::TagFolder => self.start_tagging(ctx),
                 LibraryAction::StopTagging => {
                     if let Some(job) = &self.tagging {
@@ -1117,6 +1129,9 @@ impl EditorApp {
         let variant_list = self.variant_list();
         let current_variant = self.variant.as_ref().map(|s| s.info.number);
         let mut switch_to = None;
+        let mut preset_actions = Vec::new();
+        let apply_why = (export_count == 0).then_some("Open or select a photo first");
+        let save_why = if has_doc { None } else { Some("Open a photo first") };
         // The selected node, when it is one that can be bypassed or deleted
         // (the same commands as its right-click menu in the graph).
         let editable_node = self.selected_node.and_then(|id| {
@@ -1181,7 +1196,8 @@ impl EditorApp {
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("Preferences\u{2026}").on_hover_text("Viewer background, theme, export folder").clicked() {
+                if ui.button("Preferences\u{2026}").on_hover_text("Viewer background, theme, presets folder").clicked()
+                {
                     open_prefs = true;
                     ui.close();
                 }
@@ -1201,6 +1217,12 @@ impl EditorApp {
                             ui.close();
                         }
                     }
+                });
+                ui.menu_button("Presets", |ui| {
+                    self.presets.presets_menu(ui, apply_why, save_why, &mut preset_actions);
+                });
+                ui.menu_button("Style brushes", |ui| {
+                    self.presets.brushes_menu(ui, save_why, &mut preset_actions);
                 });
             });
             ui.menu_button("View", |ui| {
@@ -1233,6 +1255,9 @@ impl EditorApp {
 
         if !graph_actions.is_empty() {
             self.apply_graph(graph_actions);
+        }
+        for action in preset_actions {
+            self.preset_action(action);
         }
         if open_prefs {
             self.prefs.open(&self.settings);
@@ -1610,7 +1635,8 @@ impl EditorApp {
                     });
                     let def = node.as_ref().and_then(|(n, _)| doc.mask_of(*n)).map(|(_, d)| d.clone());
                     let busy = self.ai_job.is_some();
-                    self.mask_ui.options(ui.ctx(), rect, tool, node, def.as_ref(), busy, &mut mask_edits);
+                    let brushes = self.presets.brush_names();
+                    self.mask_ui.options(ui.ctx(), rect, tool, node, def.as_ref(), busy, &brushes, &mut mask_edits);
                 }
                 // Retouch (T4): the Heal and Clone options bar.
                 Some(tool @ (ViewerTool::Heal | ViewerTool::Clone)) => {
@@ -1871,17 +1897,32 @@ impl EditorApp {
 
     /// Applies what the Masks and AI Select tools asked for: the new mask
     /// definition (one undo step; a new mask node the first time), then the
-    /// AI models in the background when the mask has new AI parts.
+    /// AI models in the background when the mask has new AI parts. A style
+    /// brush's first stroke adds its nodes behind a new mask and selects
+    /// the first, so further strokes extend that mask.
     fn apply_mask_edits(&mut self, edits: Vec<MaskEdit>, ctx: &egui::Context) {
         for edit in edits {
-            let Some(doc) = &mut self.doc else { return };
             let brush = self.mask_ui.brush;
-            let node = match &edit {
+            let node = match edit {
+                MaskEdit::ChooseStyleBrush(index) => {
+                    self.preset_action(PresetAction::Arm(index));
+                    continue;
+                }
+                MaskEdit::StyleStroke { name, style, points } => {
+                    let Some(doc) = &mut self.doc else { return };
+                    let def = editor::masking::add_stroke(None, points, brush, false);
+                    match doc.add_style_brush(&self.registry, &name, style, def) {
+                        Ok(node) => self.selected_node = Some(node),
+                        Err(e) => self.toast = Some(error_toast(format!("The style brush could not be added: {e}"))),
+                    }
+                    continue;
+                }
                 MaskEdit::Stroke { node, .. }
                 | MaskEdit::Click { node, .. }
                 | MaskEdit::Subject { node }
-                | MaskEdit::Def { node, .. } => *node,
+                | MaskEdit::Def { node, .. } => node,
             };
+            let Some(doc) = &mut self.doc else { return };
             let current = doc.mask_of(node).map(|(_, d)| d.clone());
             let def = match edit {
                 MaskEdit::Stroke { points, erase, .. } => {
@@ -1892,6 +1933,7 @@ impl EditorApp {
                 }
                 MaskEdit::Subject { .. } => editor::masking::add_subject(current.as_ref()),
                 MaskEdit::Def { def, .. } => def,
+                MaskEdit::ChooseStyleBrush(_) | MaskEdit::StyleStroke { .. } => continue,
             };
             let result = match doc.mask_of(node).map(|(id, _)| id) {
                 Some(mask) => doc.set_mask(&self.registry, mask, def, None).map(|()| mask),
@@ -1901,6 +1943,123 @@ impl EditorApp {
                 Ok(mask) => self.start_ai_mask(mask, ctx),
                 Err(e) => self.toast = Some(error_toast(format!("That change was refused: {e}"))),
             }
+        }
+    }
+
+    /// Reads the presets folder again and tells the filmstrip the presets.
+    fn reload_presets(&mut self) {
+        let problems = self.presets.reload(self.settings.presets_folder().as_deref());
+        self.library.set_presets(self.presets.preset_names());
+        if let Some(first) = problems.first() {
+            let more = if problems.len() > 1 { format!(" (and {} more)", problems.len() - 1) } else { String::new() };
+            self.toast = Some(error_toast(format!("A preset could not be read: {first}{more}")));
+        }
+    }
+
+    /// Does what a preset menu asked for.
+    fn preset_action(&mut self, action: PresetAction) {
+        match action {
+            PresetAction::Apply(index) => {
+                let targets = self.export_targets();
+                self.apply_preset(index, &targets);
+            }
+            PresetAction::Arm(index) => self.arm_style_brush(index),
+            PresetAction::Save(brush) => {
+                let Some(doc) = &self.doc else { return };
+                let b = self.mask_ui.brush;
+                let settings = editor::presets::BrushSettings {
+                    radius: b.radius,
+                    hardness: b.hardness,
+                    opacity: b.opacity,
+                    edge_aware: b.edge_aware,
+                };
+                self.presets.open_save(doc.recipe(), &self.registry, brush, self.selected_node, settings);
+            }
+            PresetAction::ShowFolder => match crate::presets_ui::ensure_folder(self.settings.presets_folder()) {
+                Ok(folder) => {
+                    let open = platform::open_with_default_app(platform::Os::current(), &folder);
+                    if let Err(e) = crate::library_ui::launch(&open) {
+                        self.toast = Some(error_toast(format!("The presets folder could not be shown: {e}")));
+                    }
+                }
+                Err(e) => self.toast = Some(error_toast(e)),
+            },
+            PresetAction::Reload => self.reload_presets(),
+        }
+    }
+
+    /// Applies preset number `index` to `photos`: the open photo through
+    /// its document (one undo step), the others in the catalog (their
+    /// thumbnails go back to the camera's until they are opened again).
+    fn apply_preset(&mut self, index: usize, photos: &[PathBuf]) {
+        let Some(entry) = self.presets.presets().get(index).map(|e| (*e).clone()) else { return };
+        let (style, missing) = editor::presets::usable(&entry.preset.style, &self.registry);
+        let name = entry.preset.name.as_str();
+        let mut done = 0;
+        let mut failed = Vec::new();
+        for path in photos {
+            let result = match self.doc.as_mut().filter(|d| d.path() == path.as_path()) {
+                Some(doc) => doc.apply_style(&self.registry, name, style.clone()).map_err(|e| e.to_string()),
+                None => self.library.shown_variant(path).and_then(|(number, stored)| {
+                    let save =
+                        variants::apply_style_to_stored(&self.registry, number, stored.as_ref(), name, style.clone())?;
+                    self.library.save_restyled(path, &save)
+                }),
+            };
+            match result {
+                Ok(()) => done += 1,
+                Err(e) => failed.push(format!("{}: {e}", file_name(path))),
+            }
+        }
+        let photos_text = |n: usize| if n == 1 { "1 photo".to_owned() } else { format!("{n} photos") };
+        let mut text = format!("Applied \u{201c}{name}\u{201d} to {}", photos_text(done));
+        if !missing.is_empty() {
+            let names: Vec<&str> = missing.iter().map(ToolId::as_str).collect();
+            text.push_str(&format!("; left out tools this version lacks: {}", names.join(", ")));
+        }
+        self.toast = Some(match failed.first() {
+            Some(first) => error_toast(format!("{text}; {} failed: {first}", failed.len())),
+            None => info_toast(text),
+        });
+    }
+
+    /// Arms style brush number `index` in the Masks tool.
+    fn arm_style_brush(&mut self, index: usize) {
+        if self.doc.is_none() {
+            self.toast = Some(info_toast("Open a photo first".to_owned()));
+            return;
+        }
+        let Some(entry) = self.presets.brushes().get(index).map(|e| (*e).clone()) else { return };
+        let (style, missing) = editor::presets::usable(&entry.preset.style, &self.registry);
+        if style.nodes.is_empty() {
+            let names: Vec<&str> = missing.iter().map(ToolId::as_str).collect();
+            self.toast = Some(error_toast(format!(
+                "\u{201c}{}\u{201d} paints tools this version lacks: {}",
+                entry.preset.name,
+                names.join(", ")
+            )));
+            return;
+        }
+        let settings = entry.preset.brush.unwrap_or_default();
+        self.mask_ui.arm(entry.preset.name, style, &settings);
+        self.tool = Some(ViewerTool::Masks);
+        self.mask_ui.show = false;
+    }
+
+    /// Writes a preset from the Save window into the presets folder.
+    fn save_preset(&mut self, preset: &editor::presets::Preset) {
+        let result = self
+            .settings
+            .presets_folder()
+            .ok_or_else(|| "this system names no data folder; choose one in Preferences".to_owned())
+            .and_then(|folder| editor::presets::save(&folder, preset));
+        match result {
+            Ok(path) => {
+                self.reload_presets();
+                let kind = if preset.brush.is_some() { "Style brush" } else { "Preset" };
+                self.toast = Some(info_toast(format!("{kind} saved as {}", file_name(&path))));
+            }
+            Err(e) => self.toast = Some(error_toast(format!("The preset could not be saved: {e}"))),
         }
     }
 
@@ -2164,8 +2323,15 @@ impl eframe::App for EditorApp {
             .frame(Frame::NONE.fill(t.canvas))
             .show(ui, |ui| self.center(ui, &mut commands, &mut library));
         self.library.rename_dialog(&ctx, &mut library);
+        let presets_folder = self.settings.presets_folder();
         if self.prefs.show(&ctx, &mut self.settings) {
             ctx.set_theme(theme_preference(self.settings.theme));
+            if self.settings.presets_folder() != presets_folder {
+                self.reload_presets();
+            }
+        }
+        if let Some(preset) = self.presets.show_save(&ctx) {
+            self.save_preset(&preset);
         }
         self.delete_dialog(&ctx);
         if let Some(dialog) = &mut self.export_dialog

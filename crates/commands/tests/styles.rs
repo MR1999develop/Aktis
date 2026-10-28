@@ -64,7 +64,7 @@ fn a_style_adds_a_missing_tool_then_sets_it_and_undoes_in_one_step() {
     let h = s.history();
     assert_eq!(
         h.last().map(|i| (i.label.as_str(), i.kind)),
-        Some(("Apply style \u{201c}Warm\u{201d}", EditKind::Develop))
+        Some(("Apply preset \u{201c}Warm\u{201d}", EditKind::Develop))
     );
 
     // Applied again it sets the same node instead of adding one.

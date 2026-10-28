@@ -81,6 +81,9 @@ pub struct Settings {
     pub scope: crate::scopes::ScopeKind,
     /// Colour around the photo in the viewer.
     pub viewer_background: ViewerBackground,
+    /// Folder of the presets and style brushes; `None`: `Presets` in the
+    /// editor's data folder.
+    pub presets_dir: Option<PathBuf>,
 }
 
 impl Settings {
@@ -98,6 +101,12 @@ impl Settings {
     /// Removes a file from the recent list (it could not be opened).
     pub fn forget(&mut self, path: &Path) {
         self.recent.retain(|p| p != path);
+    }
+
+    /// The folder of the presets and style brushes.
+    #[must_use]
+    pub fn presets_folder(&self) -> Option<PathBuf> {
+        self.presets_dir.clone().or_else(editor::presets::default_folder)
     }
 
     /// The export options the export window last used.

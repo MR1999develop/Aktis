@@ -124,6 +124,14 @@ impl VariantState {
         self.read_only.is_none() && self.preview_stale && self.stored.is_some()
     }
 
+    /// The catalog has no preview of the stored edit (it was changed
+    /// without being shown): one is made at the next save.
+    pub fn preview_missing(&mut self) {
+        if self.stored.is_some() {
+            self.preview_stale = true;
+        }
+    }
+
     /// The variant as text, as the catalog stores it.
     #[must_use]
     pub fn encode(&self, doc: &Document, view: &GraphView) -> String {

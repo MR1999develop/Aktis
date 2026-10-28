@@ -1,4 +1,5 @@
-//! Edit ▸ Preferences…: a window to set how the program looks and works.
+//! Edit ▸ Preferences…: a window to set how the program looks and works
+//! and where the presets are kept.
 //! The changes are made on a copy and kept with OK (Cancel or Esc drops them).
 
 use std::path::PathBuf;
@@ -66,6 +67,34 @@ impl Preferences {
             );
             ui.add_space(SPACE[2]);
 
+            section(ui, &t, "Presets");
+            ui.horizontal(|ui| {
+                ui.label("Folder");
+                let shown = draft.presets_folder().map_or_else(|| "None".to_owned(), |d| d.display().to_string());
+                ui.label(RichText::new(shown).color(t.text_weak));
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Choose\u{2026}").clicked() {
+                    let mut pick = rfd::FileDialog::new().set_title("Presets folder");
+                    if let Some(dir) = draft.presets_folder().filter(|d| d.is_dir()) {
+                        pick = pick.set_directory(dir);
+                    }
+                    if let Some(dir) = pick.pick_folder() {
+                        draft.presets_dir = Some(PathBuf::from(dir));
+                    }
+                }
+                if ui.add_enabled(draft.presets_dir.is_some(), egui::Button::new("Default")).clicked() {
+                    draft.presets_dir = None;
+                }
+            });
+            ui.label(
+                RichText::new(
+                    "Presets (.rnepreset) and style brushes (.rnebrush) are files in this folder; sub-folders are groups.",
+                )
+                .size(FONT[0])
+                .color(t.text_weak),
+            );
+
             ui.add_space(SPACE[3]);
             choice = dialog_buttons(ui, &t, Some("OK"), "Cancel", |_| {});
         });
@@ -74,6 +103,7 @@ impl Preferences {
                 if let Some(d) = self.draft.take() {
                     settings.theme = d.theme;
                     settings.viewer_background = d.viewer_background;
+                    settings.presets_dir = d.presets_dir;
                 }
                 true
             }
