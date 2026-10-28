@@ -46,10 +46,10 @@ cargo fmt --all --check
 | `crates/core-color` | Transfer curves, primaries, camera profiles (dual-illuminant matrices, DCP files). |
 | `crates/tool-api` | The `Tool` contract, parameter descriptors, the tool registry. |
 | `crates/commands` | Edits with validation and undo/redo: the only way UI and MCP change a recipe. |
-| `crates/develop` | Fixed development stage on the CPU (white balance, demosaic, lens corrections, camera profile). |
+| `crates/develop` | Fixed development stage on the CPU (white balance, Bayer and X-Trans demosaic, lens corrections, camera profile). |
 | `crates/render-cpu` | Reference renderer: evaluates the graph with each tool's CPU code. |
 | `crates/platform` | The single place where Windows, Ubuntu and macOS differ. |
-| `crates/raw-io` | RAW/DNG → sensor data with rawler; levels, valid area, CFA, colour matrices, lens and shooting data. |
+| `crates/raw-io` | RAW/DNG → sensor data with rawler; levels, valid area, CFA, DNG gain maps, colour matrices, lens and shooting data. |
 | `crates/gpu` | GPU engine on wgpu (Vulkan, DirectX 12, Metal); must match `render-cpu`. |
 | `crates/export` | JPEG with an embedded sRGB profile, atomic writes, non-destructive names. |
 | `crates/engine` | Shared by window and command line: built-in tools, GPU render with CPU fallback, preview copy, display pixels, JPEG export. |
@@ -68,6 +68,34 @@ cargo fmt --all --check
 
 Pixel data inside the editor are linear, scene-referred `f32` in Rec.2020;
 quantisation happens only on output.
+
+## Supported cameras
+
+RAW files are decoded by [rawler](https://github.com/dnglab/dnglab) 0.8.0
+(pinned); the editor develops Bayer and Fujifilm X-Trans mosaics and linear
+(already demosaiced) DNGs. rawler recognises cameras through its own
+database: a body newer than rawler 0.8.0, or a raw mode not listed for it,
+is refused even when the format is known. DNG files carry their own
+calibration and need no database entry. Monochrome sensors (Leica
+Monochrom, Pentax K-3 III Monochrome) are not supported yet.
+
+| Brand | Files | Known limits |
+|---|---|---|
+| Canon | CR3 (C-RAW and dual-pixel included), CR2, CRW | CR2 sRAW/mRAW are developed as linear RGB; CR3 burst rolls open their first frame; CRM movies are not offered. |
+| Nikon | NEF, NRW | High Efficiency and High Efficiency★ NEF (Z 8, Z 9, Z 6III, Zf …) are refused by rawler 0.8.0; lossless, lossy and uncompressed NEF work. |
+| Sony | ARW, SR2, SRF | Uncompressed, compressed and lossless compressed ARW work; the newest compression (TIFF code 32766, "ARW6") has no decoder in rawler 0.8.0. |
+| Fujifilm | RAF | X-Trans and Bayer (GFX) sensors; uncompressed, lossless and lossy compressed RAF. X-Trans uses its own CPU demosaic (preview quality, like the Bayer one). |
+| Apple | DNG (ProRAW) | ProRAW is a linear DNG: no demosaic, white balance and camera matrix only. JPEG XL compressed DNGs decode only with 8- or 16-bit streams. |
+| Google Pixel | DNG | Lens shading stored as DNG GainMap opcodes is applied when the file is opened; other opcodes (for example the WarpRectilinear distortion correction in OpcodeList3) are not, and a note says so when the file marks them as required. |
+| Panasonic | RW2, RAW | |
+| OM System / Olympus | ORF, ORI | |
+| Leica | DNG (M, Q, SL, CL), RWL, RAW | RWL/RAW are the Panasonic-made compacts. |
+| Pentax / Ricoh | PEF, DNG | |
+
+The open dialog also lists Hasselblad 3FR/FFF, Phase One and Leaf IIQ/MOS,
+Mamiya MEF, Samsung SRW, Epson ERF, Kodak DCR/KDC/DCS, Minolta MRW, ARRI ARI
+and Apple QuickTake QTK. Sigma X3F (Foveon, no colour filter mosaic) is not
+offered. DNG opcodes other than GainMap are not applied anywhere.
 
 ## Camera profiles and lens corrections
 

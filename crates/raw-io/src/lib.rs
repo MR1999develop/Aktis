@@ -36,12 +36,14 @@ pub use thumbnail::{Thumbnail, orient_rgb8, read_thumbnail};
 /// Largest file accepted, checked before reading (1 GiB; real RAW files are far smaller).
 pub const MAX_FILE_BYTES: u64 = 1 << 30;
 
-/// File extensions of the RAW formats offered in open dialogs, lower case.
-/// Only a convenience for the dialog filter: [`read_raw`] recognises a file
-/// by its content, whatever its name.
+/// File extensions of the RAW formats offered in open dialogs, lower case:
+/// the still-image formats rawler 0.8.0 decodes into data the editor can
+/// develop (Sigma X3F is left out: Foveon sensors have no colour filter
+/// mosaic; so are Canon CRM movies). Only a convenience for the dialog
+/// filter: [`read_raw`] recognises a file by its content, whatever its name.
 pub const RAW_EXTENSIONS: &[&str] = &[
-    "3fr", "arw", "cr2", "cr3", "crw", "dcr", "dng", "erf", "iiq", "kdc", "mef", "mos", "mrw", "nef", "nrw", "orf",
-    "pef", "raf", "rw2", "rwl", "sr2", "srf", "srw",
+    "3fr", "ari", "arw", "cr2", "cr3", "crw", "dcr", "dcs", "dng", "erf", "fff", "iiq", "kdc", "mef", "mos", "mrw",
+    "nef", "nrw", "orf", "ori", "pef", "qtk", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw",
 ];
 
 /// Whether `path` has one of the [`RAW_EXTENSIONS`] (any case).
@@ -618,6 +620,9 @@ mod tests {
         assert!(has_raw_extension(Path::new("a/b/DSC_0001.NEF")));
         assert!(has_raw_extension(Path::new("photo.arw")));
         assert!(has_raw_extension(Path::new("with space/IMG 1.Cr3")));
+        assert!(has_raw_extension(Path::new("P1000001.RAW")));
+        assert!(has_raw_extension(Path::new("P1000001.ORI")));
+        assert!(!has_raw_extension(Path::new("SDIM0001.X3F")));
         assert!(!has_raw_extension(Path::new("photo.jpg")));
         assert!(!has_raw_extension(Path::new("nef")));
         assert!(!has_raw_extension(Path::new("")));
