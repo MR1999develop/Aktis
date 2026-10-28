@@ -168,3 +168,7 @@
   One on the same RAW files and adjust `render-cpu::tone::Shape`.
 - Straighten: Capture One also has Rotate Snap, Auto Rotate and Flip;
   not done yet.
+- Mask brush (Capture One): Opacity is the stroke's strength; Capture
+  One's Flow (amount per pass, building up), Airbrush and pen pressure need
+  per-dab accumulation in `masks::brush`; not done. Fill Mask and Rasterize
+  Mask are missing too, and the grey-scale mask view (Alt+M).

@@ -1,14 +1,18 @@
-//! The Masks (M) and AI Select (A) tools: they build the mask of the tool
+//! The Masks (B) and AI Select (A) tools: they build the mask of the tool
 //! node selected in the graph, so that node acts only where the mask is.
 //!
-//! - **Masks**: paint with a soft brush (size, hardness, flow, edge-aware);
-//!   the Eraser, or Alt held, removes. `[` and `]` change the size.
+//! - **Masks** (B), with the brush of Capture One: B paints, E erases, Alt
+//!   held swaps them; Shift draws a straight line (Shift-click: from the
+//!   last point). `[`/`]` change the size, Shift+`[`/`]` the hardness;
+//!   Alt + right-drag changes the size (across) and hardness (up/down),
+//!   Shift + right-drag the opacity; a right-click opens the brush settings
+//!   (size, hardness, opacity, auto mask).
 //! - **AI Select**: click on an object to select it; Alt-click marks a
 //!   part to leave out; Shift-click starts another object. "Select
 //!   subject" finds the main subject. The models run in the background.
 //!
-//! Both show the mask as a red overlay (O toggles it), and share feather,
-//! invert and clear in the options bar.
+//! Both show the mask as a red overlay (M toggles it, as in Capture One),
+//! and share feather, invert and clear in the options bar.
 //!
 //! - **Style brushes** (as in Capture One): choosing one in the options bar
 //!   (or Image \u{25b8} Style brushes) arms the brush with its settings; the
@@ -24,6 +28,11 @@ use eframe::egui::{self, Align2, CornerRadius, Id, Order, Pos2, Rect, Response, 
 
 use crate::theme::{MASK_OVERLAY, SPACE, Tokens};
 use crate::toolbar::ViewerTool;
+
+/// Hardness change of Shift+`[` / Shift+`]`.
+const HARDNESS_STEP: f32 = 0.1;
+/// Weakest brush opacity.
+const MIN_OPACITY: f32 = 0.05;
 
 /// A change of a mask asked for by the tools.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +109,12 @@ pub struct MaskUi {
     overlay: Option<((u64, NodeId, bool), TextureHandle)>,
     /// The style brush the next stroke adds.
     armed: Option<ArmedBrush>,
+    /// Where the brush settings popup is open (right-click), in points.
+    settings_at: Option<Pos2>,
+    /// A right-drag changing the brush: the brush and pointer at its start.
+    adjusting: Option<(Brush, Pos2)>,
+    /// The end of the last stroke, for Shift-click straight lines.
+    last_point: Option<(NormPoint, Pos2)>,
 }
 
 impl std::fmt::Debug for MaskUi {
@@ -125,22 +140,120 @@ impl MaskUi {
         self.armed = None;
     }
 
-    /// Keys of the mask tools: `[`/`]` brush size, O overlay. Not while typing.
+    /// Keys of the mask tools, as in Capture One: `[`/`]` brush size,
+    /// Shift+`[`/`]` hardness, B brush, E eraser, M mask overlay. Not while typing.
     pub fn keys(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
         ctx.input_mut(|i| {
+            let shift = egui::Modifiers::SHIFT;
+            if i.consume_key(shift, egui::Key::OpenBracket) {
+                self.brush.hardness = (self.brush.hardness - HARDNESS_STEP).max(0.0);
+            }
+            if i.consume_key(shift, egui::Key::CloseBracket) {
+                self.brush.hardness = (self.brush.hardness + HARDNESS_STEP).min(1.0);
+            }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::OpenBracket) {
                 self.brush.radius = (self.brush.radius / 1.25).max(0.001);
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::CloseBracket) {
                 self.brush.radius = (self.brush.radius * 1.25).min(core_model::MAX_BRUSH_RADIUS);
             }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::O) {
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::E) {
+                self.erase = true;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::M) {
                 self.show = !self.show;
             }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                self.settings_at = None;
+            }
         });
+    }
+
+    /// The Masks tool was chosen again (B): back to the brush from the eraser.
+    pub fn choose_brush(&mut self) {
+        self.erase = false;
+    }
+
+    /// A right-drag over the photo: with Alt, across changes the size and
+    /// up/down the hardness; with Shift, across changes the opacity; a plain
+    /// right-click opens the settings popup.
+    fn right_button(&mut self, ui: &egui::Ui, response: &Response) {
+        let (alt, shift) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift));
+        if response.drag_started_by(egui::PointerButton::Secondary)
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            self.adjusting = Some((self.brush, p));
+        }
+        if let Some((start, from)) = self.adjusting
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let (dx, dy) = (p.x - from.x, from.y - p.y);
+            if alt {
+                self.brush.radius = (start.radius * (dx / 200.0).exp2()).clamp(0.001, core_model::MAX_BRUSH_RADIUS);
+                self.brush.hardness = (start.hardness + dy / 200.0).clamp(0.0, 1.0);
+            } else if shift {
+                self.brush.opacity = (start.opacity + dx / 200.0).clamp(MIN_OPACITY, 1.0);
+            }
+        }
+        if response.drag_stopped_by(egui::PointerButton::Secondary) {
+            self.adjusting = None;
+        }
+        if response.secondary_clicked() && !alt && !shift {
+            self.settings_at = response.interact_pointer_pos();
+        }
+    }
+
+    /// The brush settings popup (right-click), as Capture One's.
+    fn settings_popup(&mut self, ctx: &egui::Context) {
+        let Some(at) = self.settings_at else { return };
+        let t = Tokens::of(ctx.theme());
+        let shown = egui::Area::new(Id::unique("rne-brush-settings"))
+            .order(Order::Foreground)
+            .fixed_pos(at)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).fill(t.bg_raised).show(ui, |ui| {
+                    ui.set_width(240.0);
+                    ui.label(RichText::new("Brush").strong());
+                    let mut size = self.brush.radius * 100.0;
+                    if ui
+                        .add(egui::Slider::new(&mut size, 0.1..=50.0).logarithmic(true).suffix(" %").text("Size"))
+                        .on_hover_text("Radius, as a share of the photo's long side ([ and ])")
+                        .changed()
+                    {
+                        self.brush.radius = size / 100.0;
+                    }
+                    let mut hardness = self.brush.hardness * 100.0;
+                    if ui
+                        .add(egui::Slider::new(&mut hardness, 0.0..=100.0).fixed_decimals(0).text("Hardness"))
+                        .on_hover_text("100: a hard edge (Shift+[ and Shift+])")
+                        .changed()
+                    {
+                        self.brush.hardness = hardness / 100.0;
+                    }
+                    let mut opacity = self.brush.opacity * 100.0;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut opacity, MIN_OPACITY * 100.0..=100.0)
+                                .fixed_decimals(0)
+                                .suffix(" %")
+                                .text("Opacity"),
+                        )
+                        .on_hover_text("How strong a stroke is (Shift + right-drag)")
+                        .changed()
+                    {
+                        self.brush.opacity = opacity / 100.0;
+                    }
+                    ui.checkbox(&mut self.brush.edge_aware, "Auto mask")
+                        .on_hover_text("The stroke stops at edges in the photo");
+                })
+            })
+            .response;
+        if shown.clicked_elsewhere() {
+            self.settings_at = None;
+        }
     }
 
     /// Pointer input over the photo shown in `screen`. `long_side` is the
@@ -167,6 +280,9 @@ impl MaskUi {
         let alt = ui.input(|i| i.modifiers.alt) && !painting_style;
         match tool {
             ViewerTool::Masks => {
+                self.right_button(ui, response);
+                self.settings_popup(ui.ctx());
+                let shift = ui.input(|i| i.modifiers.shift);
                 let r = self.brush.radius * long_side;
                 if let Some(p) = response.hover_pos() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::None);
@@ -180,11 +296,18 @@ impl MaskUi {
                 }
                 if response.dragged_by(egui::PointerButton::Primary)
                     && let Some(p) = response.interact_pointer_pos()
-                    && self.stroke_screen.last().is_none_or(|q| q.distance(p) >= (r * 0.25).max(1.0))
                     && let Some(d) = to_developed(p)
                 {
-                    self.stroke.push(d);
-                    self.stroke_screen.push(p);
+                    if shift && !self.stroke.is_empty() {
+                        // Shift: a straight line from where the stroke started.
+                        self.stroke.truncate(1);
+                        self.stroke_screen.truncate(1);
+                        self.stroke.push(d);
+                        self.stroke_screen.push(p);
+                    } else if self.stroke_screen.last().is_none_or(|q| q.distance(p) >= (r * 0.25).max(1.0)) {
+                        self.stroke.push(d);
+                        self.stroke_screen.push(p);
+                    }
                 }
                 if self.stroke_screen.len() > 1 {
                     painter.add(egui::Shape::line(
@@ -198,7 +321,14 @@ impl MaskUi {
                     if self.stroke.is_empty()
                         && let Some(d) = to_developed(p)
                     {
+                        // Shift-click: a straight line from the end of the last stroke.
+                        if shift && let Some((last, _)) = self.last_point {
+                            self.stroke.push(last);
+                        }
                         self.stroke.push(d);
+                    }
+                    if let Some(&end) = self.stroke.last() {
+                        self.last_point = Some((end, p));
                     }
                     let points = std::mem::take(&mut self.stroke);
                     if !points.is_empty() {
@@ -318,8 +448,8 @@ impl MaskUi {
                             ui.separator();
                             match tool {
                                 ViewerTool::Masks => {
-                                    ui.selectable_value(&mut self.erase, false, "Brush");
-                                    ui.selectable_value(&mut self.erase, true, "Eraser").on_hover_text("Or hold Alt");
+                                    ui.selectable_value(&mut self.erase, false, "Brush").on_hover_text("B");
+                                    ui.selectable_value(&mut self.erase, true, "Eraser").on_hover_text("E, or hold Alt");
                                     ui.label("Size");
                                     let mut size = self.brush.radius * 100.0;
                                     if ui
@@ -331,10 +461,10 @@ impl MaskUi {
                                     }
                                     ui.label("Hardness");
                                     ui.add(egui::Slider::new(&mut self.brush.hardness, 0.0..=1.0).fixed_decimals(2));
-                                    ui.label("Flow");
-                                    ui.add(egui::Slider::new(&mut self.brush.opacity, 0.05..=1.0).fixed_decimals(2));
-                                    ui.checkbox(&mut self.brush.edge_aware, "Edge aware")
-                                        .on_hover_text("The stroke follows the edges in the photo");
+                                    ui.label("Opacity");
+                                    ui.add(egui::Slider::new(&mut self.brush.opacity, MIN_OPACITY..=1.0).fixed_decimals(2));
+                                    ui.checkbox(&mut self.brush.edge_aware, "Auto mask")
+                                        .on_hover_text("The stroke stops at edges in the photo");
                                 }
                                 _ => {
                                     ui.label(RichText::new("Click an object \u{b7} Alt-click: leave out \u{b7} Shift-click: another object").color(t.text_weak));
@@ -347,7 +477,7 @@ impl MaskUi {
                                 }
                             }
                             ui.separator();
-                            ui.checkbox(&mut self.show, "Show").on_hover_text("Show the mask in red (O)");
+                            ui.checkbox(&mut self.show, "Show").on_hover_text("Show the mask in red (M)");
                             if let Some(def) = def {
                                 let mut next = def.clone();
                                 let mut feather = next.feather * 100.0;

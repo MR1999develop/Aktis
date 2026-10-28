@@ -1651,9 +1651,11 @@ impl EditorApp {
                 if let Some(warning) = warning {
                     painter.image(warning, to_egui_rect(r), uv, Color32::WHITE);
                 }
+                // The right button is the brush's in the Masks tool (its settings, as in Capture One).
+                let brush_tool = self.tool == Some(ViewerTool::Masks);
                 let (right, middle) = ui.input(|i| {
                     (
-                        i.pointer.button_down(egui::PointerButton::Secondary),
+                        i.pointer.button_down(egui::PointerButton::Secondary) && !brush_tool,
                         i.pointer.button_down(egui::PointerButton::Middle),
                     )
                 });
@@ -2408,7 +2410,13 @@ impl EditorApp {
         }
         for &tool in TOOL_GROUPS.iter().flat_map(|g| g.iter()) {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, tool.key())) {
-                self.tool = if self.tool == Some(tool) { None } else { Some(tool) };
+                if tool == ViewerTool::Masks {
+                    // B always gives the brush (E the eraser), as in Capture One.
+                    self.tool = Some(tool);
+                    self.mask_ui.choose_brush();
+                } else {
+                    self.tool = if self.tool == Some(tool) { None } else { Some(tool) };
+                }
             }
         }
         if self.tool.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
