@@ -431,6 +431,7 @@ impl EditorApp {
                     }
                 }
                 Event::Thumbnail { path, result } => self.library.on_thumbnail(ctx, path, result),
+                Event::Preview { path, result } => self.library.on_preview(ctx, path, result),
             }
         }
     }

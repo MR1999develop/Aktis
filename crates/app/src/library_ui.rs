@@ -104,6 +104,10 @@ pub struct Library {
     /// Why the catalog file could not be used (told once by the window).
     pub catalog_problem: Option<String>,
     thumbs: ThumbCache<TextureHandle>,
+    /// Large previews of the photos filling the viewer (several selected).
+    previews: ThumbCache<TextureHandle>,
+    /// The photos filling the viewer, for large previews.
+    wanted_previews: Vec<PathBuf>,
     /// The folder whose listing will fill the filmstrip.
     loading: Option<PathBuf>,
     /// Photos around the visible part of the filmstrip, for thumbnails.
@@ -151,6 +155,8 @@ impl Library {
             catalog,
             catalog_problem,
             thumbs: ThumbCache::new(THUMB_CACHE),
+            previews: ThumbCache::new(editor::overview::MAX_TILES * 2),
+            wanted_previews: Vec::new(),
             loading: None,
             wanted: Vec::new(),
             rename: None,
@@ -206,6 +212,7 @@ impl Library {
                     let metas = self.metas(&listing.photos);
                     if self.strip.folder.as_deref() != Some(dir.as_path()) {
                         self.thumbs.clear();
+                        self.previews.clear();
                         // Keywords belong to a folder's photos; the other filters carry over.
                         self.strip.filter.tags.clear();
                     }
@@ -247,10 +254,38 @@ impl Library {
         self.thumbs.insert(path, state);
     }
 
-    /// Asks the worker for the thumbnails of the photos in view, when that
-    /// list changed.
+    /// A large preview arrived (several photos fill the viewer).
+    pub fn on_preview(
+        &mut self,
+        ctx: &egui::Context,
+        path: PathBuf,
+        result: Result<std::sync::Arc<raw_io::Thumbnail>, String>,
+    ) {
+        if self.strip.index_of(&path).is_none() {
+            return; // another folder is shown now
+        }
+        let state = match result {
+            Ok(t) => {
+                let image = egui::ColorImage::from_rgb([t.width as usize, t.height as usize], &t.rgb);
+                ThumbState::Ready(ctx.load_texture(
+                    format!("preview:{}", path.display()),
+                    image,
+                    TextureOptions::LINEAR,
+                ))
+            }
+            Err(why) => ThumbState::Failed(why),
+        };
+        self.previews.insert(path, state);
+    }
+
+    /// Asks the worker for the thumbnails of the photos in view and the
+    /// large previews of those filling the viewer, when those lists changed.
     pub fn request_thumbnails(&mut self, worker: Option<&Worker>) {
-        if let (Some(worker), Some(list)) = (worker, self.thumbs.to_request(&self.wanted)) {
+        let Some(worker) = worker else { return };
+        if let Some(list) = self.previews.to_request(&self.wanted_previews) {
+            worker.request_previews(list);
+        }
+        if let Some(list) = self.thumbs.to_request(&self.wanted) {
             worker.request_thumbnails(list);
         }
     }
@@ -366,6 +401,7 @@ impl Library {
         }
         self.strip.rename(from, to.clone());
         self.thumbs.rename(from, to.clone());
+        self.previews.rename(from, to.clone());
         Ok(Some(to))
     }
 
@@ -746,6 +782,7 @@ impl Library {
         );
         let grid = Rect::from_min_max(rect.min + vec2(0.0, OVERVIEW_HEADER), rect.max);
         let layout = editor::OverviewLayout::new([grid.width(), grid.height()], selection.len());
+        self.wanted_previews = selection.iter().take(layout.shown).cloned().collect();
         let mut clicked = None;
         for (i, path) in selection.iter().take(layout.shown).enumerate() {
             let [x, y] = layout.slot(i);
@@ -754,17 +791,20 @@ impl Library {
                 .interact(tile, egui::Id::unique(("rne-overview", path)), Sense::click())
                 .on_hover_text(format!("{}\nClick to open this photo alone", path.display()));
             let is_active = current == Some(path.as_path());
-            painter.rect_filled(
-                tile,
-                CornerRadius::same(6),
-                if response.hovered() { t.bg_overlay } else { t.bg_raised },
-            );
+            // The photos sit on the viewer's background, as in Capture One;
+            // the tile shows only under the pointer.
+            if response.hovered() {
+                painter.rect_filled(tile, CornerRadius::same(6), t.bg_overlay);
+            }
             if is_active {
                 painter.rect_stroke(tile, CornerRadius::same(6), Stroke::new(2.0, t.accent), StrokeKind::Inside);
             }
             let frame = Rect::from_min_max(tile.min + vec2(6.0, 6.0), tile.max - vec2(6.0, 6.0 + 2.0 * CARD_LINE));
             painter.rect_filled(frame, CornerRadius::same(3), t.canvas);
-            match self.thumbs.get(path) {
+            // The large preview when it has arrived, the thumbnail meanwhile.
+            let large = matches!(self.previews.get(path), Some(ThumbState::Ready(_)));
+            let shown = if large { self.previews.get(path) } else { self.thumbs.get(path) };
+            match shown {
                 Some(ThumbState::Ready(texture)) => {
                     let size = texture.size_vec2();
                     let scale = (frame.width() / size.x.max(1.0)).min(frame.height() / size.y.max(1.0));

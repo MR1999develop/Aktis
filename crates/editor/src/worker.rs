@@ -41,6 +41,9 @@ pub const EXPORT_QUALITY: u8 = 92;
 /// Longer side of filmstrip thumbnails (twice the card width, for sharp HiDPI screens).
 pub const THUMBNAIL_SIDE: u32 = 320;
 
+/// Longest side of the large previews shown when several photos fill the viewer.
+pub const TILE_PREVIEW_SIDE: u32 = 1600;
+
 /// Threads making thumbnails at once (each reads a file and decodes a JPEG).
 const THUMBNAIL_THREADS: usize = 3;
 
@@ -145,6 +148,13 @@ pub enum Event {
         /// Upright 8-bit pixels, or why there is none.
         result: Result<Arc<raw_io::Thumbnail>, String>,
     },
+    /// A large preview (several photos in the viewer) is ready (or could not be made).
+    Preview {
+        /// The photo.
+        path: PathBuf,
+        /// Upright 8-bit pixels, at most [`TILE_PREVIEW_SIDE`] on the longer side, or why there is none.
+        result: Result<Arc<raw_io::Thumbnail>, String>,
+    },
 }
 
 /// Time spent on one screen render, shown in the status bar.
@@ -171,6 +181,8 @@ struct RenderQueue {
 #[derive(Debug, Default)]
 struct ThumbState {
     queue: VecDeque<PathBuf>,
+    /// Large previews, served before thumbnails (they are on screen).
+    previews: VecDeque<PathBuf>,
     shutdown: bool,
 }
 
@@ -312,6 +324,16 @@ impl Worker {
         self.thumbs.wake.notify_all();
     }
 
+    /// Asks for the large previews of `paths` (the photos filling the
+    /// viewer), first ones first, before any thumbnail. Replaces the previews
+    /// still waiting. Each one comes back as [`Event::Preview`].
+    pub fn request_previews(&self, paths: Vec<PathBuf>) {
+        let mut state = self.thumbs.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.previews = paths.into();
+        drop(state);
+        self.thumbs.wake.notify_all();
+    }
+
     /// Asks for a screen render. Replaces a request that has not started yet.
     pub fn render(&self, request: RenderRequest) {
         let mut slot = self.queue.slot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -362,22 +384,27 @@ impl Drop for Worker {
 
 fn thumbnail_loop(thumbs: &ThumbQueue, tx: &Sender<Event>, notify: &(dyn Fn() + Send + Sync)) {
     loop {
-        let path = {
+        let next = {
             let guard = thumbs.state.lock().unwrap_or_else(PoisonError::into_inner);
             let mut state = thumbs
                 .wake
-                .wait_while(guard, |s| s.queue.is_empty() && !s.shutdown)
+                .wait_while(guard, |s| s.queue.is_empty() && s.previews.is_empty() && !s.shutdown)
                 .unwrap_or_else(PoisonError::into_inner);
             if state.shutdown {
                 return;
             }
-            state.queue.pop_front()
+            match state.previews.pop_front() {
+                Some(p) => Some((p, true)),
+                None => state.queue.pop_front().map(|p| (p, false)),
+            }
         };
-        let Some(path) = path else { continue };
-        let result = catch_unwind(AssertUnwindSafe(|| raw_io::read_thumbnail(&path, THUMBNAIL_SIDE)))
+        let Some((path, large)) = next else { continue };
+        let side = if large { TILE_PREVIEW_SIDE } else { THUMBNAIL_SIDE };
+        let result = catch_unwind(AssertUnwindSafe(|| raw_io::read_thumbnail(&path, side)))
             .map_err(|_| "the preview could not be read (internal error)".to_owned())
             .and_then(|r| r.map(Arc::new).map_err(|e| e.to_string()));
-        if tx.send(Event::Thumbnail { path, result }).is_err() {
+        let event = if large { Event::Preview { path, result } } else { Event::Thumbnail { path, result } };
+        if tx.send(event).is_err() {
             return; // the UI is gone
         }
         notify();
