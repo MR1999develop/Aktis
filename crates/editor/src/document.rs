@@ -629,6 +629,49 @@ impl Document {
         self.mask_of(to).map(|(id, _)| id).ok_or(EditError::NoMaskInput(to))
     }
 
+    /// Applies a style (a preset) to the photo (one undo step): see
+    /// [`Edit::ApplyStyle`].
+    ///
+    /// # Errors
+    /// [`EditError`] when the style names a tool this build lacks, or the
+    /// photo is read-only; nothing changes.
+    pub fn apply_style(
+        &mut self,
+        registry: &ToolRegistry,
+        name: &str,
+        style: core_model::Style,
+    ) -> Result<(), EditError> {
+        self.writable()?;
+        self.session.apply(registry, Edit::ApplyStyle { name: name.to_owned(), style: Box::new(style) })?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// Paints style brush `name` (one undo step): its tools are added
+    /// behind a new mask `mask` (see [`Edit::AddStyleBrush`]). Returns the
+    /// first new tool node, whose mask further strokes extend.
+    ///
+    /// # Errors
+    /// [`EditError`] as for [`Edit::AddStyleBrush`], or the photo is
+    /// read-only; nothing changes.
+    pub fn add_style_brush(
+        &mut self,
+        registry: &ToolRegistry,
+        name: &str,
+        style: core_model::Style,
+        mask: core_model::MaskDef,
+    ) -> Result<NodeId, EditError> {
+        self.writable()?;
+        let before: Vec<NodeId> = core_model::tool_nodes(&self.recipe().graph);
+        let edit = Edit::AddStyleBrush { name: name.to_owned(), style: Box::new(style), mask };
+        self.session.apply(registry, edit)?;
+        self.generation += 1;
+        core_model::tool_nodes(&self.recipe().graph)
+            .into_iter()
+            .find(|id| !before.contains(id))
+            .ok_or(EditError::EmptyStyle)
+    }
+
     /// Replaces the definition of mask node `mask` (one undo step, merged
     /// with the previous one in the same `gesture`).
     ///

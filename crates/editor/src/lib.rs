@@ -34,6 +34,7 @@ pub mod lenses;
 pub mod library;
 pub mod masking;
 pub mod overview;
+pub mod presets;
 pub mod retouch;
 pub mod thumbs;
 pub mod variants;

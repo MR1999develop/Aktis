@@ -13,7 +13,8 @@
 //! without a database.
 
 use catalog::{StoredVariant, VariantInfo, variant_name};
-use core_model::Recipe;
+use commands::{Edit, EditSession};
+use core_model::{Recipe, Style};
 use engine::Rgb8Image;
 use recipe_store::{DecodeError, FORMAT_VERSION, Variant};
 use tool_api::ToolRegistry;
@@ -195,6 +196,47 @@ fn placed(mut view: GraphView, doc: &Document) -> GraphView {
     view
 }
 
+/// Applies `style` to variant `number` of a photo that is not open (a
+/// preset applied to several photos of the filmstrip): the stored edit
+/// (`None` for a photo never edited) with one more history step, as the
+/// catalog stores it. The stored preview is left as it is; it is made
+/// again when the photo is next shown.
+///
+/// # Errors
+/// A message when the stored edit was saved by a newer editor, cannot be
+/// read, or refuses the style.
+pub fn apply_style_to_stored(
+    registry: &ToolRegistry,
+    number: u32,
+    stored: Option<&StoredVariant>,
+    name: &str,
+    style: Style,
+) -> Result<Save, String> {
+    let variant = match stored {
+        None => Variant { name: variant_name(number), recipe: Recipe::default(), history: None, layout: None },
+        Some(s) if s.info.format > FORMAT_VERSION => {
+            return Err(DecodeError::NewerVersion(s.info.format).to_string());
+        }
+        Some(s) => recipe_store::decode(&s.data).map_err(|e| e.to_string())?,
+    };
+    let mut session = variant
+        .history
+        .clone()
+        .and_then(|h| EditSession::restore(registry, &variant.recipe, h))
+        .unwrap_or_else(|| EditSession::new(variant.recipe.clone()));
+    session
+        .apply(registry, Edit::ApplyStyle { name: name.to_owned(), style: Box::new(style) })
+        .map_err(|e| e.to_string())?;
+    let info = VariantInfo { number, name: variant.name.clone(), format: FORMAT_VERSION };
+    let data = recipe_store::encode(&Variant {
+        name: variant.name,
+        recipe: session.recipe().clone(),
+        history: Some(session.saved_history()),
+        layout: variant.layout,
+    });
+    Ok(Save { info, data: Some(data), preview: None })
+}
+
 /// The recipe of a stored variant, for using it without opening the photo
 /// (an export): read leniently, so the edit of a newer editor is still
 /// used as far as it is understood; `None` when nothing of it can be read.
@@ -352,6 +394,33 @@ mod tests {
     /// What the catalog would hold after `save`.
     fn stored(save: &Save) -> StoredVariant {
         StoredVariant { info: save.info.clone(), data: save.data.clone().unwrap() }
+    }
+
+    #[test]
+    fn a_style_applied_to_a_closed_photo_adds_one_history_step() {
+        let reg = registry();
+        let style = crate::presets::builtin_brushes()[0].preset.style.clone();
+        // Never edited: a first variant with the style.
+        let save = apply_style_to_stored(&reg, 1, None, "Bright", style.clone()).unwrap();
+        assert_eq!(save.info.name, "Variant 1");
+        let v = recipe_store::decode(save.data.as_deref().unwrap()).unwrap();
+        assert_eq!(v.history.as_ref().map(|h| h.steps.len()), Some(1));
+        assert_eq!(core_model::tool_nodes(&v.recipe.graph).len(), 1);
+        // Edited before: its history and node positions are kept.
+        let mut r = edited(&reg);
+        let first = r.state.to_save(&r.doc, &r.view, None);
+        r.state.saved(&r.doc, &r.view, first.clone());
+        let row = stored(&first);
+        let save = apply_style_to_stored(&reg, 1, Some(&row), "Bright", style.clone()).unwrap();
+        let v = recipe_store::decode(save.data.as_deref().unwrap()).unwrap();
+        assert_eq!(v.history.as_ref().map(|h| h.steps.len()), Some(3));
+        assert!(v.layout.is_some());
+        let reopened = reopen(opened(), 1, &reg, 1, Some(stored(&save)));
+        assert!(reopened.notice.is_none());
+        assert_eq!(reopened.doc.recipe(), &v.recipe);
+        // A newer editor's edit is left alone.
+        let newer = StoredVariant { info: VariantInfo { format: FORMAT_VERSION + 1, ..row.info.clone() }, ..row };
+        assert!(apply_style_to_stored(&reg, 1, Some(&newer), "Bright", style).unwrap_err().contains("newer"));
     }
 
     #[test]
