@@ -41,7 +41,11 @@ pub const MAX_PIXEL_ZOOM: f32 = 32.0;
 /// it does not touch the viewer's edges (as in Capture One).
 pub const FIT_MARGIN: f32 = 16.0;
 
-/// Zoom step of one wheel notch or Ctrl+Plus.
+/// The zoom levels Zoom in and Zoom out step through, as in Capture One
+/// (screen pixels per image pixel: 25 % … 1600 %).
+pub const ZOOM_LEVELS: [f32; 12] = [0.25, 0.33, 0.5, 0.67, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0];
+
+/// Zoom step of a pinch (continuous zoom).
 pub const ZOOM_STEP: f32 = 1.25;
 
 /// How the image is scaled.
@@ -95,6 +99,35 @@ impl ViewState {
         let px_w = inner(vp.rect.w) * vp.pixels_per_point;
         let px_h = inner(vp.rect.h) * vp.pixels_per_point;
         (px_w / image[0]).min(px_h / image[1]).clamp(f32::MIN_POSITIVE, 1.0)
+    }
+
+    /// One zoom level up (`up`) or down ([`ZOOM_LEVELS`]), keeping the image
+    /// point under `anchor` still. Below the smallest level, or below fit,
+    /// returns to [`Zoom::Fit`].
+    pub fn step(&mut self, up: bool, anchor: Option<[f32; 2]>, image: [f32; 2], vp: &Viewport) {
+        let now = self.scale(image, vp);
+        let fit = Self::fit_scale(image, vp);
+        let target = if up {
+            ZOOM_LEVELS.iter().copied().find(|&l| l > now * 1.001)
+        } else {
+            ZOOM_LEVELS.iter().rev().copied().find(|&l| l < now / 1.001)
+        };
+        match (up, target) {
+            (_, Some(t)) if t > fit * 1.001 => self.zoom_by(t / now, anchor, image, vp),
+            (true, _) => {} // already at the top
+            (false, _) => self.zoom = Zoom::Fit,
+        }
+    }
+
+    /// Shows the image at `scale` screen pixels per image pixel (1.0 = 100 %),
+    /// keeping the centre still; at or below fit, [`Zoom::Fit`].
+    pub fn set_scale(&mut self, scale: f32, image: [f32; 2], vp: &Viewport) {
+        let now = self.scale(image, vp);
+        if scale <= Self::fit_scale(image, vp) * 1.001 {
+            self.zoom = Zoom::Fit;
+        } else if now > 0.0 {
+            self.zoom_by(scale / now, None, image, vp);
+        }
     }
 
     /// Screen pixels per image pixel now (`1.0` is 100 %).
@@ -222,6 +255,31 @@ mod tests {
         let tiny = Viewport { rect: Rect { x: 0.0, y: 0.0, w: 100.0, h: 75.0 }, pixels_per_point: 1.0 };
         let r = v.image_rect(IMAGE, &tiny);
         assert!(close(r.w, 100.0) && close(r.h, 75.0), "{r:?}");
+    }
+
+    #[test]
+    fn zoom_in_and_out_step_through_the_levels_and_back_to_fit() {
+        let mut v = ViewState::default();
+        let vp1 = vp(1.0);
+        // Fit is 12 %: the first step up is 25 %.
+        v.step(true, None, IMAGE, &vp1);
+        assert!(close(v.percent(IMAGE, &vp1), 25.0), "{}", v.percent(IMAGE, &vp1));
+        for want in [33.0, 50.0, 67.0, 100.0, 200.0] {
+            v.step(true, None, IMAGE, &vp1);
+            assert!(close(v.percent(IMAGE, &vp1), want), "{want}: {}", v.percent(IMAGE, &vp1));
+        }
+        for _ in 0..12 {
+            v.step(true, None, IMAGE, &vp1);
+        }
+        assert!(close(v.percent(IMAGE, &vp1), 1600.0), "the top level stays");
+        for _ in 0..20 {
+            v.step(false, None, IMAGE, &vp1);
+        }
+        assert_eq!(v.zoom(), Zoom::Fit, "below 25 % (and fit) is fit");
+        v.set_scale(0.5, IMAGE, &vp1);
+        assert!(close(v.percent(IMAGE, &vp1), 50.0));
+        v.set_scale(0.05, IMAGE, &vp1);
+        assert_eq!(v.zoom(), Zoom::Fit);
     }
 
     #[test]

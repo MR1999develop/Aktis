@@ -172,3 +172,7 @@
   One's Flow (amount per pass, building up), Airbrush and pen pressure need
   per-dab accumulation in `masks::brush`; not done. Fill Mask and Rasterize
   Mask are missing too, and the grey-scale mask view (Alt+M).
+- Zoom (Capture One): the Zoom cursor (Z, click to zoom in, drag a box),
+  the Pan cursor (H) with right-click Navigator, the Loupe (P) and Shift +
+  wheel zooming every photo shown are not done; Space held pans and the
+  wheel steps through the zoom levels.

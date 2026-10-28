@@ -59,7 +59,8 @@ use crate::toolbar::{self, BarAction, BarState, TOOL_GROUPS, ViewerTool};
 use crate::{APP_NAME, VERSION};
 
 /// Zoom factor per point of mouse-wheel scrolling (one notch ≈ 50 points ≈ ×1.25).
-const WHEEL_ZOOM_PER_POINT: f32 = 0.004_5;
+/// Wheel scrolling, in points, that makes one zoom step in the viewer.
+const WHEEL_NOTCH: f32 = 50.0;
 
 /// Largest texture side requested, even if the GPU allows more.
 const MAX_TEXTURE_SIDE: u32 = 16_384;
@@ -213,6 +214,8 @@ pub struct EditorApp {
     close_refused: bool,
     /// The name being typed in the Save Workspace window, while it is open.
     workspace_name: Option<String>,
+    /// Wheel scrolling not yet turned into a zoom step.
+    wheel: f32,
 }
 
 impl std::fmt::Debug for EditorApp {
@@ -302,6 +305,7 @@ impl EditorApp {
             presets: PresetsUi::default(),
             close_refused: false,
             workspace_name: None,
+            wheel: 0.0,
         };
         app.reload_presets();
         if let Some(problem) = app.library.catalog_problem.take() {
@@ -481,8 +485,8 @@ impl EditorApp {
                 let image = [w as f32, h as f32];
                 match command {
                     Command::Zoom100 => self.view.actual_pixels(None, image, vp),
-                    Command::ZoomIn => self.view.zoom_by(editor::view::ZOOM_STEP, None, image, vp),
-                    _ => self.view.zoom_by(1.0 / editor::view::ZOOM_STEP, None, image, vp),
+                    Command::ZoomIn => self.view.step(true, None, image, vp),
+                    _ => self.view.step(false, None, image, vp),
                 }
             }
         }
@@ -1438,7 +1442,7 @@ impl EditorApp {
     }
 
     /// The status line; a variant chosen in its variant menu goes to `switch_to`.
-    fn status_bar(&self, ui: &mut egui::Ui, switch_to: &mut Option<u32>) {
+    fn status_bar(&self, ui: &mut egui::Ui, switch_to: &mut Option<u32>, zoom_to: &mut Option<ZoomChoice>) {
         let t = Tokens::of(ui.ctx().theme());
         ui.horizontal(|ui| {
             if let Some(folder) = self.library.folder() {
@@ -1464,7 +1468,30 @@ impl EditorApp {
                 ui.label(format!("{w} \u{d7} {h}"));
                 if let Some(vp) = &self.viewport {
                     ui.separator();
-                    ui.label(format!("{:.0} %", self.view.percent([w as f32, h as f32], vp)));
+                    // The zoom, with its levels as in Capture One's zoom menu.
+                    let shown = format!("{:.0} %", self.view.percent([w as f32, h as f32], vp));
+                    ui.menu_button(shown, |ui| {
+                        let fit_keys = ui.ctx().format_shortcut(&Command::ZoomFit.shortcuts()[0]);
+                        if ui.add(Button::new("Fit").shortcut_text(fit_keys)).clicked() {
+                            *zoom_to = Some(ZoomChoice::Fit);
+                            ui.close();
+                        }
+                        for level in editor::view::ZOOM_LEVELS {
+                            let label = format!("{:.0} %", level * 100.0);
+                            let button = if (level - 1.0).abs() < 1e-6 {
+                                let keys = ui.ctx().format_shortcut(&Command::Zoom100.shortcuts()[0]);
+                                Button::new(label).shortcut_text(keys)
+                            } else {
+                                Button::new(label)
+                            };
+                            if ui.add(button).clicked() {
+                                *zoom_to = Some(ZoomChoice::Scale(level));
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Zoom: , fits, . shows 100 %, Ctrl+ and Ctrl− step, the wheel too");
                 }
                 if !doc.has_camera_white_balance() {
                     ui.separator();
@@ -1608,9 +1635,20 @@ impl EditorApp {
             if response.hovered() {
                 let (scroll, pinch, hover) =
                     ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta(), i.pointer.hover_pos()));
-                let factor = pinch * (scroll * WHEEL_ZOOM_PER_POINT).exp();
-                if (factor - 1.0).abs() > 1e-4 {
-                    self.view.zoom_by(factor, hover.map(|p| [p.x, p.y]), image, &vp);
+                let anchor = hover.map(|p| [p.x, p.y]);
+                // A pinch zooms smoothly; the wheel steps through the zoom
+                // levels, as in Capture One (a notch is about 50 points).
+                if (pinch - 1.0).abs() > 1e-4 {
+                    self.view.zoom_by(pinch, anchor, image, &vp);
+                }
+                self.wheel += scroll;
+                while self.wheel.abs() >= WHEEL_NOTCH {
+                    let up = self.wheel > 0.0;
+                    self.view.step(up, anchor, image, &vp);
+                    self.wheel -= WHEEL_NOTCH.copysign(self.wheel);
+                }
+                if scroll == 0.0 {
+                    self.wheel = 0.0;
                 }
             }
             // The colour entering the selected node under the pointer (marked
@@ -1700,7 +1738,12 @@ impl EditorApp {
                 }
                 // The geometry tools draw over the photo and may own the drag.
                 let mut tool_drag = false;
-                match self.tool {
+                // Space held: the hand, whatever the tool, as in Capture One.
+                let space = !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_down(egui::Key::Space));
+                if space && response.hovered() {
+                    ui.ctx().set_cursor_icon(if response.dragged() { CursorIcon::Grabbing } else { CursorIcon::Grab });
+                }
+                match self.tool.filter(|_| !space) {
                     Some(ViewerTool::Crop) => {
                         let (owned, apply) = self.geometry_ui.crop_overlay(ui, &response, screen, frame_aspect);
                         tool_drag = owned;
@@ -2589,7 +2632,15 @@ impl eframe::App for EditorApp {
             self.mask_ui.keys(&ctx);
         }
         let mut switch_variant = None;
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &mut switch_variant));
+        let mut zoom_to = None;
+        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &mut switch_variant, &mut zoom_to));
+        if let (Some(choice), Some(doc), Some(vp)) = (zoom_to, &self.doc, &self.viewport) {
+            let (w, h) = doc.shown_size(self.tool != Some(ViewerTool::Crop));
+            match choice {
+                ZoomChoice::Fit => self.view.fit(),
+                ZoomChoice::Scale(s) => self.view.set_scale(s, [w as f32, h as f32], vp),
+            }
+        }
         let layout = self.settings.layout;
         let generation = self.settings.layout_generation;
         let panel = |name: &str| egui::Id::unique((name, generation));
@@ -2758,6 +2809,15 @@ fn error_toast(text: String) -> Toast {
         action: None,
         deadline: Instant::now() + Duration::from_secs_f32(TOAST_ERROR_SECONDS),
     }
+}
+
+/// A zoom chosen in the status bar's menu.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ZoomChoice {
+    /// The whole photo.
+    Fit,
+    /// Screen pixels per image pixel.
+    Scale(f32),
 }
 
 /// What the View ▸ Workspace menu asked for.

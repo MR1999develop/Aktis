@@ -54,8 +54,9 @@ const EXPOSURE_WARNING: &[KeyboardShortcut] = &[k(CMD, Key::E)];
 const QUIT: &[KeyboardShortcut] = &[k(CMD, Key::Q)];
 const UNDO: &[KeyboardShortcut] = &[k(CMD, Key::Z)];
 const REDO: &[KeyboardShortcut] = &[k(CMD, Key::Y), k(CMD_SHIFT, Key::Z)];
-const ZOOM_FIT: &[KeyboardShortcut] = &[k(CMD, Key::Num0)];
-const ZOOM_100: &[KeyboardShortcut] = &[k(CMD, Key::Num1)];
+// Comma and full stop as in Capture One, the Ctrl keys as before.
+const ZOOM_FIT: &[KeyboardShortcut] = &[k(Modifiers::NONE, Key::Comma), k(CMD, Key::Num0)];
+const ZOOM_100: &[KeyboardShortcut] = &[k(Modifiers::NONE, Key::Period), k(CMD, Key::Num1)];
 const ZOOM_IN: &[KeyboardShortcut] = &[k(CMD, Key::Plus), k(CMD, Key::Equals)];
 const ZOOM_OUT: &[KeyboardShortcut] = &[k(CMD, Key::Minus)];
 const NEW_VARIANT: &[KeyboardShortcut] = &[k(Modifiers::NONE, Key::F7)];
@@ -105,11 +106,12 @@ impl Command {
         }
     }
 
-    /// Commands whose keys also edit text (Ctrl+Delete deletes a word):
+    /// Commands whose keys also edit text (Ctrl+Delete deletes a word, a
+    /// comma or full stop is typed):
     /// not taken from a text field that has the keyboard.
     #[must_use]
     pub fn yields_to_text(self) -> bool {
-        matches!(self, Self::NewVariant | Self::CloneVariant | Self::DeleteVariant)
+        matches!(self, Self::NewVariant | Self::CloneVariant | Self::DeleteVariant | Self::ZoomFit | Self::Zoom100)
     }
 
     /// Every command.
