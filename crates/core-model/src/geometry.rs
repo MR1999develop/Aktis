@@ -83,6 +83,19 @@ impl Geometry {
         ((0.0..=1.0).contains(&s[0]) && (0.0..=1.0).contains(&s[1])).then_some(s)
     }
 
+    /// Where a point of the upright image (0–1) is shown: the inverse of
+    /// [`Self::to_source`] (0–1 within the crop when `cropped`). `None` when
+    /// the point is not shown (outside the crop or the frame).
+    #[must_use]
+    pub fn to_shown(&self, upright: [f32; 2], aspect: f32, cropped: bool) -> Option<[f32; 2]> {
+        let frame = if self.warps() { self.warp(aspect).frame(upright) } else { upright };
+        let p = match (cropped, self.crop) {
+            (true, Some(c)) => [(frame[0] - c.min().x()) / c.width(), (frame[1] - c.min().y()) / c.height()],
+            _ => frame,
+        };
+        (p.iter().all(|v| v.is_finite() && (-1e-4..=1.0 + 1e-4).contains(v))).then_some(p)
+    }
+
     /// The crop as a rectangle of the frame (the whole frame when there is none).
     #[must_use]
     pub fn crop_or_full(&self) -> NormRect {
@@ -142,6 +155,24 @@ impl Warp {
             return [f32::INFINITY, f32::INFINITY];
         }
         [nx / d * hx, ny / d * hy]
+    }
+
+    /// The output-frame point (0–1) where upright-image point `p` (0–1)
+    /// shows: the inverse of [`Self::source`].
+    #[must_use]
+    pub fn frame(&self, p: [f32; 2]) -> [f32; 2] {
+        let c = self.centred(p);
+        let (hx, hy) = self.half();
+        let (nx, ny) = (c[0] / hx, c[1] / hy);
+        // Keystone forward: divide by 1 + a·y + b·x.
+        let d = 1.0 + self.a * ny + self.b * nx;
+        if d.abs() < 1e-6 {
+            return [f32::INFINITY, f32::INFINITY];
+        }
+        let (x, y) = (nx / d * hx, ny / d * hy);
+        // Rotate by +angle, then enlarge.
+        let (x, y) = (x * self.cos - y * self.sin, x * self.sin + y * self.cos);
+        self.uncentred([x * self.scale, y * self.scale])
     }
 
     /// The upright-image point (0–1) shown at output-frame point `p` (0–1).
@@ -253,6 +284,16 @@ mod tests {
         let top = w.source([1.0, 0.1])[0] - w.source([0.0, 0.1])[0];
         let bottom = w.source([1.0, 0.9])[0] - w.source([0.0, 0.9])[0];
         assert!(top < bottom, "{top} {bottom}");
+    }
+
+    #[test]
+    fn showing_a_point_inverts_finding_its_source() {
+        let g = Geometry { angle: -7.0, vertical: 35.0, horizontal: -20.0, crop: Some(rect(0.1, 0.2, 0.8, 0.9)) };
+        for p in [[0.5, 0.5], [0.3, 0.4], [0.7, 0.65], [0.2, 0.8]] {
+            let src = g.to_source(p, 1.5, true).unwrap_or_else(|| panic!("{p:?}"));
+            let back = g.to_shown(src, 1.5, true).unwrap_or_else(|| panic!("{src:?}"));
+            assert!((back[0] - p[0]).abs() < 1e-4 && (back[1] - p[1]).abs() < 1e-4, "{p:?} → {src:?} → {back:?}");
+        }
     }
 
     #[test]

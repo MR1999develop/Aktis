@@ -301,6 +301,21 @@ impl Document {
         Some(tool_adjust::white_balance::light_of(core_color::xyz_to_xy(xyz.map(f64::from))))
     }
 
+    /// The developed-image point (where masks and retouching live: the
+    /// file's own orientation, 0–1) under the upright point `upright`.
+    #[must_use]
+    pub fn developed_point(&self, upright: [f32; 2]) -> Option<core_model::NormPoint> {
+        let p = core_model::NormPoint::new(upright[0], upright[1])?;
+        Some(self.opened.orientation.inverse().to_upright(p))
+    }
+
+    /// The upright point (0–1) of a developed-image point.
+    #[must_use]
+    pub fn upright_point(&self, developed: core_model::NormPoint) -> [f32; 2] {
+        let p = self.opened.orientation.to_upright(developed);
+        [p.x(), p.y()]
+    }
+
     /// The colour entering `node` at the upright point `at` (0–1 from the
     /// top-left corner): a 5 × 5 average of the developed preview, passed
     /// through the enabled tools between the Source and `node` (those that
