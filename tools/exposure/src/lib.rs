@@ -69,7 +69,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
         ParamDescriptor {
             id: ParamId::new(EXPOSURE).expect("constant id is valid"),
             label: "Exposure",
-            kind: ParamKind::Float { min: -MAX_STOPS, max: MAX_STOPS, default: 0.0, step: 0.01, unit: Unit::Stops },
+            kind: ParamKind::Float { min: -MAX_STOPS, max: MAX_STOPS, default: 0.0, step: 0.05, unit: Unit::Stops },
         },
         slider(CONTRAST, "Contrast"),
         slider(BRIGHTNESS, "Brightness"),
