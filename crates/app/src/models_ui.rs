@@ -220,6 +220,14 @@ impl ModelsUi {
             ui.label(RichText::new("AI models").size(FONT[4]).strong());
             ui.add_space(SPACE[1]);
             ui.label("Downloaded on demand, kept on this computer. Optional packs only make a tool faster.");
+            ui.label(
+                RichText::new(
+                    "To use them: AI denoise is a node (Image \u{25b8} Add node \u{25b8} AI denoise); the AI \
+                     selections are in the Masks tool (B).",
+                )
+                .size(FONT[0])
+                .color(t.text_weak),
+            );
             ui.add_space(SPACE[2]);
             let mut all_missing = Vec::new();
             egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {

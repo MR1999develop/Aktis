@@ -740,6 +740,22 @@ impl Document {
         self.add_node_with(registry, after, tool, Params::new())
     }
 
+    /// Where a node added from the menu goes: after `selected` when it has
+    /// an image output (not the Output), else at the end of the chain, just
+    /// before the Output.
+    #[must_use]
+    pub fn insertion_point(&self, selected: Option<NodeId>) -> NodeId {
+        let graph = &self.recipe().graph;
+        let gives_image = |id: NodeId| {
+            id != graph.output()
+                && graph.node(id).is_some_and(|n| n.kind.outputs().first() == Some(&core_model::PortKind::Image))
+        };
+        selected
+            .filter(|id| gives_image(*id))
+            .or_else(|| graph.input_link(graph.output(), 0).map(|l| l.from).filter(|id| gives_image(*id)))
+            .unwrap_or_else(|| graph.source())
+    }
+
     /// Like [`Self::add_node`], with the new node's first values (one undo step).
     ///
     /// # Errors
@@ -914,6 +930,21 @@ mod tests {
         assert!(at_exposure[0] > at_exposure[2], "the corner's colour is in the average");
         assert_eq!(doc.probe(&reg, after, [1.5, 0.0]), None);
         assert_eq!(doc.shot_light(), None, "no RAW data in this test");
+    }
+
+    #[test]
+    fn a_node_from_the_menu_goes_after_the_selection_or_at_the_end_of_the_chain() {
+        let reg = registry();
+        let mut doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), 1);
+        let source = doc.recipe().graph.source();
+        assert_eq!(doc.insertion_point(None), source, "an empty chain grows from the Source");
+        let exposure = ToolId::new(tool_exposure_id()).unwrap();
+        let a = doc.add_node(&reg, source, exposure.clone()).unwrap();
+        let b = doc.add_node(&reg, a, exposure).unwrap();
+        assert_eq!(doc.insertion_point(None), b, "after the last node");
+        assert_eq!(doc.insertion_point(Some(a)), a, "after the selected node");
+        let output = doc.recipe().graph.output();
+        assert_eq!(doc.insertion_point(Some(output)), b, "never after the Output");
     }
 
     #[test]

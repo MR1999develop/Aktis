@@ -1238,6 +1238,8 @@ impl EditorApp {
         // The selected node, when it is one that can be bypassed or deleted
         // (the same commands as its right-click menu in the graph).
         let editable_node = self.editable_node();
+        let node_tools = crate::graph_ui::node_tools(&self.registry);
+        let add_after = self.doc.as_ref().map(|d| d.insertion_point(self.selected_node));
 
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -1318,6 +1320,27 @@ impl EditorApp {
                         }
                     }
                 });
+                ui.menu_button("Add node", |ui| {
+                    let Some(after) = add_after else {
+                        ui.add_enabled(false, Button::new("No photo open"));
+                        return;
+                    };
+                    let mut last = None;
+                    for (category, tool, name) in &node_tools {
+                        if last != Some(*category) {
+                            if last.is_some() {
+                                ui.separator();
+                            }
+                            ui.weak(crate::graph_ui::category_name(*category));
+                            last = Some(*category);
+                        }
+                        if ui.button(*name).on_hover_text("Added after the selected node, else at the end").clicked() {
+                            graph_actions.push(GraphAction::Add { after, tool: tool.clone() });
+                            ui.close();
+                        }
+                    }
+                });
+                ui.separator();
                 ui.menu_button("Presets", |ui| {
                     self.presets.presets_menu(ui, apply_why, save_why, &mut preset_actions);
                 });

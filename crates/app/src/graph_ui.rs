@@ -95,7 +95,7 @@ fn node_subtitle(node: &Node) -> &'static str {
     }
 }
 
-fn category_name(c: Category) -> &'static str {
+pub(crate) fn category_name(c: Category) -> &'static str {
     match c {
         Category::Exposure => "Exposure and tone",
         Category::Color => "Colour",
@@ -118,7 +118,7 @@ fn category_rank(c: Category) -> u8 {
 }
 
 /// The tools of this build that can be a graph node, by category then name.
-fn node_tools(registry: &ToolRegistry) -> Vec<(Category, ToolId, &'static str)> {
+pub(crate) fn node_tools(registry: &ToolRegistry) -> Vec<(Category, ToolId, &'static str)> {
     let mut tools: Vec<_> =
         registry.iter().map(|t| t.descriptor()).map(|d| (d.category, d.id.clone(), d.name)).collect();
     tools.sort_by(|a, b| category_rank(a.0).cmp(&category_rank(b.0)).then_with(|| a.2.cmp(b.2)));
