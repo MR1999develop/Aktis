@@ -135,6 +135,9 @@ pub struct EditorApp {
     /// A development in flight (lens corrections changed): ticket and settings.
     developing: Option<(u64, DevelopSettings)>,
     texture: Option<egui::TextureHandle>,
+    /// The exposure warning over `texture`, made from `shown` when first
+    /// needed after each render.
+    warning_texture: Option<egui::TextureHandle>,
     plan: RenderPlan,
     view: ViewState,
     viewport: Option<Viewport>,
@@ -256,6 +259,7 @@ impl EditorApp {
             export_dialog: None,
             developing: None,
             texture: None,
+            warning_texture: None,
             plan: RenderPlan::default(),
             view: ViewState::default(),
             viewport: None,
@@ -576,6 +580,7 @@ impl EditorApp {
                         None => self.texture = Some(ctx.load_texture("photo", color, options)),
                     }
                     self.shown = Some(image);
+                    self.warning_texture = None;
                     self.plan.shown(generation, quality);
                     if let Some(why) = gpu_failure {
                         self.toast = Some(error_toast(format!("The GPU failed, the CPU took over: {why}")));
@@ -1202,6 +1207,7 @@ impl EditorApp {
         let export_count = self.export_targets().len();
         let mut open_recent = None;
         let mut theme_choice = self.settings.theme;
+        let mut exposure_warning = self.settings.exposure_warning;
         let mut open_models = false;
         let mut open_prefs = false;
         let mut open_folder = false;
@@ -1309,6 +1315,14 @@ impl EditorApp {
                     menu_item(ui, c, None, why, commands);
                 }
                 ui.separator();
+                if ui
+                    .checkbox(&mut exposure_warning, "Exposure warning")
+                    .on_hover_text("Burnt highlights in red, blocked shadows in blue")
+                    .clicked()
+                {
+                    ui.close();
+                }
+                ui.separator();
                 ui.menu_button("Theme", |ui| {
                     for (choice, label) in
                         [(ThemeChoice::System, "System"), (ThemeChoice::Light, "Light"), (ThemeChoice::Dark, "Dark")]
@@ -1352,6 +1366,7 @@ impl EditorApp {
                 self.library.show_folder(dir, self.worker.as_ref());
             }
         }
+        self.settings.exposure_warning = exposure_warning;
         if theme_choice != self.settings.theme {
             self.settings.theme = theme_choice;
             ui.ctx().set_theme(theme_preference(theme_choice));
@@ -1512,6 +1527,12 @@ impl EditorApp {
             return;
         }
 
+        // Made before the photo is borrowed for drawing.
+        let warning = if self.settings.exposure_warning {
+            self.exposure_warning_texture(ui.ctx()).map(egui::TextureHandle::id)
+        } else {
+            None
+        };
         let mut picked = None;
         let mut geo_edits = Vec::new();
         let mut mask_edits = Vec::new();
@@ -1569,6 +1590,9 @@ impl EditorApp {
                 let r = self.view.image_rect(image, &vp);
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                 painter.image(texture.id(), to_egui_rect(r), uv, Color32::WHITE);
+                if let Some(warning) = warning {
+                    painter.image(warning, to_egui_rect(r), uv, Color32::WHITE);
+                }
                 let (right, middle) = ui.input(|i| {
                     (
                         i.pointer.button_down(egui::PointerButton::Secondary),
@@ -2323,6 +2347,23 @@ impl EditorApp {
         }
     }
 
+    /// The exposure warning for the image on screen, made once per render.
+    fn exposure_warning_texture(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
+        if self.warning_texture.is_none() {
+            let shown = self.shown.as_ref()?;
+            let rgba = editor::clipping::overlay(
+                &shown.pixels,
+                editor::clipping::Thresholds::default(),
+                theme::WARNING_HIGHLIGHT,
+                theme::WARNING_SHADOW,
+            );
+            let size = [shown.width as usize, shown.height as usize];
+            let image = egui::ColorImage::from_rgba_premultiplied(size, &rgba);
+            self.warning_texture = Some(ctx.load_texture("exposure-warning", image, TextureOptions::NEAREST));
+        }
+        self.warning_texture.as_ref()
+    }
+
     /// Once the open photo is on screen, opens the next one in the
     /// direction of travel ahead of time, so moving to it is immediate.
     fn prefetch_neighbour(&mut self) {
@@ -2415,6 +2456,7 @@ impl eframe::App for EditorApp {
             exporting: self.exporting.is_some(),
             export_count: self.export_targets().len(),
             active: self.tool,
+            exposure_warning: self.settings.exposure_warning,
         };
         let bar_actions = egui::Panel::top("toolbar")
             .frame(Frame::NONE.fill(t.bar).inner_margin(Margin::symmetric(8, 4)))
@@ -2424,6 +2466,7 @@ impl eframe::App for EditorApp {
             match action {
                 BarAction::Command(c) => commands.push(c),
                 BarAction::Tool(tool) => self.tool = tool,
+                BarAction::ExposureWarning(on) => self.settings.exposure_warning = on,
             }
         }
         self.tool_changed();

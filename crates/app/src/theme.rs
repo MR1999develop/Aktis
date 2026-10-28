@@ -210,6 +210,13 @@ pub fn viewer_background(choice: crate::settings::ViewerBackground, canvas: Colo
     }
 }
 
+/// The exposure warning over the photo (premultiplied RGBA, the same in both
+/// themes): burnt highlights in red, blocked shadows in blue, two colours
+/// told apart with any colour vision.
+pub const WARNING_HIGHLIGHT: [u8; 4] = [204, 26, 26, 204];
+/// See [`WARNING_HIGHLIGHT`].
+pub const WARNING_SHADOW: [u8; 4] = [20, 64, 204, 204];
+
 /// Star and border of the rating badge drawn over a thumbnail (on the photo,
 /// the same in both themes).
 pub const BADGE_STAR: Color32 = Color32::from_rgb(0xff, 0xb9, 0x00);

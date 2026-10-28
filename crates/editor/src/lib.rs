@@ -24,6 +24,7 @@
 //! The `app` crate draws these with egui and turns gestures into calls here.
 
 pub mod adjust;
+pub mod clipping;
 pub mod color_wheel;
 pub mod crop;
 pub mod document;

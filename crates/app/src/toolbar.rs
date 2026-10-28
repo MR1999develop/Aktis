@@ -105,6 +105,8 @@ pub struct BarState {
     pub export_count: usize,
     /// The tool in use.
     pub active: Option<ViewerTool>,
+    /// The exposure warning is on.
+    pub exposure_warning: bool,
 }
 
 /// What the user did on the bar.
@@ -114,6 +116,8 @@ pub enum BarAction {
     Command(Command),
     /// A tool was switched on (`Some`) or off (`None`).
     Tool(Option<ViewerTool>),
+    /// The exposure warning was ticked (`true`) or unticked.
+    ExposureWarning(bool),
 }
 
 /// Width a text button will take.
@@ -199,6 +203,15 @@ pub fn toolbar(ui: &mut egui::Ui, state: &BarState) -> Vec<BarAction> {
                 .clicked()
             {
                 actions.push(BarAction::Command(Command::Export));
+            }
+            ui.add_space(SPACE[3]);
+            let mut warn = state.exposure_warning;
+            if ui
+                .checkbox(&mut warn, "Exposure warning")
+                .on_hover_text("Show burnt highlights in red and blocked shadows in blue over the photo")
+                .changed()
+            {
+                actions.push(BarAction::ExposureWarning(warn));
             }
         });
     });

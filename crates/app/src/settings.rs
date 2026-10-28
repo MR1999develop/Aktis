@@ -81,6 +81,8 @@ pub struct Settings {
     pub scope: crate::scopes::ScopeKind,
     /// Height of that scope in points; `None`: the default.
     pub scope_height: Option<f32>,
+    /// The exposure warning is shown over the photo.
+    pub exposure_warning: bool,
     /// Colour around the photo in the viewer.
     pub viewer_background: ViewerBackground,
     /// Folder of the presets and style brushes; `None`: `Presets` in the
