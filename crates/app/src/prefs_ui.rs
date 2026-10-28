@@ -66,29 +66,6 @@ impl Preferences {
             );
             ui.add_space(SPACE[2]);
 
-            section(ui, &t, "Export");
-            ui.horizontal(|ui| {
-                ui.label("Folder");
-                let shown = draft
-                    .export_dir
-                    .as_ref()
-                    .map_or_else(|| "Next to the RAW file".to_owned(), |d| d.display().to_string());
-                ui.label(RichText::new(shown).color(t.text_weak));
-            });
-            ui.horizontal(|ui| {
-                if ui.button("Choose\u{2026}").clicked() {
-                    let mut pick = rfd::FileDialog::new().set_title("Export folder");
-                    if let Some(dir) = draft.export_dir.as_ref().or(draft.open_dir.as_ref()) {
-                        pick = pick.set_directory(dir);
-                    }
-                    if let Some(dir) = pick.pick_folder() {
-                        draft.export_dir = Some(PathBuf::from(dir));
-                    }
-                }
-                if ui.add_enabled(draft.export_dir.is_some(), egui::Button::new("Next to the RAW file")).clicked() {
-                    draft.export_dir = None;
-                }
-            });
             ui.add_space(SPACE[3]);
             choice = dialog_buttons(ui, &t, Some("OK"), "Cancel", |_| {});
         });
@@ -97,7 +74,6 @@ impl Preferences {
                 if let Some(d) = self.draft.take() {
                     settings.theme = d.theme;
                     settings.viewer_background = d.viewer_background;
-                    settings.export_dir = d.export_dir;
                 }
                 true
             }
