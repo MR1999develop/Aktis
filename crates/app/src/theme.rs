@@ -54,32 +54,33 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    /// The dark theme (warm greys and a copper accent, from the Interface design),
-    /// default for a photo editor.
+    /// The dark theme: the neutral whites, greys and blacks of a photo viewer
+    /// (no tint, so colours are judged on true greys) with the copper accent
+    /// of the Interface design; default for a photo editor.
     #[must_use]
     pub const fn dark() -> Self {
         Self {
             accent: Color32::from_rgb(0xe2, 0x89, 0x4f),
             on_accent: Color32::from_rgb(0x1a, 0x12, 0x10),
             accent_text: Color32::from_rgb(0xe2, 0x89, 0x4f),
-            text_strong: Color32::from_rgb(0xe9, 0xe6, 0xe1),
-            text_weak: Color32::from_rgb(0xa2, 0x9d, 0x95),
-            stroke_strong: Color32::from_rgb(0x77, 0x71, 0x6a),
-            stroke_weak: Color32::from_rgb(0x2a, 0x28, 0x26),
-            fill: Color32::from_rgb(0x24, 0x22, 0x20),
-            bg: Color32::from_rgb(0x18, 0x17, 0x16),
-            bar: Color32::from_rgb(0x16, 0x15, 0x14),
-            bg_raised: Color32::from_rgb(0x23, 0x21, 0x20),
-            bg_overlay: Color32::from_rgb(0x2c, 0x29, 0x26),
-            canvas: Color32::from_rgb(0x0e, 0x0e, 0x0e),
-            graph: Color32::from_rgb(0x1b, 0x1a, 0x19),
-            graph_grid: Color32::from_rgb(0x24, 0x22, 0x1f),
+            text_strong: Color32::from_rgb(0xff, 0xff, 0xff),
+            text_weak: Color32::from_rgb(0xb0, 0xb0, 0xb0),
+            stroke_strong: Color32::from_rgb(0x80, 0x80, 0x80),
+            stroke_weak: Color32::from_rgb(0x2c, 0x2c, 0x2c),
+            fill: Color32::from_rgb(0x24, 0x24, 0x24),
+            bg: Color32::from_rgb(0x20, 0x20, 0x20),
+            bar: Color32::from_rgb(0x16, 0x16, 0x16),
+            bg_raised: Color32::from_rgb(0x25, 0x25, 0x26),
+            bg_overlay: Color32::from_rgb(0x2e, 0x2e, 0x2e),
+            canvas: Color32::from_rgb(0x12, 0x12, 0x12),
+            graph: Color32::from_rgb(0x1c, 0x1c, 0x1c),
+            graph_grid: Color32::from_rgb(0x26, 0x26, 0x26),
             star: Color32::from_rgb(0xe5, 0xa0, 0x0d),
             port_image: Color32::from_rgb(0x7f, 0xbf, 0x6a),
             port_mask: Color32::from_rgb(0x5b, 0x8f, 0xd6),
             error: Color32::from_rgb(0xff, 0x8a, 0x7a),
             warning: Color32::from_rgb(0xe3, 0xb3, 0x41),
-            success: Color32::from_rgb(0x7f, 0xbf, 0x6a),
+            success: Color32::from_rgb(0x5c, 0xbd, 0x50),
         }
     }
 
@@ -121,7 +122,6 @@ impl Tokens {
     }
 }
 
-/// Spacing scale in points.
 /// Red, green and blue of the histogram, translucent so overlaps mix; the
 /// histogram sits on `canvas`, the same in both themes.
 pub const HISTOGRAM: [Color32; 3] = [
@@ -134,6 +134,7 @@ pub const HISTOGRAM: [Color32; 3] = [
 /// the same in both themes).
 pub const BADGE_STAR: Color32 = Color32::from_rgb(0xff, 0xb9, 0x00);
 
+/// Spacing scale in points.
 pub const SPACE: [f32; 8] = [4., 8., 12., 16., 24., 32., 48., 64.];
 /// Font sizes: caption, small, body, large, title, display.
 pub const FONT: [f32; 6] = [12., 13., 14., 16., 20., 24.];
@@ -191,6 +192,18 @@ pub fn visuals(t: &Tokens, theme: Theme) -> Visuals {
     w.active.fg_stroke = Stroke::new(1.0, t.text_strong);
     for wv in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
         wv.corner_radius = CornerRadius::same(RADIUS_CONTROL);
+    }
+    if theme == Theme::Dark {
+        // a photo viewer's control greys: fields #1C1C1C, buttons #242424,
+        // hovered #303030, pressed #3F3F3F.
+        v.extreme_bg_color = Color32::from_rgb(0x1c, 0x1c, 0x1c);
+        w.inactive.bg_fill = Color32::from_rgb(0x1c, 0x1c, 0x1c);
+        w.hovered.weak_bg_fill = Color32::from_rgb(0x30, 0x30, 0x30);
+        w.hovered.bg_fill = Color32::from_rgb(0x30, 0x30, 0x30);
+        w.active.weak_bg_fill = Color32::from_rgb(0x3f, 0x3f, 0x3f);
+        w.active.bg_fill = Color32::from_rgb(0x3f, 0x3f, 0x3f);
+        w.open.weak_bg_fill = Color32::from_rgb(0x2e, 0x2e, 0x2e);
+        w.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x99, 0x99, 0x99));
     }
     v
 }
@@ -254,6 +267,14 @@ mod tests {
     fn the_canvas_is_a_neutral_grey() {
         for t in [Tokens::dark(), Tokens::light()] {
             assert!(t.canvas.r() == t.canvas.g() && t.canvas.g() == t.canvas.b());
+        }
+    }
+
+    #[test]
+    fn the_dark_greys_are_neutral_like_a_photo_viewer() {
+        let t = Tokens::dark();
+        for c in [t.text_strong, t.text_weak, t.stroke_strong, t.stroke_weak, t.fill, t.bg, t.bar, t.canvas, t.graph] {
+            assert!(c.r() == c.g() && c.g() == c.b(), "{c:?} is tinted");
         }
     }
 }
