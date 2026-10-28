@@ -147,6 +147,41 @@ pub const KELVIN_STRIP: [Color32; 2] = [Color32::from_rgb(0x3f, 0x76, 0xd6), Col
 /// Ends of the strip under the tint slider: green on the left, magenta on the right.
 pub const TINT_STRIP: [Color32; 2] = [Color32::from_rgb(0x4c, 0xb0, 0x4c), Color32::from_rgb(0xc8, 0x4c, 0xc8)];
 
+/// Ends of the strips under lightness sliders and arcs: dark to light grey.
+pub const LIGHTNESS_STRIP: [Color32; 2] = [Color32::from_rgb(0x1c, 0x1c, 0x1c), Color32::from_rgb(0xf0, 0xf0, 0xf0)];
+
+/// Brightness (HSV value, 0–1) of the colours of the hue wheels, chips and strips.
+pub const HUE_VALUE: f32 = 0.9;
+
+/// Handles drawn on a colour wheel (puck, range edges, arc knobs): a light
+/// line over a dark shadow, so they show on every hue (the same in both themes).
+pub const WHEEL_HANDLE: [Color32; 2] =
+    [Color32::from_rgb(0xf2, 0xf2, 0xf2), Color32::from_rgba_premultiplied(0, 0, 0, 160)];
+
+/// Shade over the part of a colour wheel outside the chosen range.
+pub const WHEEL_DIM: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 165);
+
+/// The colour of `hue` (degrees) at `saturation` and `value` (0–1), for the
+/// colour wheels, chips and strips: the hue is what they show, so it is the
+/// same in both themes.
+#[must_use]
+pub fn hue_color(hue: f32, saturation: f32, value: f32) -> Color32 {
+    screen_color(editor::color_wheel::hsv(hue, saturation, value))
+}
+
+/// A linear-light colour (a tool's colour value) as a swatch on screen.
+#[must_use]
+pub fn linear_color(rgb: [f32; 3]) -> Color32 {
+    screen_color(rgb.map(editor::adjust::encode))
+}
+
+/// A colour from R, G and B already encoded for the screen (0–1).
+fn screen_color(rgb: [f32; 3]) -> Color32 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0–255 after the clamp
+    let [r, g, b] = rgb.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+    Color32::from_rgb(r, g, b)
+}
+
 /// The mask shown over the photo (red, as photo editors use), the same in
 /// both themes.
 pub const MASK_OVERLAY: Color32 = Color32::from_rgb(0xff, 0x30, 0x30);
@@ -306,6 +341,13 @@ mod tests {
             assert!(contrast(t.accent, t.bg) >= 3.0, "{name}: accent fills");
             assert!(contrast(t.on_accent, t.accent) >= 4.5, "{name}: text on accent");
         }
+    }
+
+    #[test]
+    fn hue_colours_follow_the_wheel() {
+        assert_eq!(hue_color(0.0, 1.0, 1.0), Color32::from_rgb(255, 0, 0));
+        assert_eq!(hue_color(240.0, 0.0, 1.0), Color32::from_rgb(255, 255, 255));
+        assert_eq!(linear_color([1.0, 0.0, 2.0]), Color32::from_rgb(255, 0, 255));
     }
 
     #[test]

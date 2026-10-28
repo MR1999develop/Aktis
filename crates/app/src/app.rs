@@ -1994,7 +1994,8 @@ impl EditorApp {
         let Some(doc) = &mut self.doc else { return };
         let Some(rgb) = doc.probe(&self.registry, pick.node, at) else { return };
         let Some(values) = editor::adjust::pick_values(doc, &self.registry, pick, rgb) else {
-            self.toast = Some(info_toast("Nothing to pick there: the colour is black.".to_owned()));
+            self.toast =
+                Some(info_toast("Nothing to pick there: the colour is black, or a grey with no hue.".to_owned()));
             return;
         };
         if let Err(e) = doc.set_params(&self.registry, pick.node, values, None) {

@@ -1,8 +1,10 @@
 //! The settings of the node selected in the graph, on the right under the
 //! histogram: the lens corrections for the Source, the parameters of a
 //! tool (with panels of their own for white balance, levels and curve, in
-//! [`crate::adjust_ui`], and the list of spots of a retouch node, in
-//! [`crate::retouch_ui`]), a note for the other nodes.
+//! [`crate::adjust_ui`], for the colour editor, colour balance, black &
+//! white, clarity, dehaze and vignetting, in [`crate::color_ui`], and the
+//! list of spots of a retouch node, in [`crate::retouch_ui`]), a note for
+//! the other nodes.
 
 use commands::GestureId;
 use core_model::{LensSettings, NodeId, NodeKind, ParamId, ParamValue};
@@ -163,6 +165,12 @@ pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
                 "white_balance" => crate::adjust_ui::white_balance(ui, &row, panel, edits),
                 "levels" => crate::adjust_ui::levels(ui, &row, panel, edits),
                 "curve" => crate::adjust_ui::curve(ui, &row, panel, edits),
+                "color_editor" => crate::color_ui::color_editor(ui, &row, panel, edits),
+                "color_balance" => crate::color_ui::color_balance(ui, &row, edits),
+                "black_white" => crate::color_ui::black_white(ui, &row, edits),
+                "clarity" => crate::color_ui::clarity(ui, &row, edits),
+                "dehaze" => crate::color_ui::dehaze(ui, &row, panel, edits),
+                "vignetting" => crate::color_ui::vignetting(ui, &row, edits),
                 "retouch" => crate::retouch_ui::panel(ui, &row, edits),
                 _ => {
                     for p in &row.params {

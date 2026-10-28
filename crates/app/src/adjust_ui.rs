@@ -1,5 +1,6 @@
-//! Inspector panels for the tools that need more than sliders, laid out
-//! like Capture One's:
+//! Inspector panels for the tone tools that need more than sliders, laid
+//! out like Capture One's (the colour and detail tools, in
+//! [`crate::color_ui`], share this module's pieces):
 //!
 //! - **White balance**: the mode, a picker for something that should be
 //!   grey, and kelvin and tint sliders over colour strips.
@@ -42,22 +43,22 @@ pub struct PanelContext<'a> {
     pub probe: Option<[f32; 3]>,
 }
 
-fn pid(id: &str) -> ParamId {
+pub(crate) fn pid(id: &str) -> ParamId {
     ParamId::new(id).expect("tool parameter ids are valid")
 }
 
-fn param<'r>(row: &'r NodeRow, id: &str) -> Option<&'r ParamRow> {
+pub(crate) fn param<'r>(row: &'r NodeRow, id: &str) -> Option<&'r ParamRow> {
     row.params.iter().find(|p| p.descriptor.id.as_str() == id)
 }
 
-fn float(row: &NodeRow, id: &str) -> f32 {
+pub(crate) fn float(row: &NodeRow, id: &str) -> f32 {
     match param(row, id).map(|p| p.value) {
         Some(ParamValue::Float(v)) => v,
         _ => 0.0,
     }
 }
 
-fn choice(row: &NodeRow, id: &str) -> u32 {
+pub(crate) fn choice(row: &NodeRow, id: &str) -> u32 {
     match param(row, id).map(|p| p.value) {
         Some(ParamValue::Choice(v)) => v,
         _ => 0,
@@ -65,7 +66,7 @@ fn choice(row: &NodeRow, id: &str) -> u32 {
 }
 
 /// A small square button with an eyedropper, highlighted while its picker waits.
-fn picker_button(ui: &mut egui::Ui, active: bool, tip: &str) -> bool {
+pub(crate) fn picker_button(ui: &mut egui::Ui, active: bool, tip: &str) -> bool {
     let t = Tokens::of(ui.ctx().theme());
     let (rect, response) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
     let fill = if active {
@@ -81,7 +82,7 @@ fn picker_button(ui: &mut egui::Ui, active: bool, tip: &str) -> bool {
 }
 
 /// The edit that turns picker `pick` on, or off when it is the one waiting.
-fn toggle_pick(current: Option<Pick>, pick: Pick) -> UiEdit {
+pub(crate) fn toggle_pick(current: Option<Pick>, pick: Pick) -> UiEdit {
     UiEdit::Pick(if current == Some(pick) { None } else { Some(pick) })
 }
 
@@ -99,16 +100,16 @@ fn strip(painter: &egui::Painter, rect: Rect, ends: [Color32; 2]) {
 
 /// Remembers a small value per panel between frames (the chosen tab, the
 /// handle being dragged).
-fn remembered<T: Clone + Default + Send + Sync + 'static>(ui: &egui::Ui, id: Id) -> T {
+pub(crate) fn remembered<T: Clone + Default + Send + Sync + 'static>(ui: &egui::Ui, id: Id) -> T {
     ui.ctx().data(|d| d.get_temp::<T>(id)).unwrap_or_default()
 }
 
-fn remember<T: Clone + Send + Sync + 'static>(ui: &egui::Ui, id: Id, value: T) {
+pub(crate) fn remember<T: Clone + Send + Sync + 'static>(ui: &egui::Ui, id: Id, value: T) {
     ui.ctx().data_mut(|d| d.insert_temp(id, value));
 }
 
 /// A row of tabs; returns the chosen index.
-fn tabs(ui: &mut egui::Ui, names: &[&str], current: usize) -> usize {
+pub(crate) fn tabs(ui: &mut egui::Ui, names: &[&str], current: usize) -> usize {
     let mut chosen = current;
     ui.horizontal(|ui| {
         for (i, name) in names.iter().enumerate() {
@@ -229,8 +230,8 @@ fn handle(painter: &egui::Painter, x: f32, top: f32, fill: Color32, stroke: Colo
     painter.add(Shape::convex_polygon(points, fill, Stroke::new(1.0, stroke)));
 }
 
-/// A number field for a levels value.
-fn number(ui: &mut egui::Ui, node: NodeId, id: &str, value: f32, range: [f32; 2], edits: &mut Vec<UiEdit>) {
+/// A number field for a value (levels, a colour range's centre and width).
+pub(crate) fn number(ui: &mut egui::Ui, node: NodeId, id: &str, value: f32, range: [f32; 2], edits: &mut Vec<UiEdit>) {
     let mut v = value;
     let response = ui.add(egui::DragValue::new(&mut v).range(range[0]..=range[1]).speed(1.0).fixed_decimals(0));
     let param = pid(id);

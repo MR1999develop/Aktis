@@ -160,3 +160,6 @@
   readers show "©" as Latin-1. The XMP packet carries them correctly.
 - The export window, like the other dialogs, is not modal (see above).
 >>>>>>> t8-export
+- Colour editor: Capture One's "View selected color range" is missing; the
+  viewer has no way to show which pixels a range selects. Add it when the
+  viewer can draw a node's weight as an overlay (as the mask overlay does).
