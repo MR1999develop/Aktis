@@ -139,6 +139,10 @@ pub struct EditorApp {
     histogram: Option<Box<Histogram>>,
     /// The waveform or parade texture.
     scopes: Scopes,
+    /// The 8-bit image on screen, for the eyedropper and the loupe.
+    shown: Option<engine::Rgb8Image>,
+    /// The loupe's pixels while the middle button is held.
+    loupe: Option<egui::TextureHandle>,
     /// "AI-tag this folder", while it runs.
     tagging: Option<TaggingJob>,
     /// Time, kind and size of the last render shown.
@@ -209,6 +213,8 @@ impl EditorApp {
             probe: None,
             histogram: None,
             scopes: Scopes::default(),
+            shown: None,
+            loupe: None,
             tagging: None,
             last_render: None,
         };
@@ -385,6 +391,7 @@ impl EditorApp {
                         Some(t) => t.set(color, options),
                         None => self.texture = Some(ctx.load_texture("photo", color, options)),
                     }
+                    self.shown = Some(image);
                     self.plan.shown(generation, quality);
                     if let Some(why) = gpu_failure {
                         self.toast = Some(error_toast(format!("The GPU failed, the CPU took over: {why}")));
@@ -970,7 +977,8 @@ impl EditorApp {
                     picked = Some((pick, at(p)));
                 }
             }
-            if response.dragged() {
+            // The left button pans; the right one is the eyedropper, the middle one the loupe.
+            if response.dragged_by(egui::PointerButton::Primary) {
                 let d = response.drag_delta();
                 self.view.pan([d.x, d.y], image, &vp);
             }
@@ -996,6 +1004,51 @@ impl EditorApp {
                 let r = self.view.image_rect(image, &vp);
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                 painter.image(texture.id(), to_egui_rect(r), uv, Color32::WHITE);
+                let (right, middle) = ui.input(|i| {
+                    (
+                        i.pointer.button_down(egui::PointerButton::Secondary),
+                        i.pointer.button_down(egui::PointerButton::Middle),
+                    )
+                });
+                match (response.hover_pos(), &self.shown) {
+                    (Some(p), Some(shown)) if right || middle => {
+                        ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+                        let screen = to_egui_rect(r);
+                        let (sw, sh) = (shown.width as f32, shown.height as f32);
+                        // The pointer in pixels of the image on screen, and of the full image.
+                        let at =
+                            [(p.x - screen.min.x) / screen.width() * sw, (p.y - screen.min.y) / screen.height() * sh];
+                        let full = [
+                            ((p.x - screen.min.x) / screen.width() * w as f32).floor(),
+                            ((p.y - screen.min.y) / screen.height() * h as f32).floor(),
+                        ];
+                        if right {
+                            eyedropper_hud(&painter, &t, rect, p, shown, at, full);
+                        } else {
+                            let mag = screen.width() / sw.max(1.0) * editor::inspect::LOUPE_FACTOR;
+                            let patch = editor::inspect::loupe_patch(
+                                &shown.pixels,
+                                shown.width as usize,
+                                shown.height as usize,
+                                at,
+                                mag,
+                            );
+                            let side = editor::inspect::LOUPE_SIDE;
+                            let img = egui::ColorImage::from_rgba_unmultiplied([side, side], &patch);
+                            match &mut self.loupe {
+                                Some(tex) => tex.set(img, TextureOptions::NEAREST),
+                                None => {
+                                    self.loupe = Some(ui.ctx().load_texture("rne-loupe", img, TextureOptions::NEAREST));
+                                }
+                            }
+                            if let Some(tex) = &self.loupe {
+                                let zoom = self.view.percent(image, &vp) * editor::inspect::LOUPE_FACTOR;
+                                loupe(&painter, &t, rect, p, tex, zoom, full);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             } else {
                 painter.text(
                     rect.center(),
@@ -1441,6 +1494,112 @@ fn theme_preference(choice: ThemeChoice) -> egui::ThemePreference {
         ThemeChoice::Light => egui::ThemePreference::Light,
         ThemeChoice::Dark => egui::ThemePreference::Dark,
     }
+}
+
+/// The eyedropper: next to the pointer, a large swatch of the colour on
+/// screen with its position in the full image, RGB and HSL.
+fn eyedropper_hud(
+    painter: &egui::Painter,
+    t: &Tokens,
+    viewer: egui::Rect,
+    p: egui::Pos2,
+    shown: &engine::Rgb8Image,
+    at: [f32; 2],
+    full: [f32; 2],
+) {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // inside the image, checked by `pixel`
+    let (x, y) = (at[0].max(0.0) as usize, at[1].max(0.0) as usize);
+    let Some(rgb) = editor::inspect::pixel(&shown.pixels, shown.width as usize, x, y) else { return };
+    let (hue, sat, light) = editor::inspect::hsl(rgb);
+    let size = egui::vec2(288.0, 118.0);
+    let min = egui::pos2(
+        (p.x + 22.0).clamp(viewer.left() + 8.0, (viewer.right() - size.x - 8.0).max(viewer.left() + 8.0)),
+        (p.y + 22.0).clamp(viewer.top() + 8.0, (viewer.bottom() - size.y - 8.0).max(viewer.top() + 8.0)),
+    );
+    let card = egui::Rect::from_min_size(min, size);
+    painter.rect_filled(card, egui::CornerRadius::same(4), t.bg_overlay);
+    painter.rect_stroke(
+        card,
+        egui::CornerRadius::same(4),
+        egui::Stroke::new(1.0, t.stroke_strong),
+        egui::StrokeKind::Inside,
+    );
+    let swatch = egui::Rect::from_min_size(min + egui::vec2(14.0, 15.0), egui::vec2(88.0, 88.0));
+    painter.rect_filled(swatch, egui::CornerRadius::ZERO, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+    painter.rect_stroke(
+        swatch,
+        egui::CornerRadius::ZERO,
+        egui::Stroke::new(1.5, t.text_strong),
+        egui::StrokeKind::Outside,
+    );
+    let mono = egui::FontId::monospace(FONT[1]);
+    let lines = [
+        (format!("XY: ({:.0}, {:.0})", full[0], full[1]), t.text_weak),
+        (format!("RGB: {:3}, {:3}, {:3}", rgb[0], rgb[1], rgb[2]), t.text_strong),
+        (format!("HSL: {hue:3}\u{b0}, {sat:3}%, {light:3}%"), t.text_strong),
+    ];
+    for (i, (text, color)) in lines.into_iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)] // three lines
+        let y = min.y + 26.0 + i as f32 * 30.0;
+        painter.text(egui::pos2(min.x + 114.0, y), Align2::LEFT_CENTER, text, mono.clone(), color);
+    }
+}
+
+/// The loupe: a magnified circle centred on the pointer, with a crosshair
+/// and a badge saying the magnification and the position in the full image.
+fn loupe(
+    painter: &egui::Painter,
+    t: &Tokens,
+    viewer: egui::Rect,
+    p: egui::Pos2,
+    texture: &egui::TextureHandle,
+    zoom_percent: f32,
+    full: [f32; 2],
+) {
+    #[allow(clippy::cast_precision_loss)] // a small size
+    let side = editor::inspect::LOUPE_SIDE as f32;
+    let r = side / 2.0;
+    let c = egui::pos2(
+        p.x.clamp(viewer.left() + r + 4.0, (viewer.right() - r - 4.0).max(viewer.left() + r + 4.0)),
+        p.y.clamp(viewer.top() + r + 4.0, (viewer.bottom() - r - 30.0).max(viewer.top() + r + 4.0)),
+    );
+    // A disc of the texture: a fan of triangles with matching texture coordinates.
+    let mut mesh = egui::Mesh::with_texture(texture.id());
+    let vertex = |pos: egui::Pos2| egui::epaint::Vertex {
+        pos,
+        uv: egui::pos2((pos.x - c.x) / side + 0.5, (pos.y - c.y) / side + 0.5),
+        color: Color32::WHITE,
+    };
+    mesh.vertices.push(vertex(c));
+    const SEGMENTS: u32 = 96;
+    for k in 0..=SEGMENTS {
+        #[allow(clippy::cast_precision_loss)] // segment angles
+        let a = k as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+        mesh.vertices.push(vertex(c + egui::vec2(a.cos(), a.sin()) * r));
+    }
+    for k in 1..=SEGMENTS {
+        mesh.add_triangle(0, k, k + 1);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+    painter.circle_stroke(c, r, egui::Stroke::new(2.5, t.stroke_strong));
+    let cross = egui::Stroke::new(1.0, t.text_strong);
+    painter.line_segment([c - egui::vec2(20.0, 0.0), c + egui::vec2(20.0, 0.0)], cross);
+    painter.line_segment([c - egui::vec2(0.0, 20.0), c + egui::vec2(0.0, 20.0)], cross);
+    let badge = egui::Rect::from_center_size(c + egui::vec2(0.0, r + 14.0), egui::vec2(200.0, 22.0));
+    painter.rect_filled(badge, egui::CornerRadius::same(3), t.bg_overlay);
+    painter.rect_stroke(
+        badge,
+        egui::CornerRadius::same(3),
+        egui::Stroke::new(1.0, t.stroke_strong),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        badge.center(),
+        Align2::CENTER_CENTER,
+        format!("4\u{d7} ({zoom_percent:.0}%) [{:.0}, {:.0}]", full[0], full[1]),
+        egui::FontId::monospace(FONT[0]),
+        t.text_strong,
+    );
 }
 
 fn to_view_rect(r: egui::Rect) -> editor::Rect {

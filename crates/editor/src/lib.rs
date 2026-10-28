@@ -23,6 +23,7 @@ pub mod graph_layout;
 pub mod graph_view;
 pub mod histogram;
 pub mod history_order;
+pub mod inspect;
 pub mod lenses;
 pub mod library;
 pub mod overview;
