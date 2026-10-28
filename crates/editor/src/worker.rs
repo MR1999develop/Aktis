@@ -30,10 +30,10 @@ use crate::histogram::Histogram;
 use crate::library::{FolderListing, list_folder};
 
 /// Longer side of the preview copy made when a file is opened.
-pub const PREVIEW_SIDE: u32 = 2560;
+pub const PREVIEW_SIDE: u32 = 1920;
 
 /// Longest side of the draft copy rendered while a slider is dragged: about
-/// the size of the viewer on a full-HD screen, a quarter of the preview's pixels.
+/// the size of the viewer on a full-HD screen, under half the preview's pixels.
 pub const DRAFT_SIDE: u32 = 1280;
 
 /// Longer side of filmstrip thumbnails (twice the card width, for sharp HiDPI screens).
