@@ -37,6 +37,10 @@ pub struct Viewport {
 /// Largest magnification: 32 screen pixels per image pixel.
 pub const MAX_PIXEL_ZOOM: f32 = 32.0;
 
+/// Space left around the image at [`Zoom::Fit`], in points on each side, so
+/// it does not touch the viewer's edges (as in Capture One).
+pub const FIT_MARGIN: f32 = 16.0;
+
 /// Zoom step of one wheel notch or Ctrl+Plus.
 pub const ZOOM_STEP: f32 = 1.25;
 
@@ -79,14 +83,17 @@ impl ViewState {
         self.zoom = Zoom::Fit;
     }
 
-    /// Screen pixels per image pixel that fit `image` in the viewport, at most 1.
+    /// Screen pixels per image pixel that fit `image` in the viewport with
+    /// [`FIT_MARGIN`] around it, at most 1. A viewport too small for the
+    /// margin is used whole.
     #[must_use]
     pub fn fit_scale(image: [f32; 2], vp: &Viewport) -> f32 {
         if image[0] <= 0.0 || image[1] <= 0.0 {
             return 1.0;
         }
-        let px_w = vp.rect.w * vp.pixels_per_point;
-        let px_h = vp.rect.h * vp.pixels_per_point;
+        let inner = |side: f32| if side > 8.0 * FIT_MARGIN { side - 2.0 * FIT_MARGIN } else { side };
+        let px_w = inner(vp.rect.w) * vp.pixels_per_point;
+        let px_h = inner(vp.rect.h) * vp.pixels_per_point;
         (px_w / image[0]).min(px_h / image[1]).clamp(f32::MIN_POSITIVE, 1.0)
     }
 
@@ -207,10 +214,14 @@ mod tests {
     fn fit_shows_the_whole_image_centred() {
         let v = ViewState::default();
         let r = v.image_rect(IMAGE, &vp(1.0));
-        // Height limits: 400 / 3000.
-        assert!(close(r.h, 400.0) && close(r.w, 533.333));
-        assert!(close(r.y, 50.0));
+        // Height limits: (400 − 2 × 16) / 3000, a margin above and below.
+        assert!(close(r.h, 368.0) && close(r.w, 490.667), "{r:?}");
+        assert!(close(r.y, 50.0 + FIT_MARGIN), "{r:?}");
         assert!(close(r.x + r.w / 2.0, 500.0));
+        // A viewport too small for a margin is used whole.
+        let tiny = Viewport { rect: Rect { x: 0.0, y: 0.0, w: 100.0, h: 75.0 }, pixels_per_point: 1.0 };
+        let r = v.image_rect(IMAGE, &tiny);
+        assert!(close(r.w, 100.0) && close(r.h, 75.0), "{r:?}");
     }
 
     #[test]
