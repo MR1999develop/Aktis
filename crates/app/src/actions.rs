@@ -28,6 +28,8 @@ pub enum Command {
     ZoomIn,
     /// View ▸ Zoom out.
     ZoomOut,
+    /// View ▸ Exposure warning (on/off), Ctrl+E as in Capture One.
+    ExposureWarning,
     /// Image ▸ Variants ▸ New variant: the photo as it came from the
     /// camera, edited apart from its other variants.
     NewVariant,
@@ -45,8 +47,10 @@ const fn k(modifiers: Modifiers, key: Key) -> KeyboardShortcut {
 }
 
 const OPEN: &[KeyboardShortcut] = &[k(CMD, Key::O)];
-const EXPORT: &[KeyboardShortcut] = &[k(CMD, Key::E)];
-const EXPORT_AGAIN: &[KeyboardShortcut] = &[k(CMD_SHIFT, Key::E)];
+// Ctrl+D as Capture One's Process; Ctrl+E is the exposure warning there and here.
+const EXPORT: &[KeyboardShortcut] = &[k(CMD, Key::D)];
+const EXPORT_AGAIN: &[KeyboardShortcut] = &[k(CMD_SHIFT, Key::D)];
+const EXPOSURE_WARNING: &[KeyboardShortcut] = &[k(CMD, Key::E)];
 const QUIT: &[KeyboardShortcut] = &[k(CMD, Key::Q)];
 const UNDO: &[KeyboardShortcut] = &[k(CMD, Key::Z)];
 const REDO: &[KeyboardShortcut] = &[k(CMD, Key::Y), k(CMD_SHIFT, Key::Z)];
@@ -73,6 +77,7 @@ impl Command {
             Self::Zoom100 => "100 %",
             Self::ZoomIn => "Zoom in",
             Self::ZoomOut => "Zoom out",
+            Self::ExposureWarning => "Exposure warning",
             Self::NewVariant => "New variant",
             Self::CloneVariant => "Clone variant",
             Self::DeleteVariant => "Delete variant\u{2026}",
@@ -93,6 +98,7 @@ impl Command {
             Self::Zoom100 => ZOOM_100,
             Self::ZoomIn => ZOOM_IN,
             Self::ZoomOut => ZOOM_OUT,
+            Self::ExposureWarning => EXPOSURE_WARNING,
             Self::NewVariant => NEW_VARIANT,
             Self::CloneVariant => CLONE_VARIANT,
             Self::DeleteVariant => DELETE_VARIANT,
@@ -107,7 +113,7 @@ impl Command {
     }
 
     /// Every command.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Open,
         Self::Export,
         Self::ExportAgain,
@@ -118,6 +124,7 @@ impl Command {
         Self::Zoom100,
         Self::ZoomIn,
         Self::ZoomOut,
+        Self::ExposureWarning,
         Self::NewVariant,
         Self::CloneVariant,
         Self::DeleteVariant,

@@ -51,7 +51,7 @@ Done:
   or recent files; viewer with wheel/pinch zoom, double-click 100 %/fit,
   drag to pan; inspector generated from tool descriptors (slider, reset
   from the context menu, bypass); Edit ▸ Undo/Redo with labels; Export
-  (Ctrl+E, next to the RAW or to a chosen folder, never overwriting) with a
+  (Ctrl+D, next to the RAW or to a chosen folder, never overwriting) with a
   "Show in folder" toast; status bar with camera, size, zoom, GPU; theme
   System/Light/Dark (dark by default); settings and recent files remembered.
 - `tools/denoise-ai`: AI denoise node, SCUNet on ONNX Runtime ported from
@@ -360,10 +360,10 @@ tested offline.
 
 ## Export window: written, to be compiled and checked on Windows
 
-- The Export… button, File ▸ Export… (Ctrl+E) and the filmstrip's Export ▶
+- The Export… button, File ▸ Export… (Ctrl+D) and the filmstrip's Export ▶
   menu open the export window for the photos selected in the filmstrip
   ("Export N selected photos") or the open photo. File ▸ Export with
-  previous settings (Ctrl+Shift+E, also in the card menu) skips the window.
+  previous settings (Ctrl+Shift+D, also in the card menu) skips the window.
   The last choices are remembered (`Settings::export`, `export_dir`).
 - Format: JPEG (quality), PNG or TIFF at 8 or 16 bits, always sRGB with the
   profile embedded. Size: full, long edge / width / height in pixels, or a
@@ -416,3 +416,10 @@ Each job pushes its log and output files to the branch `ci-results/<branch>--<jo
 
 First green run: Nikon D3S 4256×2832 develops in about 2 s on llvmpipe;
 the GPU and CPU renders look the same.
+
+## 28 October: shortcuts as in Capture One
+
+- Ctrl+E turns the exposure warning on and off (View ▸ Exposure warning,
+  the toolbar tick); Export… moved to Ctrl+D (Capture One's Process) and
+  Export with previous settings to Ctrl+Shift+D.
+- Straighten is R.

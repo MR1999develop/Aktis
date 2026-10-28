@@ -447,6 +447,7 @@ impl EditorApp {
             Command::Open => self.pick_and_open(),
             Command::Export => self.open_export_dialog(self.export_targets()),
             Command::ExportAgain => self.start_export(self.export_targets(), ctx),
+            Command::ExposureWarning => self.settings.exposure_warning = !self.settings.exposure_warning,
             Command::Quit => {
                 if self.save_before_closing() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1317,11 +1318,13 @@ impl EditorApp {
                     menu_item(ui, c, None, why, commands);
                 }
                 ui.separator();
+                let keys = ui.ctx().format_shortcut(&Command::ExposureWarning.shortcuts()[0]);
                 if ui
-                    .checkbox(&mut exposure_warning, "Exposure warning")
+                    .add(egui::Button::selectable(exposure_warning, "Exposure warning").shortcut_text(keys))
                     .on_hover_text("Burnt highlights in red; blocked shadows in blue when turned on in Preferences")
                     .clicked()
                 {
+                    exposure_warning = !exposure_warning;
                     ui.close();
                 }
                 ui.separator();
