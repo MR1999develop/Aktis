@@ -10,6 +10,7 @@ publish.workspace = true
 core-model.workspace = true
 tool-api.workspace = true
 commands.workspace = true
+recipe-store.workspace = true
 develop.workspace = true
 raw-io.workspace = true
 engine.workspace = true

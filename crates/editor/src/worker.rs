@@ -178,11 +178,28 @@ struct RenderQueue {
     wake: Condvar,
 }
 
+/// A photo whose thumbnail or large preview is wanted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThumbJob {
+    /// The photo.
+    pub path: PathBuf,
+    /// The JPEG of the edited image the catalog keeps, shown instead of the
+    /// camera's embedded preview (as in Capture One); `None` for a photo
+    /// never edited.
+    pub edited: Option<Arc<[u8]>>,
+}
+
+impl From<PathBuf> for ThumbJob {
+    fn from(path: PathBuf) -> Self {
+        Self { path, edited: None }
+    }
+}
+
 #[derive(Debug, Default)]
 struct ThumbState {
-    queue: VecDeque<PathBuf>,
+    queue: VecDeque<ThumbJob>,
     /// Large previews, served before thumbnails (they are on screen).
-    previews: VecDeque<PathBuf>,
+    previews: VecDeque<ThumbJob>,
     shutdown: bool,
 }
 
@@ -317,9 +334,9 @@ impl Worker {
     /// Asks for the thumbnails of `paths`, first ones first. Replaces the
     /// photos still waiting from an earlier request (another folder, or
     /// rows scrolled away). Each one comes back as [`Event::Thumbnail`].
-    pub fn request_thumbnails(&self, paths: Vec<PathBuf>) {
+    pub fn request_thumbnails(&self, jobs: Vec<ThumbJob>) {
         let mut state = self.thumbs.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.queue = paths.into();
+        state.queue = jobs.into();
         drop(state);
         self.thumbs.wake.notify_all();
     }
@@ -327,9 +344,9 @@ impl Worker {
     /// Asks for the large previews of `paths` (the photos filling the
     /// viewer), first ones first, before any thumbnail. Replaces the previews
     /// still waiting. Each one comes back as [`Event::Preview`].
-    pub fn request_previews(&self, paths: Vec<PathBuf>) {
+    pub fn request_previews(&self, jobs: Vec<ThumbJob>) {
         let mut state = self.thumbs.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.previews = paths.into();
+        state.previews = jobs.into();
         drop(state);
         self.thumbs.wake.notify_all();
     }
@@ -398,11 +415,16 @@ fn thumbnail_loop(thumbs: &ThumbQueue, tx: &Sender<Event>, notify: &(dyn Fn() + 
                 None => state.queue.pop_front().map(|p| (p, false)),
             }
         };
-        let Some((path, large)) = next else { continue };
+        let Some((ThumbJob { path, edited }, large)) = next else { continue };
         let side = if large { TILE_PREVIEW_SIDE } else { THUMBNAIL_SIDE };
-        let result = catch_unwind(AssertUnwindSafe(|| raw_io::read_thumbnail(&path, side)))
-            .map_err(|_| "the preview could not be read (internal error)".to_owned())
-            .and_then(|r| r.map(Arc::new).map_err(|e| e.to_string()));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            // The edited image when the catalog has one that decodes, else the camera's preview.
+            edited
+                .and_then(|jpeg| raw_io::decode_jpeg(&jpeg, side).ok())
+                .map_or_else(|| raw_io::read_thumbnail(&path, side), Ok)
+        }))
+        .map_err(|_| "the preview could not be read (internal error)".to_owned())
+        .and_then(|r| r.map(Arc::new).map_err(|e| e.to_string()));
         let event = if large { Event::Preview { path, result } } else { Event::Thumbnail { path, result } };
         if tx.send(event).is_err() {
             return; // the UI is gone

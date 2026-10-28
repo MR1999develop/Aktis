@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use commands::{Edit, EditError, EditSession, GestureId, HistoryItem, RewriteReport};
+use commands::{Edit, EditError, EditSession, GestureId, HistoryItem, RewriteReport, SavedHistory};
 use core_model::{
     CaptureInfo, DevelopSettings, GraphError, ImageF32, LensSettings, NodeId, NodeKind, Orientation, ParamId,
     ParamValue, Params, Recipe, SensorImage, ToolId,
@@ -98,6 +98,8 @@ pub struct Document {
     opened: Opened,
     session: EditSession,
     generation: u64,
+    /// Saved by a newer editor: shown, never changed.
+    read_only: bool,
 }
 
 impl Document {
@@ -107,7 +109,54 @@ impl Document {
     /// generation of earlier documents, so their late renders are recognised.
     #[must_use]
     pub fn new(opened: Opened, first_generation: u64) -> Self {
-        Self { opened, session: EditSession::new(Recipe::default()), generation: first_generation }
+        Self { opened, session: EditSession::new(Recipe::default()), generation: first_generation, read_only: false }
+    }
+
+    /// A document for an image whose edit was saved: it starts at `recipe`,
+    /// with the saved history when it replays to `recipe` in this build.
+    /// Returns the document and whether the history was kept (`false` also
+    /// when none was given).
+    #[must_use]
+    pub fn restored(
+        opened: Opened,
+        first_generation: u64,
+        registry: &ToolRegistry,
+        recipe: Recipe,
+        history: Option<SavedHistory>,
+    ) -> (Self, bool) {
+        let restored = history.and_then(|h| EditSession::restore(registry, &recipe, h));
+        let kept = restored.is_some();
+        let session = restored.unwrap_or_else(|| EditSession::new(recipe));
+        (Self { opened, session, generation: first_generation, read_only: false }, kept)
+    }
+
+    /// The history in the form the catalog stores.
+    #[must_use]
+    pub fn saved_history(&self) -> SavedHistory {
+        self.session.saved_history()
+    }
+
+    /// The decoded image, to start another variant of the same photo
+    /// without reading the file again.
+    #[must_use]
+    pub fn opened(&self) -> &Opened {
+        &self.opened
+    }
+
+    /// Makes the document read-only (its edit was saved by a newer editor):
+    /// every change is refused with [`EditError::ReadOnly`], undo and redo do nothing.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    /// `true` when nothing can change.
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    fn writable(&self) -> Result<(), EditError> {
+        if self.read_only { Err(EditError::ReadOnly) } else { Ok(()) }
     }
 
     /// A document whose graph starts with `tools` (id, enabled) in a chain
@@ -132,7 +181,7 @@ impl Document {
                 }
             }
         }
-        Ok(Self { opened, session: EditSession::new(recipe), generation: first_generation })
+        Ok(Self { opened, session: EditSession::new(recipe), generation: first_generation, read_only: false })
     }
 
     /// The RAW file.
@@ -235,6 +284,7 @@ impl Document {
     /// # Errors
     /// [`EditError::BadHistoryOrder`] for an invalid order; nothing changes.
     pub fn rewrite_history(&mut self, registry: &ToolRegistry, order: &[usize]) -> Result<RewriteReport, EditError> {
+        self.writable()?;
         let before = self.session.undo_label();
         let report = self.session.rewrite_history(registry, order)?;
         if self.session.undo_label() != before || report.removed > 0 {
@@ -396,6 +446,7 @@ impl Document {
     /// # Errors
     /// [`EditError`] when the settings are invalid; nothing changes.
     pub fn set_lens_correction(&mut self, registry: &ToolRegistry, lens: LensSettings) -> Result<(), EditError> {
+        self.writable()?;
         if self.recipe().develop.lens == lens {
             return Ok(());
         }
@@ -467,6 +518,7 @@ impl Document {
         value: ParamValue,
         gesture: Option<GestureId>,
     ) -> Result<(), EditError> {
+        self.writable()?;
         if self.current_value(node, &param) == Some(value) {
             return Ok(());
         }
@@ -488,6 +540,7 @@ impl Document {
         values: Vec<(ParamId, ParamValue)>,
         gesture: Option<GestureId>,
     ) -> Result<(), EditError> {
+        self.writable()?;
         if values.iter().all(|(p, v)| self.current_value(node, p) == Some(*v)) {
             return Ok(());
         }
@@ -501,6 +554,7 @@ impl Document {
     /// # Errors
     /// [`EditError`] when the node or parameter does not exist; nothing changes.
     pub fn reset_param(&mut self, registry: &ToolRegistry, node: NodeId, param: ParamId) -> Result<(), EditError> {
+        self.writable()?;
         if self.recipe().graph.node(node).is_some_and(|n| n.params.get(&param).is_none()) {
             return Ok(());
         }
@@ -514,6 +568,7 @@ impl Document {
     /// # Errors
     /// [`EditError`] when the node does not exist; nothing changes.
     pub fn set_enabled(&mut self, registry: &ToolRegistry, node: NodeId, enabled: bool) -> Result<(), EditError> {
+        self.writable()?;
         if self.recipe().graph.node(node).is_some_and(|n| n.enabled == enabled) {
             return Ok(());
         }
@@ -542,6 +597,7 @@ impl Document {
         tool: ToolId,
         params: Params,
     ) -> Result<NodeId, EditError> {
+        self.writable()?;
         let before: Vec<NodeId> = self.recipe().graph.nodes().map(|n| n.id).collect();
         self.session.apply(registry, Edit::InsertSerial { after, tool, params })?;
         self.generation += 1;
@@ -555,6 +611,7 @@ impl Document {
     /// # Errors
     /// [`EditError`] for an unknown node, the Source or the Output; nothing changes.
     pub fn remove_node(&mut self, registry: &ToolRegistry, node: NodeId) -> Result<(), EditError> {
+        self.writable()?;
         self.session.apply(registry, Edit::RemoveNode { node })?;
         self.generation += 1;
         Ok(())
@@ -562,6 +619,7 @@ impl Document {
 
     /// Undoes the last change; returns its label.
     pub fn undo(&mut self) -> Option<String> {
+        self.writable().ok()?;
         let label = self.session.undo()?;
         self.generation += 1;
         Some(label)
@@ -569,6 +627,7 @@ impl Document {
 
     /// Redoes the last undone change; returns its label.
     pub fn redo(&mut self) -> Option<String> {
+        self.writable().ok()?;
         let label = self.session.redo()?;
         self.generation += 1;
         Some(label)
@@ -577,12 +636,14 @@ impl Document {
     /// "Change exposure" when there is something to undo.
     #[must_use]
     pub fn undo_label(&self) -> Option<String> {
+        self.writable().ok()?;
         self.session.undo_label()
     }
 
     /// Label of the change [`Self::redo`] would redo.
     #[must_use]
     pub fn redo_label(&self) -> Option<String> {
+        self.writable().ok()?;
         self.session.redo_label()
     }
 
@@ -824,6 +885,53 @@ mod tests {
         assert_eq!(doc.generation(), g, "the same order changes nothing");
         assert_eq!(doc.undo().as_deref(), Some("Delete a history step"));
         assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(2.0));
+    }
+
+    #[test]
+    fn a_restored_document_has_the_same_recipe_and_history() {
+        let reg = registry();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
+        let node = doc.node_rows(&reg)[0].node;
+        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(2.0), None).unwrap();
+        doc.undo();
+        let o = doc.opened().clone();
+        let (mut back, kept) = Document::restored(o, 9, &reg, doc.recipe().clone(), Some(doc.saved_history()));
+        assert!(kept);
+        assert_eq!((back.recipe(), back.history()), (doc.recipe(), doc.history()));
+        assert_eq!(back.generation(), 9);
+        assert_eq!(back.redo().as_deref(), Some("Change exposure"));
+        assert_eq!(back.node_rows(&reg)[0].params[0].value, ParamValue::Float(2.0));
+
+        // A history that does not lead to the recipe is dropped; the recipe stays.
+        let o = doc.opened().clone();
+        let (fresh, kept) = Document::restored(o, 1, &reg, Recipe::default(), Some(doc.saved_history()));
+        assert!(!kept);
+        assert_eq!(fresh.recipe(), &Recipe::default());
+        assert!(fresh.history().is_empty());
+    }
+
+    #[test]
+    fn a_read_only_document_refuses_every_change() {
+        let reg = registry();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
+        let node = doc.node_rows(&reg)[0].node;
+        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        doc.set_read_only(true);
+        assert!(doc.is_read_only());
+        let (recipe, g) = (doc.recipe().clone(), doc.generation());
+        let source = doc.recipe().graph.source();
+        let ro = Err(EditError::ReadOnly);
+        assert_eq!(doc.set_param(&reg, node, exposure_param(), ParamValue::Float(2.0), None), ro);
+        assert_eq!(doc.set_params(&reg, node, vec![(exposure_param(), ParamValue::Float(2.0))], None), ro);
+        assert_eq!(doc.reset_param(&reg, node, exposure_param()), ro);
+        assert_eq!(doc.set_enabled(&reg, node, false), ro);
+        assert_eq!(doc.add_node(&reg, source, ToolId::new("exposure").unwrap()), Err(EditError::ReadOnly));
+        assert_eq!(doc.remove_node(&reg, node), ro);
+        assert_eq!(doc.set_lens_correction(&reg, LensSettings::off()), ro);
+        assert_eq!(doc.rewrite_history(&reg, &[]), Err(EditError::ReadOnly));
+        assert_eq!((doc.undo(), doc.undo_label(), doc.redo(), doc.redo_label()), (None, None, None, None));
+        assert_eq!((doc.recipe(), doc.generation()), (&recipe, g));
     }
 
     #[test]

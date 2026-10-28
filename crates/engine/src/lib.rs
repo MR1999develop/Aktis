@@ -341,6 +341,50 @@ pub fn to_display(image: &ImageF32, orientation: Orientation, max_side: u32) -> 
     Ok(Rgb8Image { width, height, pixels })
 }
 
+/// A copy of `image` whose longer side is at most `max_side` (at least 1),
+/// made by averaging square blocks of pixels like [`downscale`]. A copy
+/// when it already fits or its buffer does not match its size.
+#[must_use]
+pub fn downscale_rgb8(image: &Rgb8Image, max_side: u32) -> Rgb8Image {
+    let (w, h) = (image.width, image.height);
+    let factor = w.max(h).div_ceil(max_side.max(1)).max(1);
+    if factor == 1 || image.pixels.len() != w as usize * h as usize * 3 {
+        return image.clone();
+    }
+    let (ow, oh) = (w.div_ceil(factor), h.div_ceil(factor));
+    let mut pixels = Vec::with_capacity(ow as usize * oh as usize * 3);
+    for oy in 0..oh {
+        let (y0, y1) = (oy * factor, ((oy + 1) * factor).min(h));
+        for ox in 0..ow {
+            let (x0, x1) = (ox * factor, ((ox + 1) * factor).min(w));
+            let mut sum = [0_u32; 3];
+            for y in y0..y1 {
+                let row = (y as usize * w as usize + x0 as usize) * 3;
+                for px in image.pixels[row..row + (x1 - x0) as usize * 3].chunks_exact(3) {
+                    for (s, v) in sum.iter_mut().zip(px) {
+                        *s += u32::from(*v);
+                    }
+                }
+            }
+            let n = (y1 - y0) * (x1 - x0);
+            // A rounded average of bytes is a byte.
+            pixels.extend(sum.map(|s| u8::try_from((s + n / 2) / n).unwrap_or(u8::MAX)));
+        }
+    }
+    Rgb8Image { width: ow, height: oh, pixels }
+}
+
+/// A JPEG of `image` (upright 8-bit pixels, as shown on screen) whose
+/// longer side is at most `max_side`: the preview of an edited photo that
+/// the catalog keeps for the filmstrip.
+///
+/// # Errors
+/// [`EngineError`] when the image is empty or cannot be encoded.
+pub fn preview_jpeg(image: &Rgb8Image, max_side: u32, quality: u8) -> Result<Vec<u8>, EngineError> {
+    let small = downscale_rgb8(image, max_side);
+    Ok(export::encode_jpeg(&small.pixels, small.width, small.height, quality)?)
+}
+
 /// Writes `image` upright as a JPEG with an sRGB profile. `wanted` is the
 /// preferred path; if a file already exists there, a free name like
 /// `photo (2).jpg` is used. Returns the path actually written.
@@ -369,6 +413,30 @@ mod tests {
     fn ramp(w: u32, h: u32) -> ImageF32 {
         let pixels = (0..w * h).map(|i| [i as f32, 1.0, 0.5, 1.0]).collect();
         ImageF32::from_pixels(w, h, WorkingSpace::LinearRec2020, pixels).unwrap()
+    }
+
+    #[test]
+    fn eight_bit_images_are_reduced_by_averaging_blocks() {
+        // 5 × 2: columns of 0, 100, 200, 50, 250 (all channels).
+        let row = [0_u8, 100, 200, 50, 250];
+        let pixels: Vec<u8> = (0..2).flat_map(|_| row.iter().flat_map(|v| [*v; 3])).collect();
+        let img = Rgb8Image { width: 5, height: 2, pixels };
+        let small = downscale_rgb8(&img, 3);
+        assert_eq!((small.width, small.height), (3, 1));
+        assert_eq!(small.pixels, vec![50, 50, 50, 125, 125, 125, 250, 250, 250]);
+        assert_eq!(downscale_rgb8(&img, 5), img, "it fits");
+        assert_eq!(downscale_rgb8(&img, 0).width, 1);
+        let broken = Rgb8Image { width: 5, height: 2, pixels: vec![0; 3] };
+        assert_eq!(downscale_rgb8(&broken, 2), broken);
+    }
+
+    #[test]
+    fn a_preview_jpeg_is_a_jpeg_and_an_empty_image_is_refused() {
+        let img = Rgb8Image { width: 40, height: 20, pixels: vec![128; 40 * 20 * 3] };
+        let jpeg = preview_jpeg(&img, 16, 80).unwrap();
+        assert_eq!(&jpeg[..2], &[0xff, 0xd8]);
+        let empty = Rgb8Image { width: 0, height: 0, pixels: Vec::new() };
+        assert!(preview_jpeg(&empty, 16, 80).is_err());
     }
 
     #[test]

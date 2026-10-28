@@ -1,6 +1,6 @@
 [package]
 name = "catalog"
-description = "The photo catalog: ratings, colour labels and keywords (AI or the user's), with the filters of the Explorer. Stored in SQLite."
+description = "The photo catalog: ratings, colour labels, keywords (AI or the user's) and the edits of every variant, with the filters of the Explorer. Stored in SQLite."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

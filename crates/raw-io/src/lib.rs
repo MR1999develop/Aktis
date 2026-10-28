@@ -31,7 +31,7 @@ mod thumbnail;
 mod tiff;
 
 pub use info::PhotoInfo;
-pub use thumbnail::{Thumbnail, orient_rgb8, read_thumbnail};
+pub use thumbnail::{Thumbnail, decode_jpeg, orient_rgb8, read_thumbnail};
 
 /// Largest file accepted, checked before reading (1 GiB; real RAW files are far smaller).
 pub const MAX_FILE_BYTES: u64 = 1 << 30;

@@ -56,6 +56,24 @@ impl GraphView {
         *self = Self::default();
     }
 
+    /// The positions, pan and zoom, to store with the edit.
+    #[must_use]
+    pub fn layout(&self) -> recipe_store::Layout {
+        recipe_store::Layout { nodes: self.nodes().collect(), pan: self.pan, zoom: self.zoom }
+    }
+
+    /// A view with stored positions, pan and zoom. Positions that are not
+    /// finite are dropped (the node is placed again), a pan that is not
+    /// finite goes back to 0 and the zoom is kept in [`ZOOM_RANGE`].
+    #[must_use]
+    pub fn from_layout(layout: &recipe_store::Layout) -> Self {
+        let finite = |p: [f32; 2]| p.iter().all(|v| v.is_finite());
+        let positions = layout.nodes.iter().filter(|(_, p)| finite(*p)).copied().collect();
+        let pan = if finite(layout.pan) { layout.pan } else { [0.0, 0.0] };
+        let zoom = if layout.zoom.is_finite() { layout.zoom.clamp(ZOOM_RANGE[0], ZOOM_RANGE[1]) } else { 1.0 };
+        Self { positions, pan, zoom }
+    }
+
     /// Top-left corner of a node, in graph coordinates.
     #[must_use]
     pub fn position(&self, id: NodeId) -> Option<[f32; 2]> {
@@ -297,6 +315,28 @@ mod tests {
         let (pa, pm) = (v.position(a).unwrap(), v.position(m).unwrap());
         assert!(pm[1] > pa[1]);
         assert!(!overlaps(pa, pm) && !overlaps(v.position(g.source()).unwrap(), pm));
+    }
+
+    #[test]
+    fn a_view_round_trips_through_its_stored_layout_and_bad_values_are_fixed() {
+        let mut g = NodeGraph::new();
+        let a = g.insert_serial(g.source(), tool(), Params::new()).unwrap();
+        let mut v = GraphView::default();
+        v.sync(&g);
+        v.move_node(a, [5.0, 40.0]);
+        v.pan = [12.0, -3.0];
+        v.zoom = 1.5;
+        assert_eq!(GraphView::from_layout(&v.layout()), v);
+
+        let bad = recipe_store::Layout {
+            nodes: vec![(a, [f32::NAN, 1.0]), (g.source(), [1.0, 2.0])],
+            pan: [f32::INFINITY, 0.0],
+            zoom: 40.0,
+        };
+        let fixed = GraphView::from_layout(&bad);
+        assert_eq!(fixed.position(a), None);
+        assert_eq!(fixed.position(g.source()), Some([1.0, 2.0]));
+        assert_eq!((fixed.pan, fixed.zoom), ([0.0, 0.0], ZOOM_RANGE[1]));
     }
 
     #[test]

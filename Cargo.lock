@@ -1147,6 +1147,7 @@ dependencies = [
  "engine",
  "lens-db",
  "raw-io",
+ "recipe-store",
  "tool-api",
 ]
 
@@ -3772,6 +3773,7 @@ version = "0.1.0"
 dependencies = [
  "core-model",
  "develop",
+ "image",
  "rawler",
 ]
 
@@ -3873,6 +3875,14 @@ dependencies = [
  "bytemuck",
  "font-types",
  "once_cell",
+]
+
+[[package]]
+name = "recipe-store"
+version = "0.1.0"
+dependencies = [
+ "commands",
+ "core-model",
 ]
 
 [[package]]

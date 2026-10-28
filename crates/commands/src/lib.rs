@@ -240,6 +240,12 @@ pub enum EditError {
     BadHistoryOrder,
     /// The step acts on a node made by a step that was deleted or no longer applies.
     NodeFromRemovedStep,
+    /// A step that no longer applied when the history was saved; the text
+    /// says why (read back from the catalog).
+    Saved(String),
+    /// The edit was saved by a newer version of the editor and is shown
+    /// read-only: nothing can change.
+    ReadOnly,
 }
 
 impl fmt::Display for EditError {
@@ -258,6 +264,10 @@ impl fmt::Display for EditError {
             Self::NoMaskInput(id) => write!(f, "node {id} cannot take a mask"),
             Self::BadHistoryOrder => write!(f, "the new history order names a step twice or a missing step"),
             Self::NodeFromRemovedStep => write!(f, "it acts on a node made by a removed step"),
+            Self::Saved(why) => f.write_str(why),
+            Self::ReadOnly => {
+                write!(f, "this photo is read-only: its edits were saved by a newer version of the editor")
+            }
         }
     }
 }
@@ -378,6 +388,31 @@ pub struct RewriteReport {
     pub removed: usize,
 }
 
+/// One step of a [`SavedHistory`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedStep {
+    /// The edit, as it was applied.
+    pub edit: Edit,
+    /// Nodes the step added, in id order (needed to rewrite the history
+    /// later: steps acting on them depend on this one).
+    pub created: Vec<NodeId>,
+    /// Why the step no longer applied when it was saved; `None` when it applied.
+    pub skipped: Option<String>,
+}
+
+/// A history in a form that can be stored and replayed: the recipe it
+/// starts from, the steps, and what Redo would redo. Undoing a history
+/// rewrite is not kept: the rewritten steps are the history.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedHistory {
+    /// The recipe the history starts from.
+    pub base: Recipe,
+    /// The steps, oldest first.
+    pub steps: Vec<SavedStep>,
+    /// The edits Redo would redo, the next one first.
+    pub redo: Vec<Edit>,
+}
+
 /// A recipe being edited, with its history and undo/redo.
 ///
 /// The history is the list of steps from the opened recipe (the *base*) to
@@ -401,6 +436,80 @@ impl EditSession {
     #[must_use]
     pub fn new(recipe: Recipe) -> Self {
         Self { base: recipe.clone(), recipe, steps: Vec::new(), done: Vec::new(), undone: Vec::new(), next_gesture: 0 }
+    }
+
+    /// Rebuilds a session from a saved history by applying its steps again
+    /// on its base, with the same validation as new edits. The redo list
+    /// keeps the edits that still apply one after the other.
+    ///
+    /// Returns `None` when a step that applied no longer does in this build
+    /// (a tool is missing), or when the steps do not lead to `recipe`: the
+    /// caller then starts from `recipe` with an empty history, so the edit
+    /// itself is never lost.
+    #[must_use]
+    pub fn restore(registry: &ToolRegistry, recipe: &Recipe, saved: SavedHistory) -> Option<Self> {
+        let mut current = saved.base.clone();
+        let mut steps = Vec::with_capacity(saved.steps.len());
+        for s in saved.steps {
+            match s.skipped {
+                Some(why) => steps.push(Step {
+                    edit: s.edit,
+                    undo: None,
+                    gesture: None,
+                    created: s.created,
+                    skipped: Some(EditError::Saved(why)),
+                }),
+                None => {
+                    let edit = validate(&current, registry, s.edit).ok()?;
+                    let (undo, created) = perform(&mut current, &edit).ok()?;
+                    steps.push(Step { edit, undo: Some(undo), gesture: None, created, skipped: None });
+                }
+            }
+        }
+        if current != *recipe {
+            return None;
+        }
+        let mut probe = current.clone();
+        let mut undone = Vec::new();
+        for edit in saved.redo {
+            let Ok(edit) = validate(&probe, registry, edit) else { break };
+            if perform(&mut probe, &edit).is_err() {
+                break;
+            }
+            undone.push(Undone::Step(Step { edit, undo: None, gesture: None, created: Vec::new(), skipped: None }));
+        }
+        // The next redo is the last entry.
+        undone.reverse();
+        let done = vec![Done::Step; steps.len()];
+        let mut session = Self { base: saved.base, recipe: current, steps, done, undone, next_gesture: 0 };
+        session.trim();
+        Some(session)
+    }
+
+    /// The history in a form that can be stored and given back to
+    /// [`Self::restore`].
+    #[must_use]
+    pub fn saved_history(&self) -> SavedHistory {
+        let steps = self
+            .steps
+            .iter()
+            .map(|s| SavedStep {
+                edit: s.edit.clone(),
+                created: s.created.clone(),
+                skipped: s.skipped.as_ref().map(ToString::to_string),
+            })
+            .collect();
+        // From the next redo down, until a history rewrite (not kept).
+        let redo = self
+            .undone
+            .iter()
+            .rev()
+            .map_while(|u| match u {
+                Undone::Step(s) => Some(s.edit.clone()),
+                Undone::Rewrite(_) => None,
+            })
+            .collect();
+        SavedHistory { base: self.base.clone(), steps, redo }
     }
 
     /// The current recipe.
@@ -473,7 +582,7 @@ impl EditSession {
                 Some(label)
             }
             Done::Rewrite(r) => {
-                self.restore(r.before.clone());
+                self.restore_snapshot(r.before.clone());
                 let label = r.label.clone();
                 self.undone.push(Undone::Rewrite(r));
                 Some(label)
@@ -500,7 +609,7 @@ impl EditSession {
                 }
             }
             Undone::Rewrite(r) => {
-                self.restore(r.after.clone());
+                self.restore_snapshot(r.after.clone());
                 let label = r.label.clone();
                 self.done.push(Done::Rewrite(r));
                 Some(label)
@@ -616,14 +725,14 @@ impl EditSession {
         };
         let before = Snapshot { base: self.base.clone(), recipe: self.recipe.clone(), steps: self.steps.clone() };
         let after = Snapshot { base: self.base.clone(), recipe, steps };
-        self.restore(after.clone());
+        self.restore_snapshot(after.clone());
         self.undone.clear();
         self.done.push(Done::Rewrite(Box::new(Rewrite { label, before, after })));
         self.trim();
         Ok(report)
     }
 
-    fn restore(&mut self, snapshot: Snapshot) {
+    fn restore_snapshot(&mut self, snapshot: Snapshot) {
         self.base = snapshot.base;
         self.recipe = snapshot.recipe;
         self.steps = snapshot.steps;
