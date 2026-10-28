@@ -35,6 +35,10 @@ const STAR_CELL: f32 = 14.0;
 const MAX_TAG_CHIPS: usize = 30;
 /// Indent per level of the folder tree.
 const TREE_INDENT: f32 = 12.0;
+/// Thumbnails asked for the overview of a multiple selection, at most.
+const MAX_OVERVIEW_THUMBS: usize = 60;
+/// Height of the line above the overview tiles.
+const OVERVIEW_HEADER: f32 = 30.0;
 
 /// What the library asks of the window.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,7 +76,7 @@ pub struct TaggingProgress {
 /// What a click in a card or its menu asked for.
 #[derive(Debug, Clone, PartialEq)]
 enum CardAction {
-    Open(PathBuf),
+    Click { path: PathBuf, ctrl: bool, shift: bool },
     Rate(PathBuf, u8),
     Label(PathBuf, Option<ColorLabel>),
     Rename(PathBuf),
@@ -177,6 +181,16 @@ impl Library {
     /// Brings `path` into view in the filmstrip (it was opened from elsewhere).
     pub fn reveal_photo(&mut self, path: &Path) {
         self.scroll_to = Some(path.to_owned());
+        // As in a photo viewer: opening a photo outside the selection selects it alone.
+        if self.strip.index_of(path).is_some() && !self.strip.is_selected(path) {
+            self.strip.select_only(path);
+        }
+    }
+
+    /// Photos selected in the filmstrip (visible ones, in order).
+    #[must_use]
+    pub fn selection(&self) -> Vec<PathBuf> {
+        self.strip.selection()
     }
 
     /// A folder listing from the worker: sub-folders for the tree, photos
@@ -365,19 +379,36 @@ impl Library {
             return;
         }
         let pressed = |key: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key));
+        // Previous / next: the selection becomes that photo alone.
         for (key, step) in [(Key::ArrowDown, 1), (Key::ArrowRight, 1), (Key::ArrowUp, -1), (Key::ArrowLeft, -1)] {
             if pressed(key)
-                && let Some(next) = self.strip.neighbour(current, step)
+                && let Some(next) = self.strip.neighbour(current, step).map(Path::to_owned)
             {
-                actions.push(LibraryAction::Open(next.to_owned()));
-                self.scroll_to = Some(next.to_owned());
+                self.strip.select_only(&next);
+                self.scroll_to = Some(next.clone());
+                actions.push(LibraryAction::Open(next));
             }
         }
-        let Some(path) = current.filter(|p| self.strip.index_of(p).is_some()).map(Path::to_owned) else { return };
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::A)) {
+            self.strip.select_all();
+        }
+        // Escape leaves a multiple selection (and only then: menus use it too).
+        if self.strip.selection().len() > 1
+            && pressed(Key::Escape)
+            && let Some(path) = current.filter(|p| self.strip.index_of(p).is_some())
+        {
+            self.strip.select_only(path);
+        }
+        // Ratings and labels act on the selection, else on the open photo.
+        let targets: Vec<PathBuf> =
+            self.strip.selected_or(current).into_iter().filter(|p| self.strip.index_of(p).is_some()).collect();
+        if targets.is_empty() {
+            return;
+        }
         let ratings = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5];
         for (rating, key) in (0_u8..).zip(ratings) {
             if pressed(key)
-                && let Err(e) = self.set_rating(std::slice::from_ref(&path), rating)
+                && let Err(e) = self.set_rating(&targets, rating)
             {
                 actions.push(LibraryAction::Error(e));
             }
@@ -390,16 +421,18 @@ impl Library {
         ];
         for (key, label) in labels {
             if pressed(key) {
-                // The same key again takes the label off.
-                let now = self.meta_of(&path).and_then(|m| m.label);
-                let next = if now == Some(label) { None } else { Some(label) };
-                if let Err(e) = self.set_label(std::slice::from_ref(&path), next) {
+                // The same key again takes the label off (when every target has it).
+                let all_have = targets.iter().all(|p| self.meta_of(p).and_then(|m| m.label) == Some(label));
+                let next = if all_have { None } else { Some(label) };
+                if let Err(e) = self.set_label(&targets, next) {
                     actions.push(LibraryAction::Error(e));
                 }
             }
         }
-        if pressed(Key::F2) {
-            self.begin_rename(path);
+        if pressed(Key::F2)
+            && let Some(path) = current.filter(|p| self.strip.index_of(p).is_some())
+        {
+            self.begin_rename(path.to_owned());
         }
     }
 
@@ -635,6 +668,7 @@ impl Library {
         }
 
         let mut card_actions = Vec::new();
+        let several = self.strip.selection().len() > 1;
         let Self { strip, thumbs, wanted, shown_rows, .. } = self;
         area.show_rows(ui, card_h, visible.len(), |ui, rows| {
             let first = rows.start.saturating_sub(PREFETCH_ROWS);
@@ -643,23 +677,38 @@ impl Library {
             *shown_rows = rows.clone();
             for row in rows {
                 let photo = &strip.photos[visible[row]];
-                let is_open = current == Some(photo.path.as_path());
-                card(ui, &t, photo, thumbs.get(&photo.path), is_open, card_h, &mut card_actions);
+                let state = CardState {
+                    open: current == Some(photo.path.as_path()),
+                    selected: strip.is_selected(&photo.path),
+                    several,
+                };
+                card(ui, &t, photo, thumbs.get(&photo.path), state, card_h, &mut card_actions);
             }
         });
+        // The overview of a multiple selection shows its thumbnails too.
+        let extra: Vec<PathBuf> =
+            self.strip.selection().into_iter().filter(|p| !self.wanted.contains(p)).take(MAX_OVERVIEW_THUMBS).collect();
+        self.wanted.extend(extra);
 
         for action in card_actions {
             match action {
-                CardAction::Open(p) => actions.push(LibraryAction::Open(p)),
+                CardAction::Click { path, ctrl, shift } => {
+                    if let Some(open) = self.strip.click(&path, ctrl, shift, current) {
+                        actions.push(LibraryAction::Open(open));
+                    }
+                }
                 CardAction::Export => actions.push(LibraryAction::Export),
                 CardAction::ExportTo => actions.push(LibraryAction::ExportTo),
+                // On a card of a multiple selection, stars and menus act on all of it.
                 CardAction::Rate(p, r) => {
-                    if let Err(e) = self.set_rating(&[p], r) {
+                    let targets = self.strip.targets(&p);
+                    if let Err(e) = self.set_rating(&targets, r) {
                         actions.push(LibraryAction::Error(e));
                     }
                 }
                 CardAction::Label(p, l) => {
-                    if let Err(e) = self.set_label(&[p], l) {
+                    let targets = self.strip.targets(&p);
+                    if let Err(e) = self.set_label(&targets, l) {
                         actions.push(LibraryAction::Error(e));
                     }
                 }
@@ -675,6 +724,109 @@ impl Library {
                     }
                 }
             }
+        }
+    }
+
+    /// The viewer while several photos are selected, as in
+    /// a photo viewer: one tile per photo; a click on a tile opens that
+    /// photo alone.
+    pub fn overview(&mut self, ui: &mut egui::Ui, current: Option<&Path>, actions: &mut Vec<LibraryAction>) {
+        let t = Tokens::of(ui.ctx().theme());
+        let selection = self.strip.selection();
+        let rect = ui.max_rect();
+        let painter = ui.painter_at(rect);
+        let total = self.strip.visible().len();
+        let active = current.map(editor::library::folder_name).unwrap_or_default();
+        painter.text(
+            rect.left_top() + vec2(SPACE[2], OVERVIEW_HEADER / 2.0),
+            egui::Align2::LEFT_CENTER,
+            format!("Selected: {} of {total} files  |  Active: {active}", selection.len()),
+            FontId::proportional(FONT[1]),
+            t.text_weak,
+        );
+        let grid = Rect::from_min_max(rect.min + vec2(0.0, OVERVIEW_HEADER), rect.max);
+        let layout = editor::OverviewLayout::new([grid.width(), grid.height()], selection.len());
+        let mut clicked = None;
+        for (i, path) in selection.iter().take(layout.shown).enumerate() {
+            let [x, y] = layout.slot(i);
+            let tile = Rect::from_min_size(grid.min + vec2(x, y), vec2(layout.tile[0], layout.tile[1]));
+            let response = ui
+                .interact(tile, egui::Id::unique(("rne-overview", path)), Sense::click())
+                .on_hover_text(format!("{}\nClick to open this photo alone", path.display()));
+            let is_active = current == Some(path.as_path());
+            painter.rect_filled(
+                tile,
+                CornerRadius::same(6),
+                if response.hovered() { t.bg_overlay } else { t.bg_raised },
+            );
+            if is_active {
+                painter.rect_stroke(tile, CornerRadius::same(6), Stroke::new(2.0, t.accent), StrokeKind::Inside);
+            }
+            let frame = Rect::from_min_max(tile.min + vec2(6.0, 6.0), tile.max - vec2(6.0, 6.0 + 2.0 * CARD_LINE));
+            painter.rect_filled(frame, CornerRadius::same(3), t.canvas);
+            match self.thumbs.get(path) {
+                Some(ThumbState::Ready(texture)) => {
+                    let size = texture.size_vec2();
+                    let scale = (frame.width() / size.x.max(1.0)).min(frame.height() / size.y.max(1.0));
+                    let image = Rect::from_center_size(frame.center(), size * scale);
+                    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                    painter.image(texture.id(), image, uv, Color32::WHITE);
+                }
+                Some(ThumbState::Failed(_)) => {
+                    painter.text(
+                        frame.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "No preview",
+                        FontId::proportional(FONT[0]),
+                        t.text_weak,
+                    );
+                }
+                None => {
+                    painter.text(
+                        frame.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "\u{2026}",
+                        FontId::proportional(FONT[2]),
+                        t.text_weak,
+                    );
+                }
+            }
+            if let Some(meta) = self.meta_of(path) {
+                badges(&painter, &t, frame, meta);
+                for k in 0..MAX_RATING {
+                    let c = pos2(frame.left() + 7.0 + f32::from(k) * STAR_CELL, frame.bottom() + CARD_LINE * 1.5);
+                    if k < meta.rating {
+                        icons::star(&painter, c, 5.5, t.star);
+                    }
+                }
+            }
+            painter.with_clip_rect(tile.shrink(4.0)).text(
+                pos2(frame.left(), frame.bottom() + CARD_LINE * 0.5 + 2.0),
+                egui::Align2::LEFT_CENTER,
+                editor::library::folder_name(path),
+                FontId::proportional(FONT[0]),
+                if is_active { t.text_strong } else { t.text_weak },
+            );
+            if response.clicked() {
+                clicked = Some(path.clone());
+            }
+        }
+        if layout.has_more_tile() {
+            let [x, y] = layout.slot(layout.shown);
+            let tile = Rect::from_min_size(grid.min + vec2(x, y), vec2(layout.tile[0], layout.tile[1]));
+            painter.rect_filled(tile, CornerRadius::same(6), t.bg_raised);
+            painter.text(
+                tile.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("+{} more", layout.more),
+                FontId::proportional(FONT[4]),
+                t.text_weak,
+            );
+        }
+        if let Some(path) = clicked {
+            self.strip.select_only(&path);
+            self.scroll_to = Some(path.clone());
+            actions.push(LibraryAction::Open(path));
         }
     }
 
@@ -798,16 +950,28 @@ fn swatch(ui: &mut egui::Ui, t: &Tokens, on: bool, color: Color32) -> egui::Resp
     response
 }
 
+/// How a card is shown.
+#[derive(Debug, Clone, Copy)]
+struct CardState {
+    /// The photo is open in the editor.
+    open: bool,
+    /// The photo is selected.
+    selected: bool,
+    /// Several photos are selected (menus say how many they act on).
+    several: bool,
+}
+
 /// One filmstrip card: thumbnail with badges, name, stars, context menu.
 fn card(
     ui: &mut egui::Ui,
     t: &Tokens,
     photo: &StripPhoto,
     thumb: Option<&ThumbState<TextureHandle>>,
-    is_open: bool,
+    state: CardState,
     height: f32,
     actions: &mut Vec<CardAction>,
 ) {
+    let is_open = state.open;
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
     let hover = match thumb {
         Some(ThumbState::Failed(why)) => format!("{}\nNo preview: {why}", photo.path.display()),
@@ -815,7 +979,7 @@ fn card(
     };
     let response = response.on_hover_text(hover);
     let painter = ui.painter_at(rect);
-    let fill = if is_open {
+    let fill = if is_open || state.selected {
         t.bg_overlay
     } else if response.hovered() {
         t.bg_raised
@@ -825,6 +989,8 @@ fn card(
     painter.rect_filled(rect, CornerRadius::same(6), fill);
     if is_open {
         painter.rect_stroke(rect.shrink(1.0), CornerRadius::same(6), Stroke::new(2.0, t.accent), StrokeKind::Inside);
+    } else if state.selected {
+        painter.rect_stroke(rect.shrink(1.0), CornerRadius::same(6), Stroke::new(1.0, t.accent), StrokeKind::Inside);
     }
 
     // Thumbnail, letterboxed in a 3:2 frame.
@@ -898,11 +1064,13 @@ fn card(
                 let next = if photo.meta.rating == rating { 0 } else { rating };
                 actions.push(CardAction::Rate(photo.path.clone(), next));
             }
-            None if !is_open => actions.push(CardAction::Open(photo.path.clone())),
-            None => {}
+            None => {
+                let m = ui.input(|i| i.modifiers);
+                actions.push(CardAction::Click { path: photo.path.clone(), ctrl: m.command, shift: m.shift });
+            }
         }
     }
-    response.context_menu(|ui| card_menu(ui, photo, is_open, actions));
+    response.context_menu(|ui| card_menu(ui, photo, state, actions));
 }
 
 /// Rating, AI keyword and colour badges over a thumbnail.
@@ -947,7 +1115,10 @@ fn badges(painter: &egui::Painter, t: &Tokens, frame: Rect, meta: &PhotoMeta) {
 }
 
 /// The right-click menu of a card.
-fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, is_open: bool, actions: &mut Vec<CardAction>) {
+fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState, actions: &mut Vec<CardAction>) {
+    let is_open = state.open;
+    // Rating and colour apply to the whole selection when this card is in it.
+    let group = if state.several && state.selected { " (selected photos)" } else { "" };
     let path = &photo.path;
     let soon = "Coming soon";
     let open_first = "Open the photo first";
@@ -984,7 +1155,7 @@ fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, is_open: bool, actions: &mut
         actions.push(CardAction::Reveal(path.clone()));
         ui.close();
     }
-    ui.menu_button("Rating", |ui| {
+    ui.menu_button(format!("Rating{group}"), |ui| {
         for r in (1..=MAX_RATING).rev() {
             let text = format!("{r} star{}", if r == 1 { "" } else { "s" });
             if ui.add(Button::selectable(photo.meta.rating == r, text).shortcut_text(r.to_string())).clicked() {
@@ -997,7 +1168,7 @@ fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, is_open: bool, actions: &mut
             ui.close();
         }
     });
-    ui.menu_button("Color Tag", |ui| {
+    ui.menu_button(format!("Color Tag{group}"), |ui| {
         let keys = ["6", "7", "8", "9", ""];
         for (label, key) in ColorLabel::ALL.into_iter().zip(keys) {
             let text = RichText::new(label.name()).color(label_color(label));

@@ -1,7 +1,7 @@
 # Tidy later
 
 - `render-cpu::render` clones each node's image; fine for the reference
-  renderer, revisit if it becomes a hot path.
+  renderer, but with the GPU unavailable it is the CPU fallback's main cost.
 - `develop` bilinear demosaic is preview quality; replace with a quality
   algorithm on the GPU (phase 3) and keep this one as the test reference.
 - `commands::EditSession` drops the oldest step with `Vec::remove(0)`;
@@ -91,3 +91,9 @@
 - The window's minimum size is 1100 × 640; the design guidelines ask for a
   layout that works at 1024 × 600 (about 960 × 520 usable). Check the
   Explorer, graph and inspector at that size and lower the minimum.
+- Node positions in the graph are kept only while the photo is open; save
+  them with the recipe once recipes are saved.
+- The GPU renderer still uploads the source and reads the result back at
+  every render, and creates its buffers each time; keep the source on the
+  GPU between renders of the same image (and draw the result straight from
+  a texture, see above) if the timings in the status bar show it matters.

@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use core_model::{ImageF32, NodeGraph, Orientation, WorkingSpace};
 use engine::{Backend, Engine, EngineChoice, Rgb8Image};
@@ -29,6 +30,10 @@ use crate::library::{FolderListing, list_folder};
 
 /// Longer side of the preview copy made when a file is opened.
 pub const PREVIEW_SIDE: u32 = 2560;
+
+/// Longest side of the draft copy rendered while a slider is dragged: about
+/// the size of the viewer on a full-HD screen, a quarter of the preview's pixels.
+pub const DRAFT_SIDE: u32 = 1280;
 
 /// JPEG quality of exports.
 pub const EXPORT_QUALITY: u8 = 92;
@@ -45,7 +50,9 @@ pub type Notify = Arc<dyn Fn() + Send + Sync>;
 /// Which source a render uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Quality {
-    /// The reduced preview copy: fast, used while editing.
+    /// The smallest copy: fastest, used while a control is dragged.
+    Draft,
+    /// The reduced preview copy: sharp when the whole photo is shown.
     Preview,
     /// The full-size image: sharp at 100 %.
     Full,
@@ -109,6 +116,8 @@ pub enum Event {
         node_problems: Vec<String>,
         /// Levels of the displayed pixels.
         histogram: Box<Histogram>,
+        /// How long it took.
+        timing: RenderTiming,
     },
     /// A render for the screen failed.
     RenderFailed {
@@ -136,6 +145,15 @@ pub enum Event {
         /// Upright 8-bit pixels, or why there is none.
         result: Result<Arc<raw_io::Thumbnail>, String>,
     },
+}
+
+/// Time spent on one screen render, shown in the status bar.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RenderTiming {
+    /// Evaluating the graph (GPU or CPU).
+    pub render: Duration,
+    /// Turning the result into upright 8-bit pixels and the histogram.
+    pub display: Duration,
 }
 
 #[derive(Debug, Default)]
@@ -400,15 +418,18 @@ fn preview_loop(
 }
 
 fn render_for_screen(engine: &Engine, req: &RenderRequest) -> Event {
+    let started = Instant::now();
     let rendered = match engine.render(&req.graph, &req.source) {
         Ok(r) => r,
         Err(e) => return Event::RenderFailed { generation: req.generation, message: e.to_string() },
     };
+    let rendered_at = Instant::now();
     match engine::to_display(&rendered.image, req.orientation, req.max_side) {
         Ok(image) => Event::Rendered {
             generation: req.generation,
             quality: req.quality,
             histogram: Box::new(Histogram::of_rgb8(&image.pixels)),
+            timing: RenderTiming { render: rendered_at - started, display: rendered_at.elapsed() },
             image,
             backend: rendered.backend,
             gpu_failure: rendered.gpu_failure,
@@ -497,9 +518,11 @@ fn develop_raw(raw: &RawData, settings: &core_model::DevelopSettings) -> Result<
     notes.extend(result.profile.note.clone());
     let developed = result.image;
     let preview = engine::downscale(&developed, PREVIEW_SIDE).map_err(|e| e.to_string())?;
+    let draft = engine::downscale(&preview, DRAFT_SIDE).map_err(|e| e.to_string())?;
     let developed = Arc::new(developed);
     let preview = if preview.width() == developed.width() { Arc::clone(&developed) } else { Arc::new(preview) };
-    Ok(DevelopedImage { settings: settings.clone(), developed, preview, lens, notes })
+    let draft = if draft.width() == preview.width() { Arc::clone(&preview) } else { Arc::new(draft) };
+    Ok(DevelopedImage { settings: settings.clone(), developed, preview, draft, lens, notes })
 }
 
 /// Decides which screen render to ask for next, so that editing stays
@@ -520,19 +543,23 @@ impl RenderPlan {
     }
 
     /// What to request now for a document at `generation`, or `None`.
-    /// `busy` is true while the user is dragging a control: no full render then.
-    /// `full_adds_detail` is false when the preview already is the full image.
+    ///
+    /// While the user drags a control (`busy`) a change is rendered from the
+    /// draft when that is smaller (`draft_helps`); once the drag ends the
+    /// preview follows, then the full-size image when the zoom shows more
+    /// than the preview has (`full_adds_detail`).
     #[must_use]
-    pub fn next(&self, generation: u64, busy: bool, full_adds_detail: bool) -> Option<Quality> {
+    pub fn next(&self, generation: u64, busy: bool, draft_helps: bool, full_adds_detail: bool) -> Option<Quality> {
+        let shown = |q: Quality| self.shown == Some((generation, q));
         match self.requested {
-            Some((g, _)) if g != generation => Some(Quality::Preview),
-            None => Some(Quality::Preview),
-            Some((_, Quality::Preview))
-                if !busy && full_adds_detail && self.shown == Some((generation, Quality::Preview)) =>
-            {
-                Some(Quality::Full)
-            }
-            Some(_) => None,
+            Some((g, q)) if g == generation => match q {
+                Quality::Draft if !busy && shown(Quality::Draft) => Some(Quality::Preview),
+                Quality::Preview if !busy && full_adds_detail && shown(Quality::Preview) => Some(Quality::Full),
+                // A full render asked while previews were wanted (zoomed in) is not repeated.
+                _ => None,
+            },
+            _ if busy && draft_helps => Some(Quality::Draft),
+            _ => Some(Quality::Preview),
         }
     }
 
@@ -575,18 +602,18 @@ mod tests {
     #[test]
     fn a_new_document_gets_a_preview_then_one_full_render_when_idle() {
         let mut plan = RenderPlan::default();
-        assert_eq!(plan.next(1, false, true), Some(Quality::Preview));
+        assert_eq!(plan.next(1, false, true, true), Some(Quality::Preview));
         plan.requested(1, Quality::Preview);
-        assert_eq!(plan.next(1, false, true), None, "wait for the preview");
+        assert_eq!(plan.next(1, false, true, true), None, "wait for the preview");
         plan.shown(1, Quality::Preview);
-        assert_eq!(plan.next(1, true, true), None, "no full render while dragging");
-        assert_eq!(plan.next(1, false, true), Some(Quality::Full));
+        assert_eq!(plan.next(1, true, true, true), None, "no full render while dragging");
+        assert_eq!(plan.next(1, false, true, true), Some(Quality::Full));
         plan.requested(1, Quality::Full);
-        assert_eq!(plan.next(1, false, true), None);
+        assert_eq!(plan.next(1, false, true, true), None);
         assert!(plan.is_waiting());
         plan.shown(1, Quality::Full);
         assert!(!plan.is_waiting());
-        assert_eq!(plan.next(1, false, true), None);
+        assert_eq!(plan.next(1, false, true, true), None);
     }
 
     #[test]
@@ -594,8 +621,27 @@ mod tests {
         let mut plan = RenderPlan::default();
         plan.requested(1, Quality::Preview);
         plan.shown(1, Quality::Preview);
-        assert_eq!(plan.next(1, false, false), None);
-        assert_eq!(plan.next(2, false, false), Some(Quality::Preview));
+        assert_eq!(plan.next(1, false, true, false), None);
+        assert_eq!(plan.next(2, false, true, false), Some(Quality::Preview));
+    }
+
+    #[test]
+    fn dragging_renders_drafts_then_the_preview_when_the_drag_ends() {
+        let mut plan = RenderPlan::default();
+        assert_eq!(plan.next(1, true, true, false), Some(Quality::Draft));
+        plan.requested(1, Quality::Draft);
+        assert_eq!(plan.next(1, true, true, false), None, "same recipe, still dragging");
+        assert_eq!(plan.next(2, true, true, false), Some(Quality::Draft), "the slider moved");
+        plan.requested(2, Quality::Draft);
+        assert_eq!(plan.next(2, false, true, false), None, "drag over, the draft is not back yet");
+        plan.shown(2, Quality::Draft);
+        assert_eq!(plan.next(2, false, true, false), Some(Quality::Preview));
+        plan.requested(2, Quality::Preview);
+        plan.shown(2, Quality::Preview);
+        assert_eq!(plan.next(2, false, true, false), None, "fit: the preview is enough");
+        assert_eq!(plan.next(2, false, true, true), Some(Quality::Full), "zoomed in");
+        assert_eq!(plan.next(3, true, false, false), Some(Quality::Preview), "small photo: no draft");
+        assert!(plan.accepts(2, Quality::Full) && !plan.accepts(2, Quality::Draft));
     }
 
     #[test]
@@ -619,7 +665,7 @@ mod tests {
         plan.reset(5);
         assert!(!plan.accepts(4, Quality::Full));
         assert!(plan.accepts(5, Quality::Preview));
-        assert_eq!(plan.next(5, false, true), Some(Quality::Preview));
+        assert_eq!(plan.next(5, false, true, true), Some(Quality::Preview));
     }
 
     fn wait_for(worker: &Worker, mut done: impl FnMut(&Event) -> bool) -> Vec<Event> {

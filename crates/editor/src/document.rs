@@ -15,12 +15,6 @@ use core_model::{
 };
 use tool_api::{ParamDescriptor, ToolRegistry};
 
-/// Tools placed in the graph of a newly opened image, in order, when this
-/// build has them, and whether they start enabled. The AI denoise node starts
-/// bypassed: the network takes seconds on a GPU and minutes on a CPU, so the
-/// user switches it on.
-pub const STARTING_TOOLS: &[(&str, bool)] = &[("exposure", true), ("denoise_ai", false)];
-
 /// The decoded RAW data, kept so the image can be developed again when the
 /// development settings (lens corrections, profile) change.
 #[derive(Debug)]
@@ -40,6 +34,9 @@ pub struct DevelopedImage {
     pub developed: Arc<ImageF32>,
     /// Smaller copy for fast previews (may be the same image when small).
     pub preview: Arc<ImageF32>,
+    /// Still smaller copy for renders while a control is dragged (may be
+    /// the preview itself).
+    pub draft: Arc<ImageF32>,
     /// Lens whose corrections were applied ("Sony FE 24-70mm f/2.8 GM"), if any.
     pub lens: Option<String>,
     /// What the development stage corrected, or why not, for the inspector.
@@ -100,17 +97,29 @@ pub struct Document {
 }
 
 impl Document {
-    /// A document for a freshly opened image, with the [`STARTING_TOOLS`]
-    /// this build has, at their defaults. The history starts empty.
-    /// `first_generation` should be above every generation of earlier
-    /// documents, so their late renders are recognised.
+    /// A document for a freshly opened image: the graph holds only the
+    /// Source (and the Output it feeds); tools are added from the node graph.
+    /// The history starts empty. `first_generation` should be above every
+    /// generation of earlier documents, so their late renders are recognised.
+    #[must_use]
+    pub fn new(opened: Opened, first_generation: u64) -> Self {
+        Self { opened, session: EditSession::new(Recipe::default()), generation: first_generation }
+    }
+
+    /// A document whose graph starts with `tools` (id, enabled) in a chain
+    /// after the Source, those this build has; not part of the history.
     ///
     /// # Errors
-    /// [`GraphError`] only if the starting graph cannot be built (a bug).
-    pub fn new(opened: Opened, registry: &ToolRegistry, first_generation: u64) -> Result<Self, GraphError> {
+    /// [`GraphError`] only if the graph cannot be built (a bug).
+    pub fn with_tools(
+        opened: Opened,
+        registry: &ToolRegistry,
+        tools: &[(&str, bool)],
+        first_generation: u64,
+    ) -> Result<Self, GraphError> {
         let mut recipe = Recipe::default();
         let mut last = recipe.graph.source();
-        for &(name, enabled) in STARTING_TOOLS {
+        for &(name, enabled) in tools {
             let Ok(id) = ToolId::new(name) else { continue };
             if registry.get(&id).is_some() {
                 last = recipe.graph.insert_serial(last, id, Params::new())?;
@@ -163,10 +172,32 @@ impl Document {
         &self.opened.image.preview
     }
 
+    /// Smallest copy, rendered while a control is dragged.
+    #[must_use]
+    pub fn draft(&self) -> &Arc<ImageF32> {
+        &self.opened.image.draft
+    }
+
+    /// `true` when the draft is smaller than the preview, so dragging renders faster with it.
+    #[must_use]
+    pub fn draft_is_reduced(&self) -> bool {
+        self.opened.image.draft.width() < self.opened.image.preview.width()
+    }
+
     /// `true` when the preview is smaller than the full image, so a full render adds detail.
     #[must_use]
     pub fn preview_is_reduced(&self) -> bool {
         self.opened.image.preview.width() < self.opened.image.developed.width()
+    }
+
+    /// The preview's width over the full-size image's width (1 when the
+    /// preview is the full image).
+    #[must_use]
+    pub fn preview_scale(&self) -> f32 {
+        let (p, f) = (self.opened.image.preview.width(), self.opened.image.developed.width());
+        #[allow(clippy::cast_precision_loss)] // image widths
+        let scale = if f == 0 { 1.0 } else { p as f32 / f as f32 };
+        scale
     }
 
     /// Width and height of the upright full-size image.
@@ -368,6 +399,30 @@ impl Document {
         Ok(())
     }
 
+    /// Adds a node running `tool` right after `after` (what `after` fed now
+    /// receives the new node's image); returns the new node.
+    ///
+    /// # Errors
+    /// [`EditError`] for an unknown node or tool; nothing changes.
+    pub fn add_node(&mut self, registry: &ToolRegistry, after: NodeId, tool: ToolId) -> Result<NodeId, EditError> {
+        let before: Vec<NodeId> = self.recipe().graph.nodes().map(|n| n.id).collect();
+        self.session.apply(registry, Edit::InsertSerial { after, tool })?;
+        self.generation += 1;
+        let created = self.recipe().graph.nodes().map(|n| n.id).find(|id| !before.contains(id));
+        // InsertSerial always creates one node; its id is the new one.
+        Ok(created.unwrap_or(after))
+    }
+
+    /// Removes a node, joining the chain around it.
+    ///
+    /// # Errors
+    /// [`EditError`] for an unknown node, the Source or the Output; nothing changes.
+    pub fn remove_node(&mut self, registry: &ToolRegistry, node: NodeId) -> Result<(), EditError> {
+        self.session.apply(registry, Edit::RemoveNode { node })?;
+        self.generation += 1;
+        Ok(())
+    }
+
     /// Undoes the last change; returns its label.
     pub fn undo(&mut self) -> Option<String> {
         let label = self.session.undo()?;
@@ -430,12 +485,16 @@ mod tests {
             image: DevelopedImage {
                 settings: DevelopSettings::default(),
                 developed: Arc::clone(&img),
-                preview: img,
+                preview: Arc::clone(&img),
+                draft: img,
                 lens: None,
                 notes: Vec::new(),
             },
         }
     }
+
+    /// The chain the tests start from (the window starts from the Source alone).
+    const STARTING: &[(&str, bool)] = &[("exposure", true), ("denoise_ai", false)];
 
     fn exposure_param() -> ParamId {
         ParamId::new(tool_exposure_id()).unwrap()
@@ -446,9 +505,30 @@ mod tests {
     }
 
     #[test]
-    fn a_new_document_has_the_starting_tools_and_an_empty_history() {
+    fn a_new_document_has_only_the_source_and_nodes_are_added_after_a_port() {
         let reg = registry();
-        let doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), &reg, 1).unwrap();
+        let mut doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), 1);
+        assert!(doc.node_rows(&reg).is_empty());
+        assert_eq!(doc.recipe().graph.nodes().count(), 2, "Source and Output");
+        let source = doc.recipe().graph.source();
+        let exposure = ToolId::new(tool_exposure_id()).unwrap();
+        let a = doc.add_node(&reg, source, exposure.clone()).unwrap();
+        let b = doc.add_node(&reg, source, exposure).unwrap();
+        // b went between the Source and a.
+        let rows: Vec<NodeId> = doc.node_rows(&reg).iter().map(|r| r.node).collect();
+        assert_eq!(rows, vec![b, a]);
+        doc.remove_node(&reg, b).unwrap();
+        assert_eq!(doc.node_rows(&reg).len(), 1);
+        assert!(doc.remove_node(&reg, source).is_err(), "the Source stays");
+        doc.undo();
+        assert_eq!(doc.node_rows(&reg).len(), 2);
+        assert!(doc.add_node(&reg, source, ToolId::new("no_such_tool").unwrap()).is_err());
+    }
+
+    #[test]
+    fn a_document_with_tools_has_them_and_an_empty_history() {
+        let reg = registry();
+        let doc = Document::with_tools(opened("a/DSC_1.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
         let rows = doc.node_rows(&reg);
         assert_eq!(rows[0].name, "Exposure");
         assert!(rows[0].enabled);
@@ -464,7 +544,7 @@ mod tests {
     #[test]
     fn a_renamed_file_keeps_its_edits() {
         let reg = registry();
-        let mut doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), &reg, 1).unwrap();
+        let mut doc = Document::with_tools(opened("a/DSC_1.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
         let node = doc.node_rows(&reg)[0].node;
         doc.set_param(&reg, node, exposure_param(), ParamValue::Float(0.5), None).unwrap();
         doc.file_renamed(PathBuf::from("a/Como.NEF"));
@@ -476,7 +556,7 @@ mod tests {
     #[test]
     fn a_slider_drag_is_one_undo_step_and_each_change_is_a_new_generation() {
         let reg = registry();
-        let mut doc = Document::new(opened("x.NEF", Orientation::Normal), &reg, 1).unwrap();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
         let node = doc.node_rows(&reg)[0].node;
         let g0 = doc.generation();
         let drag = doc.begin_gesture();
@@ -495,7 +575,7 @@ mod tests {
     #[test]
     fn setting_the_same_value_changes_nothing() {
         let reg = registry();
-        let mut doc = Document::new(opened("x.NEF", Orientation::Normal), &reg, 1).unwrap();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
         let node = doc.node_rows(&reg)[0].node;
         doc.set_param(&reg, node, exposure_param(), ParamValue::Float(1.0), None).unwrap();
         let g = doc.generation();
@@ -508,7 +588,7 @@ mod tests {
     #[test]
     fn out_of_range_values_are_clamped_and_reset_returns_to_default() {
         let reg = registry();
-        let mut doc = Document::new(opened("x.NEF", Orientation::Normal), &reg, 1).unwrap();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
         let node = doc.node_rows(&reg)[0].node;
         doc.set_param(&reg, node, exposure_param(), ParamValue::Float(99.0), None).unwrap();
         assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(5.0));
@@ -523,7 +603,7 @@ mod tests {
     #[test]
     fn bypass_is_undoable() {
         let reg = registry();
-        let mut doc = Document::new(opened("x.NEF", Orientation::Normal), &reg, 1).unwrap();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
         let node = doc.node_rows(&reg)[0].node;
         doc.set_enabled(&reg, node, false).unwrap();
         assert!(!doc.node_rows(&reg)[0].enabled);
@@ -534,7 +614,7 @@ mod tests {
     #[test]
     fn unknown_nodes_are_refused_without_changes() {
         let reg = registry();
-        let mut doc = Document::new(opened("x.NEF", Orientation::Normal), &reg, 1).unwrap();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
         let g = doc.generation();
         let source = doc.recipe().graph.source();
         assert!(doc.set_param(&reg, source, exposure_param(), ParamValue::Float(1.0), None).is_err());
@@ -544,7 +624,7 @@ mod tests {
     #[test]
     fn upright_size_and_export_name_follow_the_file() {
         let reg = registry();
-        let doc = Document::new(opened("dir/IMG 7.CR3", Orientation::Rotate90), &reg, 1).unwrap();
+        let doc = Document::with_tools(opened("dir/IMG 7.CR3", Orientation::Rotate90), &reg, STARTING, 1).unwrap();
         assert_eq!(doc.upright_size(), (4, 6));
         assert_eq!(doc.export_path(Path::new("out")), Path::new("out").join("IMG 7.jpg"));
         assert!(!doc.preview_is_reduced());
@@ -553,7 +633,7 @@ mod tests {
     #[test]
     fn deleting_a_history_step_is_a_new_generation_and_can_be_undone() {
         let reg = registry();
-        let mut doc = Document::new(opened("x.NEF", Orientation::Normal), &reg, 1).unwrap();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
         let node = doc.node_rows(&reg)[0].node;
         doc.set_param(&reg, node, exposure_param(), ParamValue::Float(1.0), None).unwrap();
         doc.set_param(&reg, node, exposure_param(), ParamValue::Float(2.0), None).unwrap();
@@ -573,7 +653,7 @@ mod tests {
     #[test]
     fn missing_tools_are_listed_without_parameters() {
         let reg = registry();
-        let doc = Document::new(opened("x.NEF", Orientation::Normal), &reg, 1).unwrap();
+        let doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
         let rows = doc.node_rows(&ToolRegistry::new());
         assert_eq!(rows.len(), doc.node_rows(&reg).len(), "one row per starting node");
         assert!(rows.iter().all(|r| r.name == "Missing tool" && r.params.is_empty()));
@@ -593,7 +673,7 @@ mod tests {
         )
         .unwrap();
         o.raw = Some(Arc::new(RawData { sensor, capture: CaptureInfo::default() }));
-        let mut doc = Document::new(o, &reg, 1).unwrap();
+        let mut doc = Document::with_tools(o, &reg, STARTING, 1).unwrap();
         assert!(!doc.needs_develop());
 
         let off = LensSettings::off();
@@ -604,6 +684,7 @@ mod tests {
             settings: DevelopSettings::default(),
             developed: Arc::clone(doc.developed()),
             preview: Arc::clone(doc.preview()),
+            draft: Arc::clone(doc.draft()),
             lens: None,
             notes: Vec::new(),
         };

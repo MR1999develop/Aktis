@@ -122,6 +122,7 @@ impl Edit {
                 ParamValue::Choice(c) => format!("#{}", c + 1),
             },
             Self::ResetParam { .. } => "default".to_owned(),
+            Self::InsertSerial { tool, .. } => tool.as_str().replace('_', " "),
             Self::SetEnabled { enabled, .. } => on_off(*enabled).to_owned(),
             Self::SetWhiteBalance(WhiteBalance::AsShot) => "as shot".to_owned(),
             Self::SetWhiteBalance(WhiteBalance::Multipliers(m)) => {

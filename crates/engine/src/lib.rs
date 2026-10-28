@@ -325,9 +325,17 @@ pub fn downscale(image: &ImageF32, max_side: u32) -> Result<ImageF32, ImageError
 /// # Errors
 /// [`EngineError::Image`] when `max_side` is 0.
 pub fn to_display(image: &ImageF32, orientation: Orientation, max_side: u32) -> Result<Rgb8Image, EngineError> {
-    let fitted = downscale(image, max_side)?;
-    let upright = fitted.oriented(orientation)?;
-    Ok(Rgb8Image { width: upright.width(), height: upright.height(), pixels: render_cpu::to_srgb8(&upright) })
+    if max_side == 0 {
+        return Err(EngineError::Image(ImageError::Empty));
+    }
+    // Most renders already fit: convert and turn upright in one pass, no copy.
+    let fitted = if image.width().max(image.height()) > max_side {
+        Cow::Owned(downscale(image, max_side)?)
+    } else {
+        Cow::Borrowed(image)
+    };
+    let (width, height, pixels) = render_cpu::to_srgb8_oriented(&fitted, orientation);
+    Ok(Rgb8Image { width, height, pixels })
 }
 
 /// Writes `image` upright as a JPEG with an sRGB profile. `wanted` is the
@@ -342,9 +350,8 @@ pub fn export_jpeg(
     quality: u8,
     wanted: &Path,
 ) -> Result<PathBuf, EngineError> {
-    let upright = image.oriented(orientation)?;
-    let rgb = render_cpu::to_srgb8(&upright);
-    let jpeg = export::encode_jpeg(&rgb, upright.width(), upright.height(), quality)?;
+    let (width, height, rgb) = render_cpu::to_srgb8_oriented(image, orientation);
+    let jpeg = export::encode_jpeg(&rgb, width, height, quality)?;
     let target = export::non_destructive_path(wanted);
     export::write_atomic(&target, &jpeg)?;
     Ok(target)

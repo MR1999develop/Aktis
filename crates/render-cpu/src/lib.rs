@@ -16,7 +16,9 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use core_model::{GraphError, ImageF32, MaskImage, NodeGraph, NodeId, NodeKind, ToolId, WorkingSpace};
+mod display;
+
+use core_model::{GraphError, ImageF32, MaskImage, NodeGraph, NodeId, NodeKind, Orientation, ToolId};
 use masks::{NoRasters, RasterSource};
 use tool_api::{ResolvedParams, ToolError, ToolRegistry};
 
@@ -170,15 +172,14 @@ fn blend(after: &mut ImageF32, before: &ImageF32, mask: &MaskImage) {
 /// mapping and gamut mapping replace this in phase 4.
 #[must_use]
 pub fn to_srgb8(image: &ImageF32) -> Vec<u8> {
-    let m = core_color::rgb_to_rgb(image.space(), WorkingSpace::LinearSrgb);
-    let mut out = Vec::with_capacity(image.pixels().len() * 3);
-    for p in image.pixels() {
-        let rgb = m.apply([p[0], p[1], p[2]]);
-        for v in rgb {
-            out.push(quantize_u8(core_color::srgb_encode(v.clamp(0.0, 1.0))));
-        }
-    }
-    out
+    display::to_srgb8(image)
+}
+
+/// Like [`to_srgb8`], turned upright by `orientation` in the same pass:
+/// returns the upright width, height and pixels.
+#[must_use]
+pub fn to_srgb8_oriented(image: &ImageF32, orientation: Orientation) -> (u32, u32, Vec<u8>) {
+    display::to_srgb8_oriented(image, orientation)
 }
 
 /// Rounds an encoded value in [0, 1] to 0–255 (never truncates).
@@ -189,9 +190,16 @@ fn quantize_u8(v: f32) -> u8 {
     q
 }
 
+/// The 8-bit sRGB code of a linear value, computed directly: what the
+/// table-driven encoder of [`display`] must reproduce exactly.
+fn encode_reference(linear: f32) -> u8 {
+    quantize_u8(core_color::srgb_encode(linear.clamp(0.0, 1.0)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_model::WorkingSpace;
 
     #[test]
     fn quantisation_rounds_and_saturates() {

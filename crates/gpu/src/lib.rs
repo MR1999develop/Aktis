@@ -16,6 +16,7 @@
 //! reference renderer, so both see identical masks) and uploaded next to the
 //! image; a masked kernel writes `c + mask · (tool(c) − c)`.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -321,7 +322,8 @@ impl GpuRenderer {
         // Bypassed nodes, missing tools and the output just reuse their input's buffer.
         // A host tool ends the segment: its input is read back, the tool runs on
         // the CPU side, and its result becomes buffer 0 of the next segment.
-        let mut segment_input = source.clone();
+        // Borrowed until a host tool produces a new image: no copy of the source per render.
+        let mut segment_input: Cow<'_, ImageF32> = Cow::Borrowed(source);
         let mut buffer_of: BTreeMap<NodeId, usize> = BTreeMap::new();
         // Nodes whose buffers belonged to a finished segment.
         let mut finished: BTreeSet<NodeId> = BTreeSet::new();
@@ -390,7 +392,7 @@ impl GpuRenderer {
                                         }
                                     }
                                 }
-                                segment_input = image;
+                                segment_input = Cow::Owned(image);
                                 steps.clear();
                                 buffers = 1;
                                 finished.extend(buffer_of.keys().copied());

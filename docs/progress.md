@@ -186,6 +186,40 @@ of `app` and the SQLite store of `catalog`. The pure parts (catalog model,
 history rewrite, library, thumbnails cache, graph layout, rename) are
 tested offline.
 
+## Node graph editing, filmstrip selection, faster viewer: written, to be compiled and checked on Windows
+
+- Node graph: a newly opened photo has only the Source (the Output is not
+  drawn: the end of the chain feeds it, its port has an accent ring).
+  Clicking a node's output port opens the list of tools by category; the
+  chosen tool becomes a node right after it (`Document::add_node`, undoable,
+  "Add serial node · exposure" in the History). Nodes are dragged anywhere,
+  the background (or the middle button) pans; right-click a node to add
+  after it, bypass or delete it. Positions are kept per photo while it is
+  open (`editor::graph_view`: new nodes go right of their input and push the
+  following ones aside unless the user moved them).
+- Filmstrip selection as in a photo viewer: click selects and opens one
+  photo; Ctrl+click adds (and opens) or removes; Shift+click selects the
+  range from the last clicked photo and opens the clicked one; Ctrl+Shift
+  adds the range. Stars and the Rating/Color Tag menus on a card of the
+  selection act on all of it; 0–5 and 6–9 act on the selection; arrows go
+  to the next photo and select it alone; Ctrl+A selects every visible
+  photo, Escape goes back to the open one. With several photos selected the
+  viewer shows their tiles ("Selected: N of M files | Active: …", tiles 2.5
+  times a thumbnail, "+N more"); a click on a tile opens that photo alone.
+- Viewer speed:
+  - 8-bit sRGB conversion through a table checked to give exactly the
+    previous codes, on every core, turned upright in the same pass (no
+    copies): about 4× faster on 2 cores for a 2560 px preview, more on the
+    user's machine;
+  - the GPU renderer no longer copies the source image at every render;
+  - while a slider is dragged a 1280 px draft is rendered (a quarter of the
+    preview's pixels), the preview when the drag ends;
+  - the full-size image is rendered only when the zoom shows more than the
+    preview has (it used to be rendered after every change, seconds for a
+    24 MP photo, delaying the next previews);
+  - the status bar's GPU label shows the time of the last render and of its
+    display conversion.
+
 ## Tests and CI
 
 GitHub Actions (`.github/workflows/ci.yml`) on every push:

@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use core_model::{DevelopSettings, NodeId, NodeKind};
-use editor::{Document, Event, Histogram, Quality, RenderPlan, RenderRequest, ViewState, Viewport, Worker, Zoom};
+use editor::{
+    Document, Event, Histogram, Quality, RenderPlan, RenderRequest, RenderTiming, ViewState, Viewport, Worker, Zoom,
+};
 use eframe::egui::{
     self, Align, Align2, Button, Color32, CursorIcon, Frame, Id, Layout, Margin, Order, RichText, Sense, TextureOptions,
 };
@@ -25,7 +27,7 @@ use engine::{Backend, EngineChoice};
 use tool_api::ToolRegistry;
 
 use crate::actions::Command;
-use crate::graph_ui::{self, GraphClick};
+use crate::graph_ui::{self, GraphAction, GraphUi};
 use crate::history_ui::{LeftTab, TabAction, Tabs};
 use crate::inspector::{self, Drag, UiEdit};
 use crate::library_ui::{Library, LibraryAction, TaggingProgress};
@@ -123,10 +125,14 @@ pub struct EditorApp {
     tabs: Tabs,
     /// The node whose settings are shown on the right.
     selected_node: Option<NodeId>,
+    /// Node positions, panning and menus of the node graph.
+    graph: GraphUi,
     /// Levels of the image on screen.
     histogram: Option<Box<Histogram>>,
     /// "AI-tag this folder", while it runs.
     tagging: Option<TaggingJob>,
+    /// Time, kind and size of the last render shown.
+    last_render: Option<(RenderTiming, Quality, [u32; 2])>,
 }
 
 impl std::fmt::Debug for EditorApp {
@@ -187,8 +193,10 @@ impl EditorApp {
             library: Library::new(),
             tabs: Tabs::default(),
             selected_node: None,
+            graph: GraphUi::default(),
             histogram: None,
             tagging: None,
+            last_render: None,
         };
         if let Some(problem) = app.library.catalog_problem.take() {
             app.toast = Some(error_toast(problem));
@@ -310,27 +318,24 @@ impl EditorApp {
                         Ok(opened) => {
                             let path = opened.path.clone();
                             let first = self.doc.as_ref().map_or(1, |d| d.generation() + 1);
-                            match Document::new(*opened, &self.registry, first) {
-                                Ok(doc) => {
-                                    self.settings.opened(&path);
-                                    self.plan.reset(first);
-                                    self.view.fit();
-                                    self.texture = None;
-                                    self.histogram = None;
-                                    self.drag = None;
-                                    // The first adjustment is what one edits most often.
-                                    self.selected_node = doc.node_rows(&self.registry).first().map(|r| r.node);
-                                    self.doc = Some(doc);
-                                    // The filmstrip shows the photo's folder.
-                                    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
-                                        && self.library.folder() != Some(dir)
-                                    {
-                                        self.library.show_folder(dir.to_owned(), self.worker.as_ref());
-                                    }
-                                    self.library.reveal_photo(&path);
-                                }
-                                Err(e) => self.toast = Some(error_toast(format!("Cannot edit this image: {e}"))),
+                            let doc = Document::new(*opened, first);
+                            self.settings.opened(&path);
+                            self.plan.reset(first);
+                            self.view.fit();
+                            self.texture = None;
+                            self.histogram = None;
+                            self.drag = None;
+                            // A new photo starts from the Source alone: show its settings.
+                            self.selected_node = Some(doc.recipe().graph.source());
+                            self.graph.reset();
+                            self.doc = Some(doc);
+                            // The filmstrip shows the photo's folder.
+                            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+                                && self.library.folder() != Some(dir)
+                            {
+                                self.library.show_folder(dir.to_owned(), self.worker.as_ref());
                             }
+                            self.library.reveal_photo(&path);
                         }
                         Err(message) => {
                             if let Some(path) = &self.opening_path
@@ -343,10 +348,20 @@ impl EditorApp {
                     }
                     self.opening_path = None;
                 }
-                Event::Rendered { generation, quality, image, backend, gpu_failure, node_problems, histogram } => {
+                Event::Rendered {
+                    generation,
+                    quality,
+                    image,
+                    backend,
+                    gpu_failure,
+                    node_problems,
+                    histogram,
+                    timing,
+                } => {
                     if !self.plan.accepts(generation, quality) {
                         continue;
                     }
+                    self.last_render = Some((timing, quality, [image.width, image.height]));
                     self.histogram = Some(histogram);
                     let size = [image.width as usize, image.height as usize];
                     let color = egui::ColorImage::from_rgb(size, &image.pixels);
@@ -631,8 +646,17 @@ impl EditorApp {
     fn request_render(&mut self, ctx: &egui::Context) {
         let (Some(doc), Some(worker)) = (&self.doc, &self.worker) else { return };
         let busy = self.drag.is_some();
-        let Some(quality) = self.plan.next(doc.generation(), busy, doc.preview_is_reduced()) else { return };
+        // The full-size render only when the zoom shows more than the preview has.
+        let (w, h) = doc.upright_size();
+        let full_adds_detail = doc.preview_is_reduced()
+            && self.viewport.as_ref().is_some_and(|vp| {
+                editor::needs_full_resolution(self.view.scale([w as f32, h as f32], vp), doc.preview_scale())
+            });
+        let Some(quality) = self.plan.next(doc.generation(), busy, doc.draft_is_reduced(), full_adds_detail) else {
+            return;
+        };
         let source = match quality {
+            Quality::Draft => doc.draft(),
             Quality::Preview => doc.preview(),
             Quality::Full => doc.developed(),
         };
@@ -756,8 +780,12 @@ impl EditorApp {
             if let Some(folder) = self.library.folder() {
                 let shown = self.library.strip.visible().len();
                 let total = self.library.strip.photos.len();
-                let count =
+                let mut count =
                     if shown == total { format!("{total} photos") } else { format!("{shown} of {total} photos") };
+                let selected = self.library.selection().len();
+                if selected > 1 {
+                    count.push_str(&format!(", {selected} selected"));
+                }
                 ui.label(
                     RichText::new(format!("{} \u{b7} {count}", editor::library::folder_name(folder)))
                         .color(t.text_weak),
@@ -797,7 +825,19 @@ impl EditorApp {
                         ui.weak("CPU").on_hover_text(format!("No GPU in use: {why}"));
                     }
                     (Some(b), _) => {
-                        ui.weak(b.to_string());
+                        let label = ui.weak(b.to_string());
+                        if let Some((timing, quality, [w, h])) = &self.last_render {
+                            let kind = match quality {
+                                Quality::Draft => "draft",
+                                Quality::Preview => "preview",
+                                Quality::Full => "full-size image",
+                            };
+                            label.on_hover_text(format!(
+                                "Last {kind} ({w} \u{d7} {h}): render {} ms, display {} ms",
+                                timing.render.as_millis(),
+                                timing.display.as_millis()
+                            ));
+                        }
                     }
                     (None, _) => {
                         ui.weak("Starting the GPU\u{2026}");
@@ -822,12 +862,19 @@ impl EditorApp {
         });
     }
 
-    fn central(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+    fn central(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>, library: &mut Vec<LibraryAction>) {
         let t = Tokens::of(ui.ctx().theme());
         let rect = ui.max_rect();
         let ppp = ui.ctx().pixels_per_point();
         let vp = Viewport { rect: to_view_rect(rect), pixels_per_point: ppp };
         self.viewport = Some(vp);
+
+        // Several photos selected in the filmstrip: their tiles instead of the photo.
+        if self.library.selection().len() > 1 {
+            let current = self.doc.as_ref().map(|d| d.path().to_owned());
+            self.library.overview(ui, current.as_deref(), library);
+            return;
+        }
 
         if let Some(doc) = &self.doc {
             let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -1045,9 +1092,9 @@ impl EditorApp {
     }
 
     /// The photo, with the node graph under it when a photo is open.
-    fn center(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+    fn center(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>, library: &mut Vec<LibraryAction>) {
         let t = Tokens::of(ui.ctx().theme());
-        let mut click = None;
+        let mut actions = Vec::new();
         if let Some(doc) = &self.doc {
             egui::Panel::bottom("node-graph")
                 .resizable(true)
@@ -1055,15 +1102,58 @@ impl EditorApp {
                 .size_range(GRAPH_HEIGHT[1]..=GRAPH_HEIGHT[2])
                 .frame(Frame::NONE.fill(t.graph))
                 .show(ui, |ui| {
-                    click = graph_ui::graph(ui, &doc.recipe().graph, &self.registry, self.selected_node);
+                    actions = self.graph.show(ui, &doc.recipe().graph, &self.registry, self.selected_node);
                 });
         }
-        match click {
-            Some(GraphClick::Select(id)) => self.selected_node = Some(id),
-            Some(GraphClick::Deselect) => self.selected_node = None,
-            None => {}
+        self.apply_graph(actions);
+        egui::CentralPanel::default()
+            .frame(Frame::NONE.fill(t.canvas))
+            .show(ui, |ui| self.central(ui, commands, library));
+    }
+
+    /// Applies what the user did in the node graph.
+    fn apply_graph(&mut self, actions: Vec<GraphAction>) {
+        for action in actions {
+            let result = match action {
+                GraphAction::Select(id) => {
+                    self.selected_node = Some(id);
+                    Ok(())
+                }
+                GraphAction::Deselect => {
+                    self.selected_node = None;
+                    Ok(())
+                }
+                GraphAction::Add { after, tool } => {
+                    let Some(doc) = &mut self.doc else { continue };
+                    let feature = ai_models::feature_for_tool(tool.as_str());
+                    match doc.add_node(&self.registry, after, tool) {
+                        Ok(id) => {
+                            self.selected_node = Some(id);
+                            // A tool that needs AI models offers to download them.
+                            if let Some(feature) = feature {
+                                self.models.require(feature);
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(format!("The node could not be added: {e}")),
+                    }
+                }
+                GraphAction::Remove(id) => {
+                    let Some(doc) = &mut self.doc else { continue };
+                    if self.selected_node == Some(id) {
+                        self.selected_node = None;
+                    }
+                    doc.remove_node(&self.registry, id).map_err(|e| format!("The node could not be deleted: {e}"))
+                }
+                GraphAction::Enable(node, on) => {
+                    self.apply_edits(vec![UiEdit::Enabled { node, on }]);
+                    Ok(())
+                }
+            };
+            if let Err(message) = result {
+                self.toast = Some(error_toast(message));
+            }
         }
-        egui::CentralPanel::default().frame(Frame::NONE.fill(t.canvas)).show(ui, |ui| self.central(ui, commands));
     }
 }
 
@@ -1104,7 +1194,9 @@ impl eframe::App for EditorApp {
             .size_range(INSPECTOR_WIDTH[1]..=INSPECTOR_WIDTH[2])
             .frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(10, 4)))
             .show(ui, |ui| self.right_panel(ui, &mut edits));
-        egui::CentralPanel::default().frame(Frame::NONE.fill(t.canvas)).show(ui, |ui| self.center(ui, &mut commands));
+        egui::CentralPanel::default()
+            .frame(Frame::NONE.fill(t.canvas))
+            .show(ui, |ui| self.center(ui, &mut commands, &mut library));
         self.library.rename_dialog(&ctx, &mut library);
 
         self.apply_edits(edits);
