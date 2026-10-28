@@ -151,6 +151,12 @@ pub const TINT_STRIP: [Color32; 2] = [Color32::from_rgb(0x4c, 0xb0, 0x4c), Color
 /// same in both themes).
 pub const CROP_DIM: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 136);
 
+/// Circles and lines of the Heal and Clone spots: a light line over a dark
+/// shadow, so they show on any photo (the same in both themes).
+pub const SPOT_LINE: Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
+/// The shadow under [`SPOT_LINE`].
+pub const SPOT_SHADOW: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 150);
+
 /// The viewer's background for the choice in the Preferences; `canvas` is
 /// the interface's own (the [`Tokens::canvas`] of the current theme).
 #[must_use]

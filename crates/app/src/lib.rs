@@ -25,6 +25,7 @@ mod inspector;
 mod library_ui;
 mod models_ui;
 mod prefs_ui;
+mod retouch_ui;
 mod scopes;
 mod settings;
 mod tagging_job;

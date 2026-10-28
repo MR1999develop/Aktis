@@ -89,6 +89,16 @@
   loaded while the window is open when tagging becomes frequent.
 - Tool bar tools (crop, perspective, level, masks, AI select, heal, clone)
   are placeholders.
+- Retouch: spots are healed on the CPU (host tool), one after another; a
+  GPU kernel would avoid the read-back when the GPU renders. A very large
+  spot copies two patches of its size (about 220 MB at the largest radius
+  on a 24 MP image).
+- Retouch: the undo label of a spot lists its parameters ("Change spot0
+  kind, spot0 x, …"); give `Edit::SetParams` a label from the tool (for
+  example "Add heal spot", "Move spot").
+- Retouch: the automatic source is searched in the developed preview, not
+  in the image entering the retouch node (earlier spots and tools are not
+  seen), and only the selected retouch node's spots are drawn.
 - The catalog keys photos by the path as written: on Windows the same file
   reached as `D:\Foto` and `d:\foto` gets two entries. Normalise the key
   (canonical path, case folded on Windows) before the first public release,

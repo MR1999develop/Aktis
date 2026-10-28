@@ -239,6 +239,32 @@ tested offline.
 - Open dialog: ARI, DCS, FFF, ORI, QTK and RAW added; README lists the
   supported cameras and rawler 0.8.0's known limits per brand.
 
+## Heal and Clone (spot retouching): written, to be compiled and checked on Windows
+
+- `tool-adjust::retouch`: a graph node holding up to 16 spots as plain
+  parameters (eight each: heal/clone, centre, radius, source centre,
+  feather, opacity; radius 0 = empty slot). Positions in the developed
+  image (0–1), radius as a fraction of the long side, so previews and the
+  full image match. Runs on the CPU (`GpuKernel::Host`). Clone copies the
+  source with a feathered edge; Heal adds to the source the harmonic
+  interpolation (Poisson integral of the disc, on a coarse grid) of the
+  difference between the spot's border and the source's border, measured
+  just outside the circle: tested to leave no seam on a smooth gradient
+  and to remove a blemish while keeping the source's texture.
+  `find_source` picks a circle 2.2–4.6 radii away whose surroundings match
+  the spot's and whose inside is as even as they are.
+- `editor::retouch`: a new spot goes into the selected retouch node when it
+  has room, into a new one right after it when it is full, otherwise into
+  a new retouch node right after the Source (then selected); one undo step
+  per spot; hit-testing of the circles on screen.
+- `app::retouch_ui`: Heal (H) and Clone (S) in the tool bar. Click to put a
+  spot (source found automatically, drawn as a second circle with a line),
+  click to select, drag either circle (one undo step per drag), Size /
+  Feather / Opacity in the options bar (also `[` and `]` for the size),
+  Heal/Clone switch, Delete or Backspace or the Delete button. Double-click
+  does not zoom while these tools are on. The inspector lists a retouch
+  node's spots with a Remove button each.
+
 ## Tests and CI
 
 GitHub Actions (`.github/workflows/ci.yml`) on every push:
