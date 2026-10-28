@@ -205,23 +205,14 @@ impl PresetsUi {
                     ui.separator();
                 }
                 if draft.choices.is_empty() {
-                    ui.label(RichText::new("The photo has no adjustment nodes").color(t.text_weak));
+                    ui.label(
+                        RichText::new(
+                            "The photo has no adjustment nodes yet: add the tools to save (Image \u{25b8} Add node).",
+                        )
+                        .color(t.text_weak),
+                    );
                 }
-                for c in &draft.choices {
-                    let mut on = draft.selection.nodes.contains(&c.node);
-                    let label = if c.masked {
-                        format!("{} \u{2014} values only, not its mask", c.name)
-                    } else {
-                        c.name.clone()
-                    };
-                    if ui.checkbox(&mut on, label).changed() {
-                        if on {
-                            draft.selection.nodes.push(c.node);
-                        } else {
-                            draft.selection.nodes.retain(|n| *n != c.node);
-                        }
-                    }
-                }
+                include_by_group(ui, &draft.choices, &mut draft.selection.nodes);
             });
             if draft.brush {
                 ui.add_space(SPACE[1]);
@@ -263,6 +254,47 @@ impl PresetsUi {
 }
 
 /// The style the draft would save (a brush keeps only tool nodes).
+/// The tool nodes of the Save window by kind of tool (exposure and tone,
+/// colour, details…), each group with a tick for all of its nodes.
+fn include_by_group(ui: &mut egui::Ui, choices: &[NodeChoice], chosen: &mut Vec<core_model::NodeId>) {
+    let mut groups: Vec<Option<tool_api::Category>> = Vec::new();
+    let mut ordered: Vec<&NodeChoice> = choices.iter().collect();
+    ordered.sort_by_key(|c| c.category.map_or(u8::MAX, crate::graph_ui::category_rank));
+    for c in &ordered {
+        if !groups.contains(&c.category) {
+            groups.push(c.category);
+        }
+    }
+    for group in groups {
+        let members: Vec<&&NodeChoice> = ordered.iter().filter(|c| c.category == group).collect();
+        let title = group.map_or("Other", crate::graph_ui::category_name);
+        let on = members.iter().filter(|c| chosen.contains(&c.node)).count();
+        let mut all = on == members.len();
+        let tick = egui::Checkbox::new(&mut all, RichText::new(title).strong()).indeterminate(on > 0 && !all);
+        if ui.add(tick).on_hover_text("Every node of this group").changed() {
+            for c in &members {
+                chosen.retain(|n| *n != c.node);
+                if all {
+                    chosen.push(c.node);
+                }
+            }
+        }
+        ui.indent(("preset-group", title), |ui| {
+            for c in members {
+                let mut on = chosen.contains(&c.node);
+                let label =
+                    if c.masked { format!("{} \u{2014} values only, not its mask", c.name) } else { c.name.clone() };
+                if ui.checkbox(&mut on, label).changed() {
+                    chosen.retain(|n| *n != c.node);
+                    if on {
+                        chosen.push(c.node);
+                    }
+                }
+            }
+        });
+    }
+}
+
 fn draft_style(draft: &SaveDraft) -> Style {
     let style = Style::from_recipe(&draft.recipe, &draft.selection);
     if draft.brush { style.local() } else { style }

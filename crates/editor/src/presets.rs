@@ -171,6 +171,9 @@ pub struct NodeChoice {
     pub name: String,
     /// It has a mask: the mask is not saved, only the values.
     pub masked: bool,
+    /// The kind of tool, to group the window's list; `None` for a tool
+    /// this build lacks.
+    pub category: Option<tool_api::Category>,
 }
 
 /// The tool nodes of `recipe` that can go into a preset, in acting order.
@@ -182,8 +185,9 @@ pub fn node_choices(recipe: &Recipe, registry: &ToolRegistry) -> Vec<NodeChoice>
         .filter_map(|id| {
             let node = g.node(id)?;
             let NodeKind::Tool(tool) = &node.kind else { return None };
-            let tool_name =
-                registry.get(tool).map_or_else(|| tool.as_str().to_owned(), |t| t.descriptor().name.to_owned());
+            let found = registry.get(tool);
+            let tool_name = found.map_or_else(|| tool.as_str().to_owned(), |t| t.descriptor().name.to_owned());
+            let category = found.map(|t| t.descriptor().category);
             let name = if node.label.is_empty() { tool_name } else { format!("{} ({tool_name})", node.label) };
             let masked = node
                 .kind
@@ -192,7 +196,7 @@ pub fn node_choices(recipe: &Recipe, registry: &ToolRegistry) -> Vec<NodeChoice>
                 .position(|k| *k == core_model::PortKind::Mask)
                 .and_then(|p| u8::try_from(p).ok())
                 .is_some_and(|p| g.input_link(id, p).is_some());
-            Some(NodeChoice { node: id, name, masked })
+            Some(NodeChoice { node: id, name, masked, category })
         })
         .collect()
 }

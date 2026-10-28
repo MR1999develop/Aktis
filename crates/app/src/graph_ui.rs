@@ -106,7 +106,7 @@ pub(crate) fn category_name(c: Category) -> &'static str {
     }
 }
 
-fn category_rank(c: Category) -> u8 {
+pub(crate) fn category_rank(c: Category) -> u8 {
     match c {
         Category::Exposure => 0,
         Category::Color => 1,
