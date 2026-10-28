@@ -115,7 +115,7 @@ pub fn to_srgb8(image: &ImageF32) -> Vec<u8> {
     let mut out = vec![0_u8; w * h * 3];
     for_each_row(&mut out, h, w * 3, ROWS_PER_THREAD, &|y, bytes| {
         for (p, o) in src[y * w..(y + 1) * w].iter().zip(bytes.chunks_exact_mut(3)) {
-            let rgb = m.apply([p[0], p[1], p[2]]);
+            let rgb = crate::tone::output_rgb([p[0], p[1], p[2]], &m);
             o[0] = enc.encode(rgb[0]);
             o[1] = enc.encode(rgb[1]);
             o[2] = enc.encode(rgb[2]);
@@ -153,7 +153,7 @@ pub fn to_srgb8_oriented(image: &ImageF32, o: Orientation) -> (u32, u32, Vec<u8>
                 for x in x0..x1 {
                     let (sx, sy) = o.source(x, y, w, h);
                     let p = src[sy * w + sx];
-                    let rgb = m.apply([p[0], p[1], p[2]]);
+                    let rgb = crate::tone::output_rgb([p[0], p[1], p[2]], &m);
                     let o3 = &mut line[x * 3..x * 3 + 3];
                     o3[0] = enc.encode(rgb[0]);
                     o3[1] = enc.encode(rgb[1]);
@@ -207,7 +207,11 @@ mod tests {
 
     fn slow(image: &ImageF32) -> Vec<u8> {
         let m = core_color::rgb_to_rgb(image.space(), WorkingSpace::LinearSrgb);
-        image.pixels().iter().flat_map(|p| m.apply([p[0], p[1], p[2]]).map(encode_reference)).collect()
+        image
+            .pixels()
+            .iter()
+            .flat_map(|p| crate::tone::output_rgb([p[0], p[1], p[2]], &m).map(encode_reference))
+            .collect()
     }
 
     #[test]

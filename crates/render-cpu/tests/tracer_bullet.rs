@@ -38,14 +38,15 @@ fn a_grey_card_one_stop_under_comes_out_as_middle_grey_after_plus_one_stop() {
 
     let srgb = render_cpu::to_srgb8(&rendered.image);
     assert_eq!(srgb.len(), 8 * 6 * 3);
-    // Linear 0.18 encodes to sRGB 118.
+    // Middle grey keeps its brightness through the film curve: sRGB 118.
     assert!(srgb.iter().all(|v| (i32::from(*v) - 118).abs() <= 1), "first pixels: {:?}", &srgb[..6]);
 
-    // Undo returns to the unexposed rendering: linear 0.09 → sRGB 84.
+    // Undo returns to the unexposed rendering: one stop under grey, in the
+    // film curve's toe (sRGB 76; a plain sRGB encoding would give 84).
     session.undo();
     let rendered = render_cpu::render(&session.recipe().graph, &registry, &developed).expect("renders");
     let srgb = render_cpu::to_srgb8(&rendered.image);
-    assert!(srgb.iter().all(|v| (i32::from(*v) - 84).abs() <= 1), "first pixels: {:?}", &srgb[..6]);
+    assert!(srgb.iter().all(|v| (i32::from(*v) - 76).abs() <= 1), "first pixels: {:?}", &srgb[..6]);
 }
 
 #[test]

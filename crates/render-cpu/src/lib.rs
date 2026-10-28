@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 mod display;
+pub mod tone;
 
 use core_model::{GraphError, ImageF32, MaskImage, NodeGraph, NodeId, NodeKind, Orientation, ToolId};
 use masks::{NoRasters, RasterSource};
@@ -165,11 +166,10 @@ fn blend(after: &mut ImageF32, before: &ImageF32, mask: &MaskImage) {
     }
 }
 
-/// Converts a linear image to 8-bit sRGB for display or JPEG export.
-///
-/// Provisional output render for the tracer bullet: values outside the sRGB
-/// gamut and above white are clipped per channel. The scene-referred tone
-/// mapping and gamut mapping replace this in phase 4.
+/// Converts a linear image to 8-bit sRGB for display or JPEG export, with
+/// the output render of [`tone`]: a film-like curve on stops (even exposure
+/// changes, toe and shoulder instead of clipping), hues kept, colours
+/// outside sRGB desaturated.
 #[must_use]
 pub fn to_srgb8(image: &ImageF32) -> Vec<u8> {
     display::to_srgb8(image)
@@ -214,10 +214,11 @@ mod tests {
     }
 
     #[test]
-    fn rec2020_white_and_black_map_to_255_and_0() {
-        let img =
-            ImageF32::from_pixels(2, 1, WorkingSpace::LinearRec2020, vec![[1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0]])
-                .expect("2×1 image");
-        assert_eq!(to_srgb8(&img), vec![255, 255, 255, 0, 0, 0]);
+    fn white_rolls_off_towards_255_brighter_light_reaches_it_and_black_is_0() {
+        let px = vec![[1.0, 1.0, 1.0, 1.0], [64.0, 64.0, 64.0, 1.0], [0.0, 0.0, 0.0, 1.0]];
+        let img = ImageF32::from_pixels(3, 1, WorkingSpace::LinearRec2020, px).expect("3×1 image");
+        let out = to_srgb8(&img);
+        assert!(out[..3].iter().all(|v| (230..250).contains(v)), "white is just below the top: {out:?}");
+        assert_eq!(&out[3..], &[255, 255, 255, 0, 0, 0]);
     }
 }
