@@ -128,7 +128,6 @@
   every render, and creates its buffers each time; keep the source on the
   GPU between renders of the same image (and draw the result straight from
   a texture, see above) if the timings in the status bar show it matters.
-<<<<<<< HEAD
 - `engine::geometry` warps on the CPU after the render, for every screen
   render while a geometry is set; move it to the GPU with the display
   transform. The fill enlargement is found by bisection on 64 border points.
@@ -144,22 +143,19 @@
 - AI Select loads ONNX Runtime and the models in its first job (seconds);
   they stay loaded. Person parts and "select people" are not offered in the
   window yet (the command line has them).
-- WGSL kernels of `tools/adjust` were validated with Chromium's WebGPU
-  (SwiftShader) in the sandbox, not in the gpu crate's tests; add a GPU test
-  per tool to `crates/gpu/tests` (it runs on llvmpipe in CI).
-
-=======
 - Export: PNG uses the built-in deflate of `export` (hash chains, no lazy
   matching): files are somewhat larger than zlib's; TIFF is uncompressed.
   Add Deflate/LZW to TIFF and tune PNG if file sizes matter.
 - Export shrinks with an area average (no ringing, a little soft) and adds
   no output sharpening; offer Lanczos and "sharpen for screen/print" later.
-- Exported photos that are not open use the default recipe until recipes
-  are stored: plug the store into `EditorApp::recipe_for`.
 - EXIF text fields (copyright, artist) are written as UTF-8; strict EXIF
   readers show "©" as Latin-1. The XMP packet carries them correctly.
 - The export window, like the other dialogs, is not modal (see above).
->>>>>>> t8-export
 - Colour editor: Capture One's "View selected color range" is missing; the
   viewer has no way to show which pixels a range selects. Add it when the
   viewer can draw a node's weight as an overlay (as the mask overlay does).
+- Presets: a preset applied to photos that are not open is written to the
+  catalog without a new preview; the filmstrip shows the camera's until the
+  photo is opened (a background render of the edit would fill it).
+- Presets: no import/export of Lightroom (XMP `crs:`) or Capture One
+  (`.costyle`) presets yet; their tools differ, only a subset would map.
