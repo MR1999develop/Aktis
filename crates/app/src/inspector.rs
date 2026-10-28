@@ -284,7 +284,7 @@ fn lens_section(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
             None => {}
         }
         ui.add_space(SPACE[0]);
-        let id = ui.id();
+        let id = egui::Id::unique("rne-lens-sliders");
         amount_row(ui, id.with("d"), &mut next.distortion, &mut next.amount.distortion, "Distortion");
         amount_row(ui, id.with("t"), &mut next.tca, &mut next.amount.tca, "Chromatic aberration");
         amount_row(ui, id.with("v"), &mut next.vignetting, &mut next.amount.vignetting, "Vignetting");

@@ -118,7 +118,6 @@ impl Scopes {
     /// The tabs and the chosen scope, `height` points high. Returns the
     /// scope chosen with the tabs.
     pub fn show(&self, ui: &mut egui::Ui, kind: ScopeKind, hist: Option<&Histogram>, height: f32) -> ScopeKind {
-        let t = Tokens::of(ui.ctx().theme());
         let mut chosen = kind;
         ui.horizontal(|ui| {
             for k in ScopeKind::ALL {
