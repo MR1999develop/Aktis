@@ -61,6 +61,68 @@ impl ViewerBackground {
     }
 }
 
+/// The sizes of the window's panels (points) and its other view choices;
+/// `None`: the default size.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Layout {
+    /// Explorer, left.
+    pub explorer_width: Option<f32>,
+    /// Filmstrip, next to the Explorer.
+    pub filmstrip_width: Option<f32>,
+    /// Settings, right.
+    pub inspector_width: Option<f32>,
+    /// History and Metadata tabs under the Explorer.
+    pub tabs_height: Option<f32>,
+    /// Node graph under the photo.
+    pub graph_height: Option<f32>,
+    /// Scope above the settings: histogram, waveform or parade.
+    pub scope: crate::scopes::ScopeKind,
+    /// Its height; `None`: the default.
+    pub scope_height: Option<f32>,
+    /// The left tab shown: the history (`false`) or the metadata.
+    pub metadata_tab: bool,
+    /// The exposure warning is on.
+    pub exposure_warning: bool,
+}
+
+/// A layout saved under a name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Workspace {
+    /// Its name in the menu.
+    pub name: String,
+    /// What it restores.
+    pub layout: Layout,
+}
+
+impl Settings {
+    /// Saves the current layout as workspace `name`, replacing one of the
+    /// same name (any case); the list stays sorted by name.
+    pub fn save_workspace(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        self.workspaces.retain(|w| !w.name.eq_ignore_ascii_case(name));
+        self.workspaces.push(Workspace { name: name.to_owned(), layout: self.layout });
+        self.workspaces.sort_by_key(|w| w.name.to_lowercase());
+    }
+
+    /// Makes workspace `index` the current layout (`None`: the default
+    /// layout); the panels take its sizes at the next frame.
+    pub fn apply_workspace(&mut self, index: Option<usize>) {
+        let layout = match index {
+            Some(i) => match self.workspaces.get(i) {
+                Some(w) => w.layout,
+                None => return,
+            },
+            None => Layout::default(),
+        };
+        self.layout = layout;
+        self.layout_generation = self.layout_generation.wrapping_add(1);
+    }
+}
+
 /// The exposure warning's settings, as in Capture One's Preferences ▸
 /// Exposure: the highlight threshold (250 by default) and a shadow warning,
 /// off by default, with its own threshold.
@@ -105,14 +167,14 @@ pub struct Settings {
     pub recent: Vec<PathBuf>,
     /// Folder shown in the filmstrip, opened again at start-up.
     pub library_dir: Option<PathBuf>,
-    /// Scope above the node settings: histogram, waveform or parade.
-    pub scope: crate::scopes::ScopeKind,
-    /// Height of that scope in points; `None`: the default.
-    pub scope_height: Option<f32>,
-    /// The exposure warning is shown over the photo.
-    pub exposure_warning: bool,
     /// Its thresholds and whether it shows the shadows too (Preferences ▸ Exposure).
     pub warning: WarningSettings,
+    /// Sizes of the panels and the left tab shown, as the window was left.
+    pub layout: Layout,
+    /// Layouts saved under a name (Window ▸ Workspace), as in Capture One.
+    pub workspaces: Vec<Workspace>,
+    /// Bumped when a workspace is applied, so the panels start again from its sizes.
+    pub layout_generation: u32,
     /// Colour around the photo in the viewer.
     pub viewer_background: ViewerBackground,
     /// Folder of the presets and style brushes; `None`: `Presets` in the
@@ -405,5 +467,27 @@ mod tests {
     #[test]
     fn the_default_theme_is_dark() {
         assert_eq!(Settings::default().theme, ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn workspaces_are_saved_by_name_replaced_and_applied() {
+        let mut s = Settings::default();
+        s.layout.inspector_width = Some(400.0);
+        s.save_workspace(" Retouch ");
+        s.layout.inspector_width = Some(300.0);
+        s.save_workspace("colour");
+        s.save_workspace("RETOUCH"); // same name: replaced, not added
+        let names: Vec<&str> = s.workspaces.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(names, ["colour", "RETOUCH"]);
+        s.save_workspace("   ");
+        assert_eq!(s.workspaces.len(), 2, "no empty names");
+        let generation = s.layout_generation;
+        s.apply_workspace(Some(0));
+        assert_eq!(s.layout.inspector_width, Some(300.0));
+        assert_ne!(s.layout_generation, generation, "the panels start again");
+        s.apply_workspace(None);
+        assert_eq!(s.layout, Layout::default());
+        s.apply_workspace(Some(9)); // gone: nothing changes
+        assert_eq!(s.layout, Layout::default());
     }
 }

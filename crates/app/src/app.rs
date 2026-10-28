@@ -211,6 +211,8 @@ pub struct EditorApp {
     presets: PresetsUi,
     /// Closing was refused once because the edit could not be saved.
     close_refused: bool,
+    /// The name being typed in the Save Workspace window, while it is open.
+    workspace_name: Option<String>,
 }
 
 impl std::fmt::Debug for EditorApp {
@@ -299,6 +301,7 @@ impl EditorApp {
             confirm_delete: None,
             presets: PresetsUi::default(),
             close_refused: false,
+            workspace_name: None,
         };
         app.reload_presets();
         if let Some(problem) = app.library.catalog_problem.take() {
@@ -307,7 +310,12 @@ impl EditorApp {
         if let Some(dir) = app.settings.library_dir.clone().filter(|d| d.is_dir()) {
             app.library.show_folder(dir, app.worker.as_ref());
         }
-        if let Some(path) = open {
+        if app.settings.layout.metadata_tab {
+            app.tabs.tab = LeftTab::Metadata;
+        }
+        // The photo given on the command line, else the one open when the editor was closed.
+        let last = app.settings.recent.first().filter(|p| p.is_file()).cloned();
+        if let Some(path) = open.or(last) {
             app.open(path);
         }
         app
@@ -447,7 +455,7 @@ impl EditorApp {
             Command::Open => self.pick_and_open(),
             Command::Export => self.open_export_dialog(self.export_targets()),
             Command::ExportAgain => self.start_export(self.export_targets(), ctx),
-            Command::ExposureWarning => self.settings.exposure_warning = !self.settings.exposure_warning,
+            Command::ExposureWarning => self.settings.layout.exposure_warning = !self.settings.layout.exposure_warning,
             Command::Quit => {
                 if self.save_before_closing() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1210,7 +1218,8 @@ impl EditorApp {
         let export_count = self.export_targets().len();
         let mut open_recent = None;
         let mut theme_choice = self.settings.theme;
-        let mut exposure_warning = self.settings.exposure_warning;
+        let mut exposure_warning = self.settings.layout.exposure_warning;
+        let mut workspace = None;
         let mut open_models = false;
         let mut open_prefs = false;
         let mut open_folder = false;
@@ -1337,6 +1346,38 @@ impl EditorApp {
                         }
                     }
                 });
+                ui.menu_button("Workspace", |ui| {
+                    // As in Capture One: the panels' sizes and view choices under a name.
+                    if ui.button("Default").on_hover_text("The panels at their standard sizes").clicked() {
+                        workspace = Some(WorkspaceAction::Apply(None));
+                        ui.close();
+                    }
+                    for (i, w) in self.settings.workspaces.iter().enumerate() {
+                        if ui.button(&w.name).clicked() {
+                            workspace = Some(WorkspaceAction::Apply(Some(i)));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if ui
+                        .button("Save workspace\u{2026}")
+                        .on_hover_text("Keep the current layout under a name")
+                        .clicked()
+                    {
+                        workspace = Some(WorkspaceAction::Save);
+                        ui.close();
+                    }
+                    ui.add_enabled_ui(!self.settings.workspaces.is_empty(), |ui| {
+                        ui.menu_button("Delete workspace", |ui| {
+                            for (i, w) in self.settings.workspaces.iter().enumerate() {
+                                if ui.button(&w.name).clicked() {
+                                    workspace = Some(WorkspaceAction::Delete(i));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                });
             });
             ui.menu_button("Tools", |ui| {
                 if ui.button("AI models\u{2026}").on_hover_text("Download or check the AI models").clicked() {
@@ -1371,7 +1412,19 @@ impl EditorApp {
                 self.library.show_folder(dir, self.worker.as_ref());
             }
         }
-        self.settings.exposure_warning = exposure_warning;
+        self.settings.layout.exposure_warning = exposure_warning;
+        match workspace {
+            Some(WorkspaceAction::Apply(index)) => {
+                self.settings.apply_workspace(index);
+                self.tabs.tab = if self.settings.layout.metadata_tab { LeftTab::Metadata } else { LeftTab::History };
+            }
+            Some(WorkspaceAction::Save) => self.workspace_name = Some("My workspace".to_owned()),
+            Some(WorkspaceAction::Delete(i)) if i < self.settings.workspaces.len() => {
+                let gone = self.settings.workspaces.remove(i);
+                self.toast = Some(info_toast(format!("Workspace \u{201c}{}\u{201d} deleted", gone.name)));
+            }
+            _ => {}
+        }
         if theme_choice != self.settings.theme {
             self.settings.theme = theme_choice;
             ui.ctx().set_theme(theme_preference(theme_choice));
@@ -1533,7 +1586,7 @@ impl EditorApp {
         }
 
         // Made before the photo is borrowed for drawing.
-        let warning = if self.settings.exposure_warning {
+        let warning = if self.settings.layout.exposure_warning {
             self.exposure_warning_texture(ui.ctx()).map(egui::TextureHandle::id)
         } else {
             None
@@ -1878,9 +1931,10 @@ impl EditorApp {
     /// Explorer and filmstrip side by side, History and Metadata below.
     fn left_panel(&mut self, ui: &mut egui::Ui, library: &mut Vec<LibraryAction>, tabs: &mut Vec<TabAction>) {
         let t = Tokens::of(ui.ctx().theme());
-        egui::Panel::bottom("left-tabs")
+        let generation = self.settings.layout_generation;
+        let tabs_panel = egui::Panel::bottom(egui::Id::unique(("left-tabs", generation)))
             .resizable(true)
-            .default_size(TABS_HEIGHT[0])
+            .default_size(self.settings.layout.tabs_height.unwrap_or(TABS_HEIGHT[0]))
             .size_range(TABS_HEIGHT[1]..=TABS_HEIGHT[2])
             .frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(8, 4)))
             .show(ui, |ui| {
@@ -1897,6 +1951,8 @@ impl EditorApp {
                 tabs.extend(self.tabs.show(&mut inside, self.doc.as_ref(), meta.as_ref()));
                 ui.allocate_rect(rect, Sense::hover());
             });
+        self.settings.layout.tabs_height = Some(tabs_panel.response.rect.height());
+        self.settings.layout.metadata_tab = self.tabs.tab == LeftTab::Metadata;
         egui::CentralPanel::default().frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(8, 4))).show(
             ui,
             |ui| {
@@ -1910,8 +1966,8 @@ impl EditorApp {
     /// selected node; returns the scope chosen with its tabs.
     fn right_panel(&self, ui: &mut egui::Ui, edits: &mut Vec<UiEdit>) -> (ScopeKind, Option<f32>) {
         let t = Tokens::of(ui.ctx().theme());
-        let height = self.settings.scope_height.unwrap_or(HISTOGRAM_HEIGHT[0]);
-        let scope = self.scopes.show(ui, self.settings.scope, self.histogram.as_deref(), height);
+        let height = self.settings.layout.scope_height.unwrap_or(HISTOGRAM_HEIGHT[0]);
+        let scope = self.scopes.show(ui, self.settings.layout.scope, self.histogram.as_deref(), height);
         let resized = crate::scopes::Scopes::resize_handle(ui, height);
         ui.add_space(SPACE[0]);
         egui::ScrollArea::vertical().id_salt("node-settings").auto_shrink([false, false]).show(ui, |ui| {
@@ -1979,15 +2035,20 @@ impl EditorApp {
     fn center(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>, library: &mut Vec<LibraryAction>) {
         let t = Tokens::of(ui.ctx().theme());
         let mut actions = Vec::new();
+        let mut graph_height = None;
         if let Some(doc) = &self.doc {
-            egui::Panel::bottom("node-graph")
+            let graph_panel = egui::Panel::bottom(egui::Id::unique(("node-graph", self.settings.layout_generation)))
                 .resizable(true)
-                .default_size(GRAPH_HEIGHT[0])
+                .default_size(self.settings.layout.graph_height.unwrap_or(GRAPH_HEIGHT[0]))
                 .size_range(GRAPH_HEIGHT[1]..=GRAPH_HEIGHT[2])
                 .frame(Frame::NONE.fill(t.graph))
                 .show(ui, |ui| {
                     actions = self.graph.show(ui, &doc.recipe().graph, &self.registry, self.selected_node);
                 });
+            graph_height = Some(graph_panel.response.rect.height());
+        }
+        if graph_height.is_some() {
+            self.settings.layout.graph_height = graph_height;
         }
         self.apply_graph(actions);
         let background = theme::viewer_background(self.settings.viewer_background, t.canvas);
@@ -2355,6 +2416,40 @@ impl EditorApp {
         }
     }
 
+    /// The Save Workspace window, while open: a name for the current layout.
+    fn workspace_dialog(&mut self, ctx: &egui::Context) {
+        let Some(name) = &mut self.workspace_name else { return };
+        let t = Tokens::of(ctx.theme());
+        let mut choice = None;
+        let exists = |n: &str| self.settings.workspaces.iter().any(|w| w.name.eq_ignore_ascii_case(n.trim()));
+        crate::dialog::dialog(ctx, "rne-save-workspace", |ui| {
+            ui.label(RichText::new("Save Workspace").size(FONT[4]).strong());
+            ui.add_space(SPACE[1]);
+            ui.label(RichText::new("The sizes of the panels and the view choices, under a name.").color(t.text_weak));
+            ui.add_space(SPACE[1]);
+            let field = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
+            if !field.has_focus() && name == "My workspace" {
+                field.request_focus();
+            }
+            if exists(name) {
+                ui.label(RichText::new("A workspace with this name is replaced").color(t.warning));
+            }
+            ui.add_space(SPACE[2]);
+            let ready = !name.trim().is_empty();
+            choice = crate::dialog::dialog_buttons(ui, &t, ready.then_some("Save"), "Cancel", |_| {});
+        });
+        match choice {
+            Some(crate::dialog::Choice::Action) => {
+                if let Some(name) = self.workspace_name.take() {
+                    self.settings.save_workspace(&name);
+                    self.toast = Some(info_toast(format!("Workspace \u{201c}{}\u{201d} saved", name.trim())));
+                }
+            }
+            Some(crate::dialog::Choice::Cancel) => self.workspace_name = None,
+            None => {}
+        }
+    }
+
     /// The exposure warning for the image on screen, made once per render.
     fn exposure_warning_texture(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
         if self.warning_texture.is_none() {
@@ -2468,7 +2563,7 @@ impl eframe::App for EditorApp {
             exporting: self.exporting.is_some(),
             export_count: self.export_targets().len(),
             active: self.tool,
-            exposure_warning: self.settings.exposure_warning,
+            exposure_warning: self.settings.layout.exposure_warning,
         };
         let bar_actions = egui::Panel::top("toolbar")
             .frame(Frame::NONE.fill(t.bar).inner_margin(Margin::symmetric(8, 4)))
@@ -2478,7 +2573,7 @@ impl eframe::App for EditorApp {
             match action {
                 BarAction::Command(c) => commands.push(c),
                 BarAction::Tool(tool) => self.tool = tool,
-                BarAction::ExposureWarning(on) => self.settings.exposure_warning = on,
+                BarAction::ExposureWarning(on) => self.settings.layout.exposure_warning = on,
             }
         }
         self.tool_changed();
@@ -2487,44 +2582,51 @@ impl eframe::App for EditorApp {
         }
         let mut switch_variant = None;
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &mut switch_variant));
-        egui::Panel::left("library")
+        let layout = self.settings.layout;
+        let generation = self.settings.layout_generation;
+        let panel = |name: &str| egui::Id::unique((name, generation));
+        let explorer = egui::Panel::left(panel("library"))
             .resizable(true)
-            .default_size(LEFT_WIDTH[0])
+            .default_size(layout.explorer_width.unwrap_or(LEFT_WIDTH[0]))
             .size_range(LEFT_WIDTH[1]..=LEFT_WIDTH[2])
             .frame(Frame::NONE.fill(t.bg))
             .show(ui, |ui| self.left_panel(ui, &mut library, &mut tabs));
+        self.settings.layout.explorer_width = Some(explorer.response.rect.width());
         let blocks = self.variant_blocks();
         // The filmstrip, right of the Explorer: drag its right edge to widen
         // it; the thumbnails grow, then line up in columns.
         let max_strip = (ctx.content_rect().width() * 0.75).max(FILMSTRIP_WIDTH);
-        egui::Panel::left("filmstrip")
+        let strip = egui::Panel::left(panel("filmstrip"))
             .resizable(true)
-            .default_size(FILMSTRIP_WIDTH)
+            .default_size(layout.filmstrip_width.unwrap_or(FILMSTRIP_WIDTH).min(max_strip))
             .size_range(FILMSTRIP_WIDTH..=max_strip)
             .frame(Frame::NONE.fill(t.bar).inner_margin(Margin::symmetric(6, 6)))
             .show(ui, |ui| {
                 let current = self.doc.as_ref().map(|d| d.path().to_owned());
                 self.library.filmstrip(ui, current.as_deref(), blocks, &mut library);
             });
-        let (scope, scope_height) = egui::Panel::right("inspector")
+        self.settings.layout.filmstrip_width = Some(strip.response.rect.width());
+        let inspector = egui::Panel::right(panel("inspector"))
             .resizable(true)
-            .default_size(INSPECTOR_WIDTH[0])
+            .default_size(layout.inspector_width.unwrap_or(INSPECTOR_WIDTH[0]))
             .size_range(INSPECTOR_WIDTH[1]..=INSPECTOR_WIDTH[2])
             .frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(10, 4)))
-            .show(ui, |ui| self.right_panel(ui, &mut edits))
-            .inner;
-        if scope != self.settings.scope {
-            self.settings.scope = scope;
+            .show(ui, |ui| self.right_panel(ui, &mut edits));
+        self.settings.layout.inspector_width = Some(inspector.response.rect.width());
+        let (scope, scope_height) = inspector.inner;
+        if scope != self.settings.layout.scope {
+            self.settings.layout.scope = scope;
         }
         if let Some(h) = scope_height {
             // The default height is stored as "none", so a later default change applies.
-            self.settings.scope_height = (h != HISTOGRAM_HEIGHT[0]).then_some(h);
+            self.settings.layout.scope_height = (h != HISTOGRAM_HEIGHT[0]).then_some(h);
         }
-        self.scopes.update(&ctx, self.settings.scope, self.histogram.as_deref());
+        self.scopes.update(&ctx, self.settings.layout.scope, self.histogram.as_deref());
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(t.canvas))
             .show(ui, |ui| self.center(ui, &mut commands, &mut library));
         self.library.rename_dialog(&ctx, &mut library);
+        self.workspace_dialog(&ctx);
         let presets_folder = self.settings.presets_folder();
         if self.prefs.show(&ctx, &mut self.settings) {
             ctx.set_theme(theme_preference(self.settings.theme));
@@ -2648,6 +2750,17 @@ fn error_toast(text: String) -> Toast {
         action: None,
         deadline: Instant::now() + Duration::from_secs_f32(TOAST_ERROR_SECONDS),
     }
+}
+
+/// What the View ▸ Workspace menu asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceAction {
+    /// Restore workspace `n`; `None`: the default layout.
+    Apply(Option<usize>),
+    /// Open the Save Workspace window.
+    Save,
+    /// Delete workspace `n`.
+    Delete(usize),
 }
 
 /// Settings panels shown on the right: the selected node and the ones used before it.
