@@ -221,17 +221,7 @@ fn lens_section(ui: &mut egui::Ui, doc: &Document, developing: bool, edits: &mut
             None => "Automatic (lens not recognised)".to_owned(),
         };
         let selected = current.lens.clone().unwrap_or_else(|| automatic.clone());
-        egui::ComboBox::from_id_salt("lens-choice")
-            .width(ui.available_width())
-            .selected_text(selected)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut next.lens, None, automatic);
-                for name in doc.lens_choices() {
-                    ui.selectable_value(&mut next.lens, Some(name.clone()), name.as_str());
-                }
-            })
-            .response
-            .on_hover_text("The lens whose data is used; Automatic reads it from the file");
+        lens_chooser(ui, doc, &selected, &automatic, &mut next.lens);
         ui.checkbox(&mut next.distortion, "Distortion");
         ui.checkbox(&mut next.tca, "Chromatic aberration");
         ui.checkbox(&mut next.vignetting, "Vignetting");
@@ -250,6 +240,66 @@ fn lens_section(ui: &mut egui::Ui, doc: &Document, developing: bool, edits: &mut
     if next != current {
         edits.push(UiEdit::Lens(next));
     }
+}
+
+/// The lens chooser: a button with the chosen lens opening a list of every
+/// lens of the database, the ones that fit the camera first and the others
+/// by maker, with a search field that filters as you type and a tick to
+/// show only the fitting ones. Sets `chosen` (`None` = Automatic).
+fn lens_chooser(ui: &mut egui::Ui, doc: &Document, selected: &str, automatic: &str, chosen: &mut Option<String>) {
+    let t = Tokens::of(ui.ctx().theme());
+    let search_id = egui::Id::unique("rne-lens-search");
+    let only_id = egui::Id::unique("rne-lens-compatible-only");
+    let mut search: String = ui.ctx().data(|d| d.get_temp(search_id)).unwrap_or_default();
+    let mut only: bool = ui.ctx().data(|d| d.get_temp::<bool>(only_id)).unwrap_or(true);
+    let popup = egui::ComboBox::from_id_salt("lens-choice")
+        .width(ui.available_width())
+        .height(420.0)
+        .selected_text(selected)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui(ui, |ui| {
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut search)
+                    .hint_text("Type to search, e.g. 24-70 2.8")
+                    .desired_width(f32::INFINITY),
+            );
+            // Ready to type as soon as the list opens.
+            if ui.ctx().memory(|m| m.focused().is_none()) {
+                field.request_focus();
+            }
+            ui.checkbox(&mut only, "Only lenses that fit this camera");
+            ui.separator();
+            if ui.selectable_label(chosen.is_none(), automatic).clicked() {
+                *chosen = None;
+                ui.close();
+            }
+            let found = editor::lenses::filter(doc.lens_choices(), &search, only);
+            if found.is_empty() {
+                ui.label(RichText::new("No lens matches.").color(t.text_weak));
+            }
+            for (title, lenses) in editor::lenses::groups(&found) {
+                ui.add_space(SPACE[0]);
+                ui.label(RichText::new(title).size(FONT[0]).strong().color(t.text_weak));
+                for lens in lenses {
+                    let is = chosen.as_deref() == Some(lens.name.as_str());
+                    let response = ui.selectable_label(is, lens.name.as_str());
+                    let response = if lens.compatible {
+                        response
+                    } else {
+                        response.on_hover_text(format!("Mount: {}", lens.mounts))
+                    };
+                    if response.clicked() {
+                        *chosen = Some(lens.name.clone());
+                        ui.close();
+                    }
+                }
+            }
+        });
+    popup.response.on_hover_text("The lens whose data is used; Automatic reads it from the file");
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(search_id, search);
+        d.insert_temp(only_id, only);
+    });
 }
 
 /// A slider for a float parameter, with its edits; returns the slider's

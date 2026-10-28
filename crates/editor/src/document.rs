@@ -61,8 +61,9 @@ pub struct Opened {
     pub raw: Option<Arc<RawData>>,
     /// Lens recognised from the file in the lens database, if any.
     pub detected_lens: Option<String>,
-    /// Lenses of the database that fit the camera, for choosing by hand.
-    pub lens_choices: Vec<String>,
+    /// Every lens of the database with corrections, those fitting the
+    /// camera first, for choosing by hand.
+    pub lens_choices: Vec<crate::lenses::LensChoice>,
     /// Exposure, date, GPS and the camera's rating, for the Metadata panel.
     pub info: raw_io::PhotoInfo,
     /// The developed image.
@@ -256,7 +257,7 @@ impl Document {
 
     /// Lenses that fit the camera, for choosing one by hand.
     #[must_use]
-    pub fn lens_choices(&self) -> &[String] {
+    pub fn lens_choices(&self) -> &[crate::lenses::LensChoice] {
         &self.opened.lens_choices
     }
 

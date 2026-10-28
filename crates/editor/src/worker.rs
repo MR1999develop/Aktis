@@ -455,24 +455,7 @@ fn open_file(path: &std::path::Path) -> Result<Opened, String> {
     let (db, _) = engine::lens_database();
     let camera = develop::prepare::find_camera(&db, &raw.capture);
     let detected_lens = develop::prepare::find_lens(&db, camera, &raw.capture, None).map(lens_db::Lens::full_name);
-    let mut lens_choices: Vec<String> = match camera {
-        Some(c) => {
-            let compat = db.compatible_mounts(&c.mount);
-            db.lenses()
-                .iter()
-                .filter(|l| l.has_distortion() || l.has_tca() || l.has_vignetting())
-                .filter(|l| {
-                    l.mounts
-                        .iter()
-                        .any(|m| lens_db::loose_eq(m, &c.mount) || compat.iter().any(|x| lens_db::loose_eq(m, x)))
-                })
-                .map(lens_db::Lens::full_name)
-                .collect()
-        }
-        None => Vec::new(),
-    };
-    lens_choices.sort_by_key(|n| n.to_lowercase());
-    lens_choices.dedup();
+    let lens_choices = crate::lenses::lens_choices(&db, camera);
 
     Ok(Opened {
         path: path.to_owned(),
