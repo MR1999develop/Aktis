@@ -403,6 +403,7 @@ mod tests {
                 draft: img,
                 lens: None,
                 notes: Vec::new(),
+                profile: String::new(),
             },
         }
     }

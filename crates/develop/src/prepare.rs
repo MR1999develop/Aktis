@@ -1,7 +1,7 @@
 //! Choosing the camera profile and the lens correction for one image, from
 //! its shooting data, the recipe and what is installed.
 
-use core_color::{CameraNames, ColorProfile, ProfileLibrary};
+use core_color::{CameraNames, ColorProfile, ProfileLibrary, ProfileSource};
 use core_model::{CaptureInfo, DevelopSettings, ImageF32, LensSettings, ProfileChoice, SensorImage, WorkingSpace};
 use lens_db::{Adjustments, Applied, Camera, CorrectionRequest, Lens, LensCorrection, LensDatabase};
 
@@ -47,6 +47,37 @@ pub struct ProfileOutcome {
     pub profile: Option<ColorProfile>,
     /// A note for the user when the choice could not be honoured.
     pub note: Option<String>,
+}
+
+impl ProfileOutcome {
+    /// The profile in one line, for the user: what it is, for which camera
+    /// and the lights it was measured under ("Built-in (Sony ILCE-7M3): the
+    /// camera's colour matrices for 2850 K and 6500 K light, mixed for the
+    /// white balance").
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let Some(p) = &self.profile else {
+            return "No colour matrices in the file: the sensor's own matrix is used".to_owned();
+        };
+        let lights: Vec<String> = p
+            .calibrations()
+            .iter()
+            .map(|c| c.illuminant.temperature().map_or_else(|| "unknown".to_owned(), |k| format!("{k:.0} K")))
+            .collect();
+        let lights = match lights.as_slice() {
+            [] => "no light".to_owned(),
+            [one] => format!("{one} light"),
+            [first @ .., last] => format!("{} and {last} light, mixed for the white balance", first.join(", ")),
+        };
+        let mut text = match &p.source {
+            ProfileSource::Builtin => format!("{} ({}): the camera's colour matrices for {lights}", p.name, p.camera),
+            ProfileSource::Dcp(_) => format!("{} (DCP profile for {}): calibrated for {lights}", p.name, p.camera),
+        };
+        if p.look_table().is_some() {
+            text.push_str("; with its look table");
+        }
+        text
+    }
 }
 
 /// The profile for `choice`. A named profile missing from `library` (or with
@@ -335,6 +366,9 @@ mod tests {
         let out = choose_profile(&i, &ProfileChoice::Named("Adobe Standard".to_owned()), None);
         assert!(out.profile.is_some() && out.note.is_some(), "{out:?}");
         let out = choose_profile(&i, &ProfileChoice::Builtin, None);
+        assert_eq!(out.describe(), "Built-in (Sony ILCE-7RM5): the camera's colour matrices for 6500 K light");
         assert!(out.profile.is_some_and(|p| p.name == "Built-in") && out.note.is_none());
+        let none = ProfileOutcome { profile: None, note: None };
+        assert!(none.describe().contains("sensor's own matrix"));
     }
 }

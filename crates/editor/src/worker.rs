@@ -320,6 +320,9 @@ impl Worker {
         let (tx, rx) = mpsc::channel();
         let engine: Arc<OnceLock<Arc<Engine>>> = Arc::new(OnceLock::new());
         let queue = Arc::new(RenderQueue::default());
+        // Renders on the CPU while the GPU starts (seconds with some drivers),
+        // so the first photo shows at once.
+        let cpu = Arc::new(Engine::new(registry.clone(), EngineChoice::CpuOnly));
 
         {
             let (engine, tx, notify) = (Arc::clone(&engine), tx.clone(), Arc::clone(&notify));
@@ -338,7 +341,9 @@ impl Worker {
         let render_thread = {
             let (engine, queue, tx, notify) =
                 (Arc::clone(&engine), Arc::clone(&queue), tx.clone(), Arc::clone(&notify));
-            thread::Builder::new().name("preview".into()).spawn(move || preview_loop(&engine, &queue, &tx, &*notify))?
+            thread::Builder::new()
+                .name("preview".into())
+                .spawn(move || preview_loop(&engine, &cpu, &queue, &tx, &*notify))?
         };
 
         let thumbs = Arc::new(ThumbQueue::default());
@@ -571,8 +576,11 @@ fn thumbnail_loop(thumbs: &ThumbQueue, tx: &Sender<Event>, notify: &(dyn Fn() + 
     }
 }
 
+/// Renders the screen requests of `queue`, with `engine` once it has
+/// started and with `cpu` until then.
 fn preview_loop(
     engine: &OnceLock<Arc<Engine>>,
+    cpu: &Engine,
     queue: &RenderQueue,
     tx: &Sender<Event>,
     notify: &(dyn Fn() + Send + Sync),
@@ -590,7 +598,7 @@ fn preview_loop(
             slot.request.take()
         };
         let Some(req) = request else { continue };
-        let engine = engine.wait();
+        let engine = engine.get().map_or(cpu, AsRef::as_ref);
         let event = catch_unwind(AssertUnwindSafe(|| render_for_screen(engine, &req))).unwrap_or_else(|_| {
             Event::RenderFailed {
                 generation: req.generation,
@@ -718,6 +726,7 @@ fn develop_raw(raw: &RawData, settings: &core_model::DevelopSettings) -> Result<
         notes.extend(result.lens.note.clone());
     }
     notes.extend(result.profile.note.clone());
+    let profile = result.profile.describe();
     notes.extend(raw.file_notes.iter().cloned());
     let developed = result.image;
     let preview = engine::downscale(&developed, PREVIEW_SIDE).map_err(|e| e.to_string())?;
@@ -725,7 +734,7 @@ fn develop_raw(raw: &RawData, settings: &core_model::DevelopSettings) -> Result<
     let developed = Arc::new(developed);
     let preview = if preview.width() == developed.width() { Arc::clone(&developed) } else { Arc::new(preview) };
     let draft = if draft.width() == preview.width() { Arc::clone(&preview) } else { Arc::new(draft) };
-    Ok(DevelopedImage { settings: settings.clone(), developed, preview, draft, lens, notes })
+    Ok(DevelopedImage { settings: settings.clone(), developed, preview, draft, lens, notes, profile })
 }
 
 /// Decides which screen render to ask for next, so that editing stays

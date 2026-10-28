@@ -245,6 +245,17 @@ fn base_characteristics(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdi
         });
     });
     ui.label(RichText::new(curve_hint(current)).size(FONT[0]).color(t.text_weak));
+    ui.add_space(SPACE[1]);
+    ui.horizontal(|ui| {
+        ui.label("Profile");
+        ui.label(RichText::new(doc.profile_description()).size(FONT[1]).color(t.text_weak))
+            .on_hover_text("The camera profile applied when the photo is developed, before every node");
+    });
+    ui.label(
+        RichText::new("Developed into linear Rec. 2020; shown and exported in sRGB through the curve above.")
+            .size(FONT[0])
+            .color(t.text_weak),
+    );
 }
 
 /// What a base curve does, in one line.

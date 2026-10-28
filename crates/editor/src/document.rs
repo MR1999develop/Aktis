@@ -44,6 +44,8 @@ pub struct DevelopedImage {
     pub lens: Option<String>,
     /// What the development stage corrected, or why not, for the inspector.
     pub notes: Vec<String>,
+    /// The camera profile used, in one line ([`develop::prepare::ProfileOutcome::describe`]).
+    pub profile: String,
 }
 
 /// A decoded and developed image, as the open job delivers it.
@@ -332,6 +334,12 @@ impl Document {
     #[must_use]
     pub fn develop_notes(&self) -> &[String] {
         &self.opened.image.notes
+    }
+
+    /// The camera profile the photo is developed with, in one line.
+    #[must_use]
+    pub fn profile_description(&self) -> &str {
+        &self.opened.image.profile
     }
 
     /// The RAW data, to develop again.
@@ -861,6 +869,7 @@ mod tests {
                 draft: img,
                 lens: None,
                 notes: Vec::new(),
+                profile: String::new(),
             },
         }
     }
@@ -1160,6 +1169,7 @@ mod tests {
             draft: Arc::clone(doc.draft()),
             lens: None,
             notes: Vec::new(),
+            profile: String::new(),
         };
         assert!(!doc.replace_developed(stale.clone()), "an image for old settings is refused");
         let fresh = DevelopedImage { settings: doc.recipe().develop.clone(), ..stale };

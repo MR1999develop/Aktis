@@ -344,6 +344,7 @@ mod tests {
                 draft: img,
                 lens: None,
                 notes: Vec::new(),
+                profile: String::new(),
             },
         };
         (Document::new(opened, 1), engine::builtin_tools().unwrap())
