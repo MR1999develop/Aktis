@@ -38,7 +38,7 @@ use crate::theme::{
     self, FILMSTRIP_WIDTH, FONT, GRAPH_HEIGHT, HISTOGRAM_HEIGHT, INSPECTOR_WIDTH, LEFT_WIDTH, SPACE,
     SPINNER_DELAY_SECONDS, TABS_HEIGHT, TOAST_ERROR_SECONDS, TOAST_SECONDS, Tokens,
 };
-use crate::toolbar::{self, BarState};
+use crate::toolbar::{self, BarAction, BarState, TOOL_GROUPS, ViewerTool};
 use crate::{APP_NAME, VERSION};
 
 /// Zoom factor per point of mouse-wheel scrolling (one notch ≈ 50 points ≈ ×1.25).
@@ -127,6 +127,8 @@ pub struct EditorApp {
     selected_node: Option<NodeId>,
     /// Node positions, panning and menus of the node graph.
     graph: GraphUi,
+    /// The tool of the bar in use in the viewer.
+    tool: Option<ViewerTool>,
     /// Levels of the image on screen.
     histogram: Option<Box<Histogram>>,
     /// "AI-tag this folder", while it runs.
@@ -194,6 +196,7 @@ impl EditorApp {
             tabs: Tabs::default(),
             selected_node: None,
             graph: GraphUi::default(),
+            tool: None,
             histogram: None,
             tagging: None,
             last_render: None,
@@ -1142,6 +1145,26 @@ impl EditorApp {
             .show(ui, |ui| self.central(ui, commands, library));
     }
 
+    /// The tool keys (C, K, L, M, A, H, S) switch a tool on and off; Esc
+    /// leaves the tool. Not while typing, nor without a photo.
+    fn tool_keys(&mut self, ctx: &egui::Context) {
+        if self.doc.is_none() {
+            self.tool = None;
+            return;
+        }
+        if ctx.egui_wants_keyboard_input() || ctx.any_popup_open() {
+            return;
+        }
+        for &tool in TOOL_GROUPS.iter().flat_map(|g| g.iter()) {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, tool.key())) {
+                self.tool = if self.tool == Some(tool) { None } else { Some(tool) };
+            }
+        }
+        if self.tool.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.tool = None;
+        }
+    }
+
     /// Applies what the user did in the node graph.
     fn apply_graph(&mut self, actions: Vec<GraphAction>) {
         for action in actions {
@@ -1203,15 +1226,24 @@ impl eframe::App for EditorApp {
         self.library.keyboard(&ctx, current.as_deref(), &mut library);
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui, &mut commands));
+        self.tool_keys(&ctx);
         let bar = BarState {
             has_doc: self.doc.is_some(),
             undo: self.doc.as_ref().and_then(Document::undo_label).map(|l| lowercase_first(&l)),
             redo: self.doc.as_ref().and_then(Document::redo_label).map(|l| lowercase_first(&l)),
             exporting: self.exporting.is_some(),
+            active: self.tool,
         };
-        egui::Panel::top("toolbar")
+        let bar_actions = egui::Panel::top("toolbar")
             .frame(Frame::NONE.fill(t.bar).inner_margin(Margin::symmetric(8, 4)))
-            .show(ui, |ui| toolbar::toolbar(ui, &bar, &mut commands));
+            .show(ui, |ui| toolbar::toolbar(ui, &bar))
+            .inner;
+        for action in bar_actions {
+            match action {
+                BarAction::Command(c) => commands.push(c),
+                BarAction::Tool(tool) => self.tool = tool,
+            }
+        }
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::left("library")
             .resizable(true)
