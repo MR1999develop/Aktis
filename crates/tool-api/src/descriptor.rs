@@ -4,8 +4,10 @@ use std::fmt;
 
 use core_model::{ParamId, ParamValue, Params, ToolId};
 
-/// Maximum parameters per tool: they travel to the GPU as `array<vec4<f32>, 4>`.
-pub const MAX_PARAMS: usize = 16;
+/// Maximum parameters per tool, and values a GPU kernel receives: they
+/// travel to the GPU as `array<vec4<f32>, 32>` (a curve tool needs room for
+/// its control points).
+pub const MAX_PARAMS: usize = 128;
 
 /// Where a tool lives in the recipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

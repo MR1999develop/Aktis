@@ -32,10 +32,12 @@ pub enum GpuKernel {
     /// The output pixel depends only on the input pixel at the same place.
     ///
     /// `wgsl` is the body of a WGSL function
-    /// `fn tool_apply(c: vec4<f32>) -> vec4<f32>`; it reads the tool's
-    /// parameters from `params.v[i]`, where `i` is the parameter's position in
-    /// [`ToolDescriptor::params`] (floats as is, booleans as 0/1, choices as
-    /// their index). See [`ResolvedParams::gpu_uniforms`].
+    /// `fn tool_apply(c: vec4<f32>, uv: vec2<f32>) -> vec4<f32>`, where `uv`
+    /// is the pixel's position in the image (0 to 1, from the top-left
+    /// corner, at the pixel's centre); it reads the tool's values from
+    /// `params.v[i / 4][i % 4]`: by default the parameters in
+    /// [`ToolDescriptor::params`] order (floats as is, booleans as 0/1,
+    /// choices as their index), or what [`Tool::gpu_uniforms`] packs.
     PerPixel {
         /// WGSL function body.
         wgsl: &'static str,
@@ -99,6 +101,14 @@ pub trait Tool: Send + Sync + std::fmt::Debug {
 
     /// How the GPU engine runs this tool.
     fn gpu_kernel(&self) -> GpuKernel;
+
+    /// The values the GPU kernel reads from `params.v`. By default the
+    /// parameters in descriptor order ([`ResolvedParams::gpu_uniforms`]);
+    /// tools override it to hand the kernel derived values (a colour
+    /// matrix, curve tangents) computed once on the CPU.
+    fn gpu_uniforms(&self, params: &ResolvedParams) -> [f32; MAX_PARAMS] {
+        params.gpu_uniforms()
+    }
 
     /// Converts parameters saved by an older version of the tool.
     ///

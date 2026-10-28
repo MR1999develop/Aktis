@@ -151,23 +151,28 @@ impl GpuContext {
     }
 }
 
-/// The WGSL wrapped around a tool's per-pixel body. `params.v[i]` holds the
-/// tool's parameters in descriptor order; `params.n.x` is the pixel count and
-/// `params.n.y` is 1 when `key_mask` holds the node's mask (0: no mask, `key_mask` is
-/// a placeholder and is not read).
+/// The WGSL wrapped around a tool's per-pixel body. `params.v` holds what
+/// `Tool::gpu_uniforms` packed (by default the parameters in descriptor
+/// order); `params.n` is (pixel count of the chunk, 1 when `key_mask` holds
+/// the node's mask — 0: no mask, `key_mask` is a placeholder and is not read
+/// —, image width, image height) and `params.m.x` the index of the chunk's
+/// first pixel, from which the body's `uv` (position in the image) is made.
 fn per_pixel_shader(body: &str) -> String {
     format!(
-        "struct Params {{ v: array<vec4<f32>, {groups}>, n: vec4<u32>, }};\n\
+        "struct Params {{ v: array<vec4<f32>, {groups}>, n: vec4<u32>, m: vec4<u32>, }};\n\
          @group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;\n\
          @group(0) @binding(1) var<storage, read_write> dst: array<vec4<f32>>;\n\
          @group(0) @binding(2) var<uniform> params: Params;\n\
          @group(0) @binding(3) var<storage, read> key_mask: array<f32>;\n\
-         fn tool_apply(c: vec4<f32>) -> vec4<f32> {{\n{body}\n}}\n\
+         fn tool_apply(c: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {{\n{body}\n}}\n\
          @compute @workgroup_size({WORKGROUP})\n\
          fn main(@builtin(global_invocation_id) id: vec3<u32>) {{\n\
              if (id.x >= params.n.x) {{ return; }}\n\
              let c = src[id.x];\n\
-             var r = tool_apply(c);\n\
+             let gi = params.m.x + id.x;\n\
+             let size = vec2<f32>(f32(params.n.z), f32(params.n.w));\n\
+             let uv = (vec2<f32>(f32(gi % params.n.z), f32(gi / params.n.z)) + 0.5) / size;\n\
+             var r = tool_apply(c, uv);\n\
              if (params.n.y != 0u) {{ r = c + key_mask[id.x] * (r - c); }}\n\
              dst[id.x] = r;\n\
          }}\n",
@@ -175,11 +180,30 @@ fn per_pixel_shader(body: &str) -> String {
     )
 }
 
-/// Uniform block: the tool's parameters, then the pixel count and the mask flag.
-fn uniform_bytes(params: &[f32; MAX_PARAMS], pixels: u32, masked: bool) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(MAX_PARAMS * 4 + 16);
+/// Where a chunk of pixels sits in the image, for kernels that use the
+/// pixel's position (vignetting).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChunkPlace {
+    /// Pixels in the chunk.
+    pixels: u32,
+    /// Index of the chunk's first pixel in the image.
+    start: u32,
+    /// Image width and height.
+    width: u32,
+    height: u32,
+}
+
+/// Bytes of the uniform block: the parameters, then the pixel count, the mask
+/// flag and the image size, then the chunk's first pixel.
+const UNIFORM_BYTES: usize = MAX_PARAMS * 4 + 32;
+
+/// Uniform block: the tool's parameters, then `n` = (pixel count, mask flag,
+/// width, height) and `m` = (index of the chunk's first pixel, 0, 0, 0).
+fn uniform_bytes(params: &[f32; MAX_PARAMS], place: ChunkPlace, masked: bool) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(UNIFORM_BYTES);
     bytes.extend_from_slice(bytemuck::cast_slice(params));
-    bytes.extend_from_slice(bytemuck::cast_slice(&[pixels, u32::from(masked), 0, 0]));
+    bytes.extend_from_slice(bytemuck::cast_slice(&[place.pixels, u32::from(masked), place.width, place.height]));
+    bytes.extend_from_slice(bytemuck::cast_slice(&[place.start, 0, 0, 0]));
     bytes
 }
 
@@ -372,7 +396,7 @@ impl GpuRenderer {
                                 buffers += 1;
                                 steps.push(Step::Kernel {
                                     pipeline,
-                                    params: params.gpu_uniforms(),
+                                    params: tool.gpu_uniforms(&params),
                                     input: input()?,
                                     output,
                                     mask,
@@ -434,7 +458,7 @@ impl GpuRenderer {
         if steps.is_empty() {
             return Ok(input.clone());
         }
-        let pixels = self.run(input.pixels(), steps, buffers, slot, masks)?;
+        let pixels = self.run(input.pixels(), [input.width(), input.height()], steps, buffers, slot, masks)?;
         ImageF32::from_pixels(input.width(), input.height(), input.space(), pixels).map_err(GpuError::Image)
     }
 
@@ -442,6 +466,7 @@ impl GpuRenderer {
     fn run(
         &self,
         src: &[Rgba],
+        size: [u32; 2],
         steps: &[Step],
         buffers: usize,
         result_slot: usize,
@@ -500,6 +525,8 @@ impl GpuRenderer {
                 queue.write_buffer(buffer, 0, bytemuck::cast_slice(values));
             }
 
+            let first = u32::try_from(start).map_err(|_| GpuError::Readback("image too large".to_owned()))?;
+            let place = ChunkPlace { pixels: n, start: first, width: size[0], height: size[1] };
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("render") });
             // Uniform buffers must outlive the submission; keep them until the chunk is done.
             let mut uniforms = Vec::with_capacity(steps.len());
@@ -507,11 +534,11 @@ impl GpuRenderer {
                 let Step::Kernel { pipeline, params, input, output, mask } = step;
                 let uniform = device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("params"),
-                    size: (MAX_PARAMS * 4 + 16) as u64,
+                    size: UNIFORM_BYTES as u64,
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                queue.write_buffer(&uniform, 0, &uniform_bytes(params, n, mask.is_some()));
+                queue.write_buffer(&uniform, 0, &uniform_bytes(params, place, mask.is_some()));
                 let mask_buffer = mask.and_then(|m| mask_buffers.get(m)).unwrap_or(&no_mask);
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: None,
@@ -578,20 +605,26 @@ mod tests {
         assert!(s.contains("@binding(2) var<uniform> params"));
         assert!(s.contains("@binding(3) var<storage, read> key_mask"));
         assert!(s.contains("r = c + key_mask[id.x] * (r - c);"));
-        assert!(s.contains("array<vec4<f32>, 4>"));
+        assert!(s.contains(&format!("array<vec4<f32>, {}>", MAX_PARAMS / 4)));
+        assert!(s.contains("fn tool_apply(c: vec4<f32>, uv: vec2<f32>)"));
         assert!(s.contains("return c;"));
         assert!(s.contains("@workgroup_size(256)"));
     }
 
     #[test]
-    fn uniforms_are_sixteen_floats_then_the_pixel_count_and_the_mask_flag() {
+    fn uniforms_are_the_parameters_then_count_mask_size_and_chunk_start() {
         let mut p = [0.0; MAX_PARAMS];
         p[0] = 1.5;
-        let b = uniform_bytes(&p, 7, true);
-        assert_eq!(b.len(), 80);
+        let place = ChunkPlace { pixels: 7, start: 40, width: 10, height: 6 };
+        let b = uniform_bytes(&p, place, true);
+        let n = MAX_PARAMS * 4;
+        assert_eq!(b.len(), UNIFORM_BYTES);
         assert_eq!(&b[0..4], &1.5_f32.to_le_bytes());
-        assert_eq!(&b[64..68], &7_u32.to_le_bytes());
-        assert_eq!(&b[68..72], &1_u32.to_le_bytes());
-        assert_eq!(&uniform_bytes(&p, 7, false)[68..72], &0_u32.to_le_bytes());
+        assert_eq!(&b[n..n + 4], &7_u32.to_le_bytes());
+        assert_eq!(&b[n + 4..n + 8], &1_u32.to_le_bytes());
+        assert_eq!(&b[n + 8..n + 12], &10_u32.to_le_bytes());
+        assert_eq!(&b[n + 12..n + 16], &6_u32.to_le_bytes());
+        assert_eq!(&b[n + 16..n + 20], &40_u32.to_le_bytes());
+        assert_eq!(&uniform_bytes(&p, place, false)[n + 4..n + 8], &0_u32.to_le_bytes());
     }
 }
