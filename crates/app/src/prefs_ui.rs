@@ -1,8 +1,6 @@
 //! Edit ▸ Preferences…: a window to set how the program looks and works
 //! and where the presets are kept.
-//! The changes are made on a copy and kept with OK (Cancel or Esc drops them).
-
-use std::path::PathBuf;
+//! The changes are made on a copy and kept with Save (Cancel or Esc drops them).
 
 use eframe::egui::{self, RichText};
 
@@ -80,7 +78,7 @@ impl Preferences {
                         pick = pick.set_directory(dir);
                     }
                     if let Some(dir) = pick.pick_folder() {
-                        draft.presets_dir = Some(PathBuf::from(dir));
+                        draft.presets_dir = Some(dir);
                     }
                 }
                 if ui.add_enabled(draft.presets_dir.is_some(), egui::Button::new("Default")).clicked() {
@@ -96,7 +94,7 @@ impl Preferences {
             );
 
             ui.add_space(SPACE[3]);
-            choice = dialog_buttons(ui, &t, Some("OK"), "Cancel", |_| {});
+            choice = dialog_buttons(ui, &t, Some("Save"), "Cancel", |_| {});
         });
         match choice {
             Some(Choice::Action) => {

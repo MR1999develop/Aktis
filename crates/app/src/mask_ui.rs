@@ -13,9 +13,10 @@
 //! - **Style brushes** (as in Capture One): choosing one in the options bar
 //!   (or Image \u{25b8} Style brushes) arms the brush with its settings; the
 //!   first stroke adds the brush's adjustments behind a new mask, named
-//!   after the brush, which further strokes extend. The editing logic is in
-//! [`editor::masking`]; this module draws and turns pointer input into
-//! [`MaskEdit`]s.
+//!   after the brush, which further strokes extend.
+//!
+//! The editing logic is in [`editor::masking`]; this module draws and turns
+//! pointer input into [`MaskEdit`]s.
 
 use core_model::{MaskDef, NodeId, NormPoint, Style};
 use editor::masking::Brush;
@@ -122,12 +123,6 @@ impl MaskUi {
     /// Forgets the armed style brush.
     pub fn disarm(&mut self) {
         self.armed = None;
-    }
-
-    /// The style brush waiting for its first stroke.
-    #[must_use]
-    pub fn armed(&self) -> Option<&ArmedBrush> {
-        self.armed.as_ref()
     }
 
     /// Keys of the mask tools: `[`/`]` brush size, O overlay. Not while typing.

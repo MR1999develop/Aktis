@@ -227,12 +227,13 @@ impl GeometryUi {
                 }
             });
             let field = ui.add(egui::TextEdit::singleline(&mut self.custom_text).hint_text("16x9").desired_width(56.0));
-            if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                if let Some(r) = crop::parse_ratio(&self.custom_text) {
-                    self.aspect = None;
-                    self.custom = Some(r);
-                    self.apply_ratio(frame_aspect);
-                }
+            if field.lost_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                && let Some(r) = crop::parse_ratio(&self.custom_text)
+            {
+                self.aspect = None;
+                self.custom = Some(r);
+                self.apply_ratio(frame_aspect);
             }
             field.on_hover_text("A custom ratio, like 16x9 or 1.85; Enter to use it");
             if ui.button("\u{21c4}").on_hover_text("Portrait or landscape").clicked() {
