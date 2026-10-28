@@ -10,7 +10,7 @@ use eframe::egui::{
 use serde::{Deserialize, Serialize};
 
 use crate::graph_ui;
-use crate::theme::{CHANNEL, FONT, Tokens};
+use crate::theme::{CHANNEL, FONT, HISTOGRAM_HEIGHT, Tokens};
 
 /// Which scope is shown.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +131,32 @@ impl Scopes {
             graph_ui::histogram(ui, hist, height);
             return chosen;
         }
+        self.draw_scope(ui, kind, height);
+        chosen
+    }
+
+    /// The bottom edge of the scope, dragged to change its height: the new
+    /// height (within [`HISTOGRAM_HEIGHT`]) while dragged; a double click
+    /// returns to the default.
+    pub fn resize_handle(ui: &mut egui::Ui, height: f32) -> Option<f32> {
+        let t = Tokens::of(ui.ctx().theme());
+        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0), Sense::click_and_drag());
+        let response = response.on_hover_text("Drag to resize; double-click for the default size");
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        let colour = if response.hovered() || response.dragged() { t.stroke_strong } else { t.stroke_weak };
+        let c = rect.center();
+        ui.painter().line_segment([pos2(c.x - 16.0, c.y), pos2(c.x + 16.0, c.y)], Stroke::new(2.0, colour));
+        if response.double_clicked() {
+            return Some(HISTOGRAM_HEIGHT[0]);
+        }
+        response.dragged().then(|| (height + response.drag_delta().y).clamp(HISTOGRAM_HEIGHT[1], HISTOGRAM_HEIGHT[2]))
+    }
+
+    /// Waveform or parade, `height` points high.
+    fn draw_scope(&self, ui: &mut egui::Ui, kind: ScopeKind, height: f32) {
+        let t = Tokens::of(ui.ctx().theme());
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, CornerRadius::same(4), t.canvas);
@@ -166,6 +192,5 @@ impl Scopes {
                 );
             }
         }
-        chosen
     }
 }

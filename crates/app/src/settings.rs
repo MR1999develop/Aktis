@@ -79,6 +79,8 @@ pub struct Settings {
     pub library_dir: Option<PathBuf>,
     /// Scope above the node settings: histogram, waveform or parade.
     pub scope: crate::scopes::ScopeKind,
+    /// Height of that scope in points; `None`: the default.
+    pub scope_height: Option<f32>,
     /// Colour around the photo in the viewer.
     pub viewer_background: ViewerBackground,
     /// Folder of the presets and style brushes; `None`: `Presets` in the

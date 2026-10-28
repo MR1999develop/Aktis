@@ -1876,11 +1876,12 @@ impl EditorApp {
 
     /// The histogram (or waveform, or parade) above the settings of the
     /// selected node; returns the scope chosen with its tabs.
-    fn right_panel(&self, ui: &mut egui::Ui, edits: &mut Vec<UiEdit>) -> ScopeKind {
+    fn right_panel(&self, ui: &mut egui::Ui, edits: &mut Vec<UiEdit>) -> (ScopeKind, Option<f32>) {
         let t = Tokens::of(ui.ctx().theme());
-        let scope = self.scopes.show(ui, self.settings.scope, self.histogram.as_deref(), HISTOGRAM_HEIGHT);
-        ui.add_space(SPACE[1]);
-        ui.separator();
+        let height = self.settings.scope_height.unwrap_or(HISTOGRAM_HEIGHT[0]);
+        let scope = self.scopes.show(ui, self.settings.scope, self.histogram.as_deref(), height);
+        let resized = crate::scopes::Scopes::resize_handle(ui, height);
+        ui.add_space(SPACE[0]);
         egui::ScrollArea::vertical().id_salt("node-settings").auto_shrink([false, false]).show(ui, |ui| {
             match &self.doc {
                 None => {
@@ -1939,7 +1940,7 @@ impl EditorApp {
                 }
             }
         });
-        scope
+        (scope, resized)
     }
 
     /// The photo, with the node graph under it when a photo is open.
@@ -2450,7 +2451,7 @@ impl eframe::App for EditorApp {
                 let current = self.doc.as_ref().map(|d| d.path().to_owned());
                 self.library.filmstrip(ui, current.as_deref(), blocks, &mut library);
             });
-        let scope = egui::Panel::right("inspector")
+        let (scope, scope_height) = egui::Panel::right("inspector")
             .resizable(true)
             .default_size(INSPECTOR_WIDTH[0])
             .size_range(INSPECTOR_WIDTH[1]..=INSPECTOR_WIDTH[2])
@@ -2459,6 +2460,10 @@ impl eframe::App for EditorApp {
             .inner;
         if scope != self.settings.scope {
             self.settings.scope = scope;
+        }
+        if let Some(h) = scope_height {
+            // The default height is stored as "none", so a later default change applies.
+            self.settings.scope_height = (h != HISTOGRAM_HEIGHT[0]).then_some(h);
         }
         self.scopes.update(&ctx, self.settings.scope, self.histogram.as_deref());
         egui::CentralPanel::default()

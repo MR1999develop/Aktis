@@ -232,8 +232,9 @@ pub const FILMSTRIP_WIDTH: f32 = 172.0;
 pub const GRAPH_HEIGHT: [f32; 3] = [190., 120., 420.];
 /// History/Metadata tabs height under the Explorer: default, min, max.
 pub const TABS_HEIGHT: [f32; 3] = [280., 140., 560.];
-/// Height of the histogram above the settings.
-pub const HISTOGRAM_HEIGHT: f32 = 110.0;
+/// Height of the histogram (or other scope) above the settings: default,
+/// minimum, maximum; the user drags its bottom edge to change it.
+pub const HISTOGRAM_HEIGHT: [f32; 3] = [110., 60., 360.];
 /// Seconds a toast stays (5 s like GNOME; errors a little longer).
 pub const TOAST_SECONDS: f32 = 5.0;
 /// Seconds an error toast stays.
