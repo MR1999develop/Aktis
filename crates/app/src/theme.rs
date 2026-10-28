@@ -151,6 +151,20 @@ pub const TINT_STRIP: [Color32; 2] = [Color32::from_rgb(0x4c, 0xb0, 0x4c), Color
 /// same in both themes).
 pub const CROP_DIM: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 136);
 
+/// The viewer's background for the choice in the Preferences; `canvas` is
+/// the interface's own (the [`Tokens::canvas`] of the current theme).
+#[must_use]
+pub fn viewer_background(choice: crate::settings::ViewerBackground, canvas: Color32) -> Color32 {
+    use crate::settings::ViewerBackground as B;
+    match choice {
+        B::Interface => canvas,
+        B::White => Color32::from_rgb(0xff, 0xff, 0xff),
+        B::LightGrey => Color32::from_rgb(0xc8, 0xc8, 0xc8),
+        B::MiddleGrey => Color32::from_rgb(0x77, 0x77, 0x77),
+        B::Black => Color32::from_rgb(0x00, 0x00, 0x00),
+    }
+}
+
 /// Star and border of the rating badge drawn over a thumbnail (on the photo,
 /// the same in both themes).
 pub const BADGE_STAR: Color32 = Color32::from_rgb(0xff, 0xb9, 0x00);

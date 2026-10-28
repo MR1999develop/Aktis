@@ -34,6 +34,7 @@ use crate::history_ui::{LeftTab, TabAction, Tabs};
 use crate::inspector::{self, Drag, UiEdit};
 use crate::library_ui::{Library, LibraryAction, TaggingProgress};
 use crate::models_ui::ModelsUi;
+use crate::prefs_ui::Preferences;
 use crate::scopes::{ScopeKind, Scopes};
 use crate::settings::{STORAGE_KEY, Settings, ThemeChoice};
 use crate::tagging_job::{Progress, TaggingJob};
@@ -138,6 +139,8 @@ pub struct EditorApp {
     prev_tool: Option<ViewerTool>,
     /// Crop box, aspect and Level line of the geometry tools.
     geometry_ui: GeometryUi,
+    /// The Preferences window, while open.
+    prefs: Preferences,
     /// The slider drag of a geometry tool, one undo step.
     geometry_gesture: Option<commands::GestureId>,
     /// The colour entering the selected node under the pointer in the viewer.
@@ -220,6 +223,7 @@ impl EditorApp {
             prev_tool: None,
             geometry_ui: GeometryUi::default(),
             geometry_gesture: None,
+            prefs: Preferences::default(),
             probe: None,
             histogram: None,
             scopes: Scopes::default(),
@@ -748,6 +752,7 @@ impl EditorApp {
         let mut open_recent = None;
         let mut theme_choice = self.settings.theme;
         let mut open_models = false;
+        let mut open_prefs = false;
         let mut open_folder = false;
         let mut graph_actions = Vec::new();
         // The selected node, when it is one that can be bypassed or deleted
@@ -809,6 +814,11 @@ impl EditorApp {
                     graph_actions.push(GraphAction::Remove(id));
                     ui.close();
                 }
+                ui.separator();
+                if ui.button("Preferences\u{2026}").on_hover_text("Viewer background, theme, export folder").clicked() {
+                    open_prefs = true;
+                    ui.close();
+                }
             });
             ui.menu_button("View", |ui| {
                 let why = (!has_doc).then_some("Open an image first");
@@ -840,6 +850,9 @@ impl EditorApp {
 
         if !graph_actions.is_empty() {
             self.apply_graph(graph_actions);
+        }
+        if open_prefs {
+            self.prefs.open(&self.settings);
         }
         if open_models {
             self.models.open_manager();
@@ -1319,8 +1332,9 @@ impl EditorApp {
                 });
         }
         self.apply_graph(actions);
+        let background = theme::viewer_background(self.settings.viewer_background, t.canvas);
         egui::CentralPanel::default()
-            .frame(Frame::NONE.fill(t.canvas))
+            .frame(Frame::NONE.fill(background))
             .show(ui, |ui| self.central(ui, commands, library));
     }
 
@@ -1538,6 +1552,9 @@ impl eframe::App for EditorApp {
             .frame(Frame::NONE.fill(t.canvas))
             .show(ui, |ui| self.center(ui, &mut commands, &mut library));
         self.library.rename_dialog(&ctx, &mut library);
+        if self.prefs.show(&ctx, &mut self.settings) {
+            ctx.set_theme(theme_preference(self.settings.theme));
+        }
 
         self.apply_edits(edits);
         self.apply_tabs(tabs);

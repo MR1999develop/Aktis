@@ -27,6 +27,39 @@ pub enum ThemeChoice {
     Dark,
 }
 
+/// The colour around the photo in the viewer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViewerBackground {
+    /// The interface's own dark (or light) canvas.
+    #[default]
+    Interface,
+    /// White, as Capture One offers, for more contrast around the photo.
+    White,
+    /// A light neutral grey.
+    LightGrey,
+    /// Middle grey, for judging tones.
+    MiddleGrey,
+    /// Black.
+    Black,
+}
+
+impl ViewerBackground {
+    /// Every choice, in menu order.
+    pub const ALL: [Self; 5] = [Self::Interface, Self::White, Self::LightGrey, Self::MiddleGrey, Self::Black];
+
+    /// Name in the Preferences.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Interface => "Like the interface",
+            Self::White => "White",
+            Self::LightGrey => "Light grey",
+            Self::MiddleGrey => "Middle grey",
+            Self::Black => "Black",
+        }
+    }
+}
+
 /// Remembered between sessions.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -43,6 +76,8 @@ pub struct Settings {
     pub library_dir: Option<PathBuf>,
     /// Scope above the node settings: histogram, waveform or parade.
     pub scope: crate::scopes::ScopeKind,
+    /// Colour around the photo in the viewer.
+    pub viewer_background: ViewerBackground,
 }
 
 impl Settings {
