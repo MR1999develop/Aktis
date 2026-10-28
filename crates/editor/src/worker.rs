@@ -119,6 +119,8 @@ pub enum Event {
         ticket: u64,
         /// The image, or a message for the user.
         result: Result<Box<Opened>, String>,
+        /// How long the file took to open.
+        timing: OpenTiming,
     },
     /// An image was developed again with new development settings.
     Developed {
@@ -188,6 +190,53 @@ pub enum Event {
     },
 }
 
+/// Time spent opening a file, shown in the status bar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OpenTiming {
+    /// Reading and decoding the RAW file.
+    pub decode: Duration,
+    /// Developing it (demosaic, lens, profile) and making the preview copies.
+    pub develop: Duration,
+    /// It had been opened ahead of time ([`Worker::prefetch`]): the times are
+    /// those of the background work, the user waited for none of it.
+    pub ahead: bool,
+}
+
+/// The one photo opened ahead of time: the next one in the filmstrip.
+#[derive(Debug, Default)]
+struct Prefetch {
+    state: Mutex<PrefetchState>,
+    finished: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct PrefetchState {
+    /// The photo being or already opened ahead; `None` when there is none.
+    path: Option<PathBuf>,
+    /// Its result once ready.
+    result: Option<(Result<Opened, String>, OpenTiming)>,
+}
+
+impl Prefetch {
+    /// The result for `path` when it is the photo opened ahead, waiting for
+    /// it if still running; `None` (nothing waited for) for any other photo.
+    fn take(&self, path: &std::path::Path) -> Option<(Result<Opened, String>, OpenTiming)> {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.path.as_deref() != Some(path) {
+            return None;
+        }
+        let mut state = self
+            .finished
+            .wait_while(state, |s| s.path.as_deref() == Some(path) && s.result.is_none())
+            .unwrap_or_else(PoisonError::into_inner);
+        if state.path.as_deref() != Some(path) {
+            return None; // replaced meanwhile by another photo
+        }
+        state.path = None;
+        state.result.take().map(|(r, t)| (r, OpenTiming { ahead: true, ..t }))
+    }
+}
+
 /// Time spent on one screen render, shown in the status bar.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RenderTiming {
@@ -251,6 +300,7 @@ pub struct Worker {
     render_thread: Option<JoinHandle<()>>,
     thumbs: Arc<ThumbQueue>,
     thumb_threads: Vec<JoinHandle<()>>,
+    prefetch: Arc<Prefetch>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -300,7 +350,17 @@ impl Worker {
             );
         }
 
-        Ok(Self { tx, rx, notify, engine, queue, render_thread: Some(render_thread), thumbs, thumb_threads })
+        Ok(Self {
+            tx,
+            rx,
+            notify,
+            engine,
+            queue,
+            render_thread: Some(render_thread),
+            thumbs,
+            thumb_threads,
+            prefetch: Arc::new(Prefetch::default()),
+        })
     }
 
     /// Events that arrived since the last call. Never blocks.
@@ -316,17 +376,56 @@ impl Worker {
 
     /// Opens `path` in the background: decode, develop, make the preview copy.
     /// The result comes back as [`Event::Opened`] with the same `ticket`.
+    /// A photo opened ahead with [`Self::prefetch`] comes back at once (or as
+    /// soon as that work ends).
     pub fn open(&self, ticket: u64, path: PathBuf) {
         let (tx, notify) = (self.tx.clone(), Arc::clone(&self.notify));
+        let prefetch = Arc::clone(&self.prefetch);
         let fallback = tx.clone();
         let spawned = thread::Builder::new().name("open".into()).spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| open_file(&path)))
-                .unwrap_or_else(|_| Err(format!("{} could not be opened (internal error)", display_name(&path))));
-            let _ = tx.send(Event::Opened { ticket, result: result.map(Box::new) });
+            let (result, timing) = prefetch.take(&path).unwrap_or_else(|| open_file_guarded(&path));
+            let _ = tx.send(Event::Opened { ticket, result: result.map(Box::new), timing });
             notify();
         });
         if let Err(e) = spawned {
-            let _ = fallback.send(Event::Opened { ticket, result: Err(format!("cannot start opening: {e}")) });
+            let _ = fallback.send(Event::Opened {
+                ticket,
+                result: Err(format!("cannot start opening: {e}")),
+                timing: OpenTiming::default(),
+            });
+        }
+    }
+
+    /// Opens `path` ahead of time, in the background, so that [`Self::open`]
+    /// of it is immediate (the next photo in the filmstrip). One photo is
+    /// kept: asking for another replaces it; asking again for the same one
+    /// does nothing.
+    pub fn prefetch(&self, path: PathBuf) {
+        {
+            let mut state = self.prefetch.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.path.as_ref() == Some(&path) {
+                return;
+            }
+            state.path = Some(path.clone());
+            state.result = None; // frees the previous photo's memory now
+        }
+        self.prefetch.finished.notify_all();
+        let prefetch = Arc::clone(&self.prefetch);
+        let spawned = thread::Builder::new().name("prefetch".into()).spawn(move || {
+            let done = open_file_guarded(&path);
+            let mut state = prefetch.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.path.as_ref() == Some(&path) {
+                state.result = Some(done);
+            }
+            drop(state);
+            prefetch.finished.notify_all();
+        });
+        if spawned.is_err() {
+            // Not opened ahead: a later open simply does the work itself.
+            let mut state = self.prefetch.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.path = None;
+            drop(state);
+            self.prefetch.finished.notify_all();
         }
     }
 
@@ -529,13 +628,26 @@ fn display_name(path: &std::path::Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
+/// [`open_file`], with a panic turned into a message for the user.
+fn open_file_guarded(path: &std::path::Path) -> (Result<Opened, String>, OpenTiming) {
+    let mut timing = OpenTiming::default();
+    let result = catch_unwind(AssertUnwindSafe(|| open_file(path, &mut timing)))
+        .unwrap_or_else(|_| Err(format!("{} could not be opened (internal error)", display_name(path))));
+    (result, timing)
+}
+
 /// Decodes, develops (camera profile and lens corrections included) and
-/// makes the preview copy. Errors are user messages.
-fn open_file(path: &std::path::Path) -> Result<Opened, String> {
+/// makes the preview copy, recording the time of each phase in `timing`.
+/// Errors are user messages.
+fn open_file(path: &std::path::Path, timing: &mut OpenTiming) -> Result<Opened, String> {
     let name = display_name(path);
+    let started = Instant::now();
     let file = raw_io::read_raw(path).map_err(|e| format!("{name} could not be opened: {e}"))?;
     let raw = Arc::new(RawData { sensor: file.sensor, capture: file.capture, file_notes: file.notes });
+    timing.decode = started.elapsed();
+    let started = Instant::now();
     let image = develop_raw(&raw, &core_model::DevelopSettings::default()).map_err(|e| format!("{name}: {e}"))?;
+    timing.develop = started.elapsed();
 
     // The lens as recognised, and the lenses that fit the camera, for the inspector.
     let (db, _) = engine::lens_database();
@@ -794,9 +906,32 @@ mod tests {
         let worker = cpu_worker();
         worker.open(3, PathBuf::from("no/such/DSC_0042.NEF"));
         let events = wait_for(&worker, |e| matches!(e, Event::Opened { .. }));
-        let Some(Event::Opened { ticket, result: Err(message) }) = events.last() else { panic!("{events:?}") };
+        let Some(Event::Opened { ticket, result: Err(message), .. }) = events.last() else { panic!("{events:?}") };
         assert_eq!(*ticket, 3);
         assert!(message.contains("DSC_0042.NEF"), "{message}");
+    }
+
+    #[test]
+    fn a_photo_opened_ahead_comes_back_from_the_prefetch_and_others_are_opened_as_usual() {
+        let worker = cpu_worker();
+        let ahead = PathBuf::from("no/such/AHEAD_1.NEF");
+        worker.prefetch(ahead.clone());
+        worker.prefetch(ahead.clone()); // asked twice: opened once
+        worker.open(4, ahead);
+        let events = wait_for(&worker, |e| matches!(e, Event::Opened { .. }));
+        let Some(Event::Opened { ticket: 4, result: Err(message), timing }) = events.last() else {
+            panic!("{events:?}")
+        };
+        assert!(timing.ahead, "served by the prefetch");
+        assert!(message.contains("AHEAD_1.NEF"), "{message}");
+
+        worker.prefetch(PathBuf::from("no/such/AHEAD_2.NEF"));
+        worker.open(5, PathBuf::from("no/such/OTHER.NEF"));
+        let events = wait_for(&worker, |e| matches!(e, Event::Opened { .. }));
+        let Some(Event::Opened { ticket: 5, result: Err(message), timing }) = events.last() else {
+            panic!("{events:?}")
+        };
+        assert!(!timing.ahead && message.contains("OTHER.NEF"), "{message}");
     }
 
     #[test]

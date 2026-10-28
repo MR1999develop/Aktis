@@ -26,8 +26,8 @@ use editor::adjust::Pick;
 use editor::graph_view::GraphView;
 use editor::variants::{self, Reopened, VariantState};
 use editor::{
-    Document, Event, ExportHandle, ExportJob, ExportPhoto, ExportSummary, Histogram, OpenPhoto, Quality, RenderPlan,
-    RenderRequest, RenderTiming, ViewState, Viewport, Worker, Zoom,
+    Document, Event, ExportHandle, ExportJob, ExportPhoto, ExportSummary, Histogram, OpenPhoto, OpenTiming, Quality,
+    RenderPlan, RenderRequest, RenderTiming, ViewState, Viewport, Worker, Zoom,
 };
 use eframe::egui::{
     self, Align, Align2, Button, Color32, CursorIcon, Frame, Id, Layout, Margin, Order, RichText, Sense, TextureOptions,
@@ -187,6 +187,12 @@ pub struct EditorApp {
     tagging: Option<TaggingJob>,
     /// Time, kind and size of the last render shown.
     last_render: Option<(RenderTiming, Quality, [u32; 2])>,
+    /// How long the open photo took to open.
+    last_open: Option<OpenTiming>,
+    /// Direction of the last move in the filmstrip (+1 next, −1 previous)
+    /// once a photo has opened and the next one should be opened ahead,
+    /// after its first render so the two do not compete.
+    prefetch_step: Option<isize>,
     /// What the catalog has for the open variant; `None` without a photo.
     variant: Option<VariantState>,
     /// The open photo's stored variants, for the menus and the status bar.
@@ -277,6 +283,8 @@ impl EditorApp {
             loupe: None,
             tagging: None,
             last_render: None,
+            last_open: None,
+            prefetch_step: None,
             variant: None,
             variants: Vec::new(),
             dirty_since: None,
@@ -471,7 +479,7 @@ impl EditorApp {
                     self.backend = Some(backend);
                     self.gpu_problem = gpu_problem;
                 }
-                Event::Opened { ticket, result } => {
+                Event::Opened { ticket, result, timing } => {
                     if self.opening.as_ref().is_none_or(|j| j.ticket != ticket) {
                         continue; // a newer open replaced this one
                     }
@@ -484,6 +492,14 @@ impl EditorApp {
                                 continue;
                             }
                             let path = opened.path.clone();
+                            // Moving backwards through the filmstrip opens the previous photo ahead.
+                            let left = self.doc.as_ref().and_then(|d| self.library.strip.index_of(d.path()));
+                            let step = match (left, self.library.strip.index_of(&path)) {
+                                (Some(a), Some(b)) if b < a => -1,
+                                _ => 1,
+                            };
+                            self.last_open = Some(timing);
+                            self.prefetch_step = Some(step);
                             let first = self.doc.as_ref().map_or(1, |d| d.generation() + 1);
                             let reopened = match self.library.shown_variant(&path) {
                                 Ok((number, stored)) => {
@@ -545,6 +561,7 @@ impl EditorApp {
                         continue;
                     }
                     self.last_render = Some((timing, quality, [image.width, image.height]));
+                    self.prefetch_neighbour();
                     self.histogram = Some(histogram);
                     self.scopes.changed();
                     let size = [image.width as usize, image.height as usize];
@@ -1410,11 +1427,15 @@ impl EditorApp {
                                 Quality::Preview => "preview",
                                 Quality::Full => "full-size image",
                             };
-                            label.on_hover_text(format!(
+                            let mut text = format!(
                                 "Last {kind} ({w} \u{d7} {h}): render {} ms, display {} ms",
                                 timing.render.as_millis(),
                                 timing.display.as_millis()
-                            ));
+                            );
+                            if let Some(open) = &self.last_open {
+                                text.push_str(&open_timing_text(open));
+                            }
+                            label.on_hover_text(text);
                         }
                     }
                     (None, _) => {
@@ -2262,6 +2283,19 @@ impl EditorApp {
         }
     }
 
+    /// Once the open photo is on screen, opens the next one in the
+    /// direction of travel ahead of time, so moving to it is immediate.
+    fn prefetch_neighbour(&mut self) {
+        let Some(step) = self.prefetch_step.take() else { return };
+        let (Some(worker), Some(doc)) = (&self.worker, &self.doc) else { return };
+        if self.library.strip.index_of(doc.path()).is_none() {
+            return; // not in the filmstrip: there is no next photo
+        }
+        if let Some(next) = self.library.strip.neighbour(Some(doc.path()), step) {
+            worker.prefetch(next.to_owned());
+        }
+    }
+
     /// The selected node and whether it is on, when it is one that can be
     /// bypassed or deleted (a tool or a mask, not the Source or the Output).
     fn editable_node(&self) -> Option<(NodeId, bool)> {
@@ -2514,6 +2548,12 @@ fn error_toast(text: String) -> Toast {
         action: None,
         deadline: Instant::now() + Duration::from_secs_f32(TOAST_ERROR_SECONDS),
     }
+}
+
+/// The second line of the GPU tooltip: how the open photo was opened.
+fn open_timing_text(t: &OpenTiming) -> String {
+    let how = if t.ahead { "opened ahead in the background" } else { "opened" };
+    format!("\nPhoto {how}: decode {} ms, develop {} ms", t.decode.as_millis(), t.develop.as_millis())
 }
 
 fn info_toast(text: String) -> Toast {

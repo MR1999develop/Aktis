@@ -55,4 +55,4 @@ pub use library::{
 pub use overview::OverviewLayout;
 pub use thumbs::{ThumbCache, ThumbState};
 pub use view::{Rect, ViewState, Viewport, Zoom, needs_full_resolution};
-pub use worker::{Event, Quality, RenderPlan, RenderRequest, RenderTiming, ThumbJob, Worker};
+pub use worker::{Event, OpenTiming, Quality, RenderPlan, RenderRequest, RenderTiming, ThumbJob, Worker};
