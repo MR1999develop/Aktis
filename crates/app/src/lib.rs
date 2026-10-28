@@ -4,9 +4,13 @@
 //! background jobs, the folder tree, the filmstrip model and viewer geometry
 //! live in the `editor` crate, ratings and keywords in `catalog`; both are
 //! tested without a display.
-#![allow(
-    linker_messages,
-    reason = "a C dependency of the tagging tokenizer exports functions, so the MSVC linker reports the .lib/.exp it writes"
+// Only the test build of the library is linked (the window itself is main.rs).
+#![cfg_attr(
+    test,
+    allow(
+        linker_messages,
+        reason = "a C dependency of the tagging tokenizer exports functions, so the MSVC linker reports the .lib/.exp it writes"
+    )
 )]
 
 mod actions;
