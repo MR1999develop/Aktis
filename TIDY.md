@@ -159,3 +159,12 @@
   photo is opened (a background render of the edit would fill it).
 - Presets: no import/export of Lightroom (XMP `crs:`) or Capture One
   (`.costyle`) presets yet; their tools differ, only a subset would map.
+- Base curve: Auto is Film Standard for every camera. Capture One keeps a
+  default curve (and profile) per camera model (Base Characteristics ▸
+  Save as Defaults / Apply Defaults); add that once there are per-camera
+  settings. The CLI still renders with Film Standard only.
+- The curves' shapes are ours (the published names, not Capture One's
+  numbers, which are not documented); compare side by side with Capture
+  One on the same RAW files and adjust `render-cpu::tone::Shape`.
+- Straighten: Capture One also has Rotate Snap, Auto Rotate and Flip;
+  not done yet.
