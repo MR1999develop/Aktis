@@ -461,7 +461,7 @@ fn lens_chooser(ui: &mut egui::Ui, doc: &Document, menu: &LensMenu<'_>) -> Optio
         .show_ui(ui, |ui| {
             let field = ui.add(
                 egui::TextEdit::singleline(&mut search)
-                    .hint_text("Type the first letters, e.g. Can, or 24-70 2.8")
+                    .hint_text("Type the first letters of the name, e.g. Can")
                     .desired_width(f32::INFINITY),
             );
             // Ready to type as soon as the list opens.
@@ -472,7 +472,7 @@ fn lens_chooser(ui: &mut egui::Ui, doc: &Document, menu: &LensMenu<'_>) -> Optio
             ui.separator();
             let mut mine: Vec<&&CustomLens> = customs
                 .iter()
-                .filter(|c| editor::lenses::rank(&search, &c.name, &format!("{} {}", c.name, c.exif_lens)).is_some())
+                .filter(|c| editor::lenses::starts_with(&c.name, &search))
                 .filter(|c| !only || exif_lens.is_some_and(|k| c.fits(k)))
                 .collect();
             mine.sort_by_key(|c| !exif_lens.is_some_and(|k| c.fits(k)));
@@ -492,18 +492,7 @@ fn lens_chooser(ui: &mut egui::Ui, doc: &Document, menu: &LensMenu<'_>) -> Optio
                 pick = Some(LensPick::Database(None));
                 ui.close();
             }
-            let mut found = editor::lenses::filter(doc.lens_choices(), &search, only);
-            if found.is_empty() && only {
-                // Nothing that fits: the lenses of other mounts (adapted lenses).
-                found = editor::lenses::filter(doc.lens_choices(), &search, false);
-                if !found.is_empty() {
-                    ui.label(
-                        RichText::new("No lens that fits this camera matches; lenses of other mounts:")
-                            .size(FONT[0])
-                            .color(t.text_weak),
-                    );
-                }
-            }
+            let found = editor::lenses::filter(doc.lens_choices(), &search, only);
             if found.is_empty() {
                 ui.label(RichText::new("No lens matches.").color(t.text_weak));
             }

@@ -50,42 +50,38 @@ pub fn lens_choices(db: &LensDatabase, camera: Option<&Camera>) -> Vec<LensChoic
 }
 
 /// The choices `text` finds, as people type a lens name letter by letter:
-/// the lenses whose name starts with it ("C" shows Canon, Carl Zeiss,
-/// Cosina…, "Can" only Canon); when none does, those where every typed
-/// word starts a word of the name or mounts ("FE 24-70", "50 canon").
-/// Case, `/` and the decimal comma do not count ("F2.8" finds "f/2.8").
-/// Only compatible ones when `compatible_only` and some choice is
-/// compatible (without a known camera none is, and the tick would hide
+/// the first typed word starts the name ("C" keeps Canon, Carl Zeiss,
+/// Cosina…, "Can" only Canon) and each further word starts a later word of
+/// it ("Canon 70" keeps "Canon EF 70-200mm f/4L", not "Tamron 17-70mm");
+/// a text no name fits keeps nothing. Case, `/` and the decimal comma do
+/// not count. Only compatible ones when `compatible_only` and some choice
+/// is compatible (without a known camera none is, and the tick would hide
 /// every lens).
 #[must_use]
 pub fn filter<'a>(choices: &'a [LensChoice], text: &str, compatible_only: bool) -> Vec<&'a LensChoice> {
     let only = compatible_only && choices.iter().any(|c| c.compatible);
-    let shown: Vec<&LensChoice> = choices.iter().filter(|c| !only || c.compatible).collect();
-    let ranked: Vec<(Option<Rank>, &LensChoice)> =
-        shown.into_iter().map(|c| (rank(text, &c.name, &format!("{} {}", c.name, c.mounts)), c)).collect();
-    let best = ranked.iter().filter_map(|(r, _)| *r).min();
-    ranked.into_iter().filter(|(r, _)| r.is_some() && *r == best).map(|(_, c)| c).collect()
+    choices.iter().filter(|c| !only || c.compatible).filter(|c| starts_with(&c.name, text)).collect()
 }
 
-/// How well a typed text matches a name; better first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Rank {
-    /// Nothing typed, or the name starts with the text.
-    Start,
-    /// Every typed word starts a word of the name (or of `words`).
-    Words,
-}
-
-/// How `text` matches `name`, also looking at the words of `words`
-/// (the name and more, such as the mounts); `None` when it does not.
+/// `true` when what was typed (`text`) fits `name`: its first word starts
+/// the name's first word, and each further word starts one of the name's
+/// later words, in order. Nothing typed fits every name.
 #[must_use]
-pub fn rank(text: &str, name: &str, words: &str) -> Option<Rank> {
-    let typed: Vec<String> = text.split_whitespace().map(searchable).filter(|w| !w.is_empty()).collect();
-    if typed.is_empty() || searchable(name).starts_with(&typed.join(" ")) {
-        return Some(Rank::Start);
+pub fn starts_with(name: &str, text: &str) -> bool {
+    let typed: Vec<String> = text.split_whitespace().map(searchable).collect();
+    let words: Vec<String> = name.split_whitespace().map(searchable).collect();
+    let Some((first, rest)) = typed.split_first() else { return true };
+    if !words.first().is_some_and(|w| w.starts_with(first.as_str())) {
+        return false;
     }
-    let hay: Vec<String> = words.split_whitespace().map(searchable).collect();
-    typed.iter().all(|t| hay.iter().any(|w| w.starts_with(t.as_str()))).then_some(Rank::Words)
+    let mut next = 1;
+    for t in rest {
+        match words.iter().skip(next).position(|w| w.starts_with(t.as_str())) {
+            Some(i) => next += i + 1,
+            None => return false,
+        }
+    }
+    true
 }
 
 /// `text` as the search compares it: lower case, without `/`, with `.`
@@ -121,37 +117,34 @@ mod tests {
     }
 
     #[test]
-    fn typing_filters_by_every_word_and_the_tick_keeps_compatible_lenses() {
+    fn typing_keeps_the_lenses_whose_name_starts_with_the_text() {
         let all = vec![
             choice("Sony FE 24-70mm f/2.8 GM", "Sony", true),
             choice("Sigma 35mm f/1.4 DG HSM Art", "Sigma", true),
             choice("Canon EF 50mm f/1.8 STM", "Canon", false),
+            choice("Carl Zeiss Batis 25mm f/2", "Zeiss", true),
         ];
-        assert_eq!(filter(&all, "", false).len(), 3);
-        // Letter by letter: the names that start with it.
-        let mut more = all.clone();
-        more.push(choice("Sigma 30mm f/1.4 DC DN Contemporary", "Sigma", true));
-        more.push(choice("Carl Zeiss Batis 25mm f/2", "Zeiss", true));
-        let names = |t: &str| filter(&more, t, false).iter().map(|c| c.name.clone()).collect::<Vec<_>>();
-        assert_eq!(names("c"), ["Canon EF 50mm f/1.8 STM", "Carl Zeiss Batis 25mm f/2"]);
-        assert_eq!(names("Can"), ["Canon EF 50mm f/1.8 STM"]);
-        assert_eq!(names("canon ef 5"), ["Canon EF 50mm f/1.8 STM"]);
-        assert_eq!(names("sig").len(), 2);
-        assert_eq!(filter(&all, "", true).len(), 2);
-        let found = filter(&all, "50 CANON", false);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].maker, "Canon");
-        assert!(filter(&all, "50 canon", true).is_empty());
-        // As the files and people write it.
-        assert_eq!(filter(&all, "FE 24-70mm F2.8", true).len(), 1);
-        assert_eq!(filter(&all, "f/1,4 art", false).len(), 1);
+        let names = |t: &str, only: bool| filter(&all, t, only).iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("", false).len(), 4);
+        assert_eq!(names("", true).len(), 3);
+        assert_eq!(names("c", false), ["Canon EF 50mm f/1.8 STM", "Carl Zeiss Batis 25mm f/2"]);
+        assert_eq!(names("CAN", false), ["Canon EF 50mm f/1.8 STM"]);
+        assert_eq!(names("canon ef 50mm f1,8", false), ["Canon EF 50mm f/1.8 STM"]);
+        assert_eq!(names("canon  ef", false), ["Canon EF 50mm f/1.8 STM"], "spaces count once");
+        assert!(names("x", false).is_empty(), "no name starts with x: nothing");
+        assert!(names("50", false).is_empty(), "only the start of the name counts");
+        assert!(names("canon", true).is_empty(), "the tick keeps the fitting lenses");
+        assert!(names("sony ", false).len() == 1 && names("sonyx", false).is_empty());
+        assert_eq!(names("canon 50", false), ["Canon EF 50mm f/1.8 STM"], "a later word");
+        assert_eq!(names("carl batis 25", false), ["Carl Zeiss Batis 25mm f/2"]);
+        assert!(names("canon 70", false).is_empty(), "no Canon 70 here");
+        assert!(names("canon stm 50", false).is_empty(), "in order");
+        let g = groups(&filter(&all, "", false));
+        assert_eq!(g[0].0, "Fits this camera");
+        assert!(g.iter().any(|x| x.0 == "Other mounts \u{b7} Canon"));
         // Without a camera nothing is compatible: the tick hides nothing.
         let unknown: Vec<LensChoice> = all.iter().map(|c| LensChoice { compatible: false, ..c.clone() }).collect();
-        assert_eq!(filter(&unknown, "50", true).len(), 1);
-        let g = groups(&filter(&all, "", false));
-        assert_eq!(g.len(), 2);
-        assert_eq!(g[0].0, "Fits this camera");
-        assert_eq!(g[1].0, "Other mounts \u{b7} Canon");
+        assert_eq!(filter(&unknown, "can", true).len(), 1);
     }
 
     #[test]
