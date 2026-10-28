@@ -2,8 +2,9 @@
 //!
 //! Each module is one tool. The per-pixel ones have a CPU reference
 //! ([`tool_api::Tool::apply_cpu`]) and a WGSL kernel computing the same
-//! thing; [`clarity`] and [`dehaze`] look at neighbouring pixels and run on
-//! the CPU ([`tool_api::GpuKernel::Host`]).
+//! thing; [`clarity`] and [`dehaze`] look at neighbouring pixels, and
+//! [`retouch`] copies pixels from elsewhere in the image: they run on the
+//! CPU ([`tool_api::GpuKernel::Host`]).
 //!
 //! Tone tools that shape a curve (levels, curve) work on values encoded with
 //! a 2.2 gamma, as their histograms and handles are shown; the others work
@@ -19,6 +20,7 @@ pub mod curve;
 pub mod dehaze;
 pub mod hdr;
 pub mod levels;
+pub mod retouch;
 pub mod vignetting;
 pub mod white_balance;
 
@@ -40,6 +42,7 @@ pub fn tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(clarity::Clarity),
         Arc::new(dehaze::Dehaze),
         Arc::new(vignetting::Vignetting),
+        Arc::new(retouch::Retouch),
     ]
 }
 
