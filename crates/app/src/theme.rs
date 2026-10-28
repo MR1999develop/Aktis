@@ -130,6 +130,23 @@ pub const HISTOGRAM: [Color32; 3] = [
     Color32::from_rgba_premultiplied(28, 46, 85, 90),
 ];
 
+/// Curve lines and handles of the RGB (neutral), Luma (grey), red, green
+/// and blue curves and levels; they sit on `canvas`, the same in both themes.
+pub const CHANNEL: [Color32; 5] = [
+    Color32::from_rgb(0xe8, 0xe8, 0xe8),
+    Color32::from_rgb(0xa0, 0xa0, 0xa0),
+    Color32::from_rgb(0xe0, 0x55, 0x4d),
+    Color32::from_rgb(0x5c, 0xbd, 0x50),
+    Color32::from_rgb(0x4f, 0x8c, 0xe8),
+];
+
+/// Ends of the strip under the kelvin slider: a cooler light (blue image
+/// correction) on the left, a warmer one on the right.
+pub const KELVIN_STRIP: [Color32; 2] = [Color32::from_rgb(0x3f, 0x76, 0xd6), Color32::from_rgb(0xe8, 0xb3, 0x3a)];
+
+/// Ends of the strip under the tint slider: green on the left, magenta on the right.
+pub const TINT_STRIP: [Color32; 2] = [Color32::from_rgb(0x4c, 0xb0, 0x4c), Color32::from_rgb(0xc8, 0x4c, 0xc8)];
+
 /// Star and border of the rating badge drawn over a thumbnail (on the photo,
 /// the same in both themes).
 pub const BADGE_STAR: Color32 = Color32::from_rgb(0xff, 0xb9, 0x00);

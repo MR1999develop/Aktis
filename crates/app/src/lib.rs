@@ -14,6 +14,7 @@
 )]
 
 mod actions;
+mod adjust_ui;
 mod app;
 mod dialog;
 mod graph_ui;

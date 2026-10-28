@@ -45,3 +45,16 @@ pub fn grip(painter: &Painter, rect: Rect, color: Color32) {
 pub fn dot(painter: &Painter, c: Pos2, r: f32, color: Color32) {
     painter.circle_filled(c, r, color);
 }
+
+/// An eyedropper (colour picker): a slanted pipette with its bulb at the top right.
+pub fn eyedropper(painter: &Painter, rect: Rect, color: Color32) {
+    let s = rect.width().min(rect.height());
+    let o = rect.center() - vec2(s / 2.0, s / 2.0);
+    let at = |x: f32, y: f32| o + vec2(x * s, y * s);
+    // Glass tube from the tip (bottom left) up to the collar.
+    painter.line_segment([at(0.08, 0.92), at(0.62, 0.38)], Stroke::new(s * 0.14, color));
+    // Collar across the tube.
+    painter.line_segment([at(0.48, 0.28), at(0.72, 0.52)], Stroke::new(s * 0.12, color));
+    // Rubber bulb.
+    painter.circle_filled(at(0.76, 0.24), s * 0.2, color);
+}

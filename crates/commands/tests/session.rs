@@ -258,3 +258,29 @@ fn changing_a_mask_is_undoable_clamped_and_merged_within_a_gesture() {
         "a tool node has no mask definition"
     );
 }
+
+#[test]
+fn several_parameters_change_in_one_step_and_merge_within_a_gesture() {
+    let reg = registry();
+    let (mut s, node) = session_with_exposure(&reg);
+    let contrast = ParamId::new("contrast").expect("valid id");
+    let two = |a: f32, b: f32| Edit::SetParams {
+        node,
+        values: vec![(exposure_param(), ParamValue::Float(a)), (contrast.clone(), ParamValue::Float(b))],
+    };
+    let steps_before = s.history().len();
+    let g = s.begin_gesture();
+    s.apply_in_gesture(&reg, two(0.5, 10.0), Some(g)).expect("first");
+    s.apply_in_gesture(&reg, two(1.0, 99.0), Some(g)).expect("second");
+    s.apply_in_gesture(&reg, two(1.5, 500.0), Some(g)).expect("clamped");
+    assert_eq!(s.history().len(), steps_before + 1, "one undo step");
+    assert_eq!(s.undo_label(), Some("Change exposure, contrast".to_owned()));
+    let params = &s.recipe().graph.node(node).expect("node").params;
+    assert_eq!(params.get(&contrast), Some(ParamValue::Float(100.0)));
+    s.undo();
+    let params = &s.recipe().graph.node(node).expect("node").params;
+    assert_eq!(params.get(&exposure_param()), None);
+    assert_eq!(params.get(&contrast), None);
+    let unknown = ParamId::new("warmth").expect("valid id");
+    assert!(s.apply(&reg, Edit::SetParams { node, values: vec![(unknown, ParamValue::Float(1.0))] }).is_err());
+}

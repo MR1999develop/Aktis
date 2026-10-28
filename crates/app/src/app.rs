@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use core_model::{DevelopSettings, NodeId, NodeKind};
+use editor::adjust::Pick;
 use editor::{
     Document, Event, Histogram, Quality, RenderPlan, RenderRequest, RenderTiming, ViewState, Viewport, Worker, Zoom,
 };
@@ -129,6 +130,10 @@ pub struct EditorApp {
     graph: GraphUi,
     /// The tool of the bar in use in the viewer.
     tool: Option<ViewerTool>,
+    /// A picker of the settings panel waiting for a click in the viewer.
+    pick: Option<Pick>,
+    /// The colour entering the selected node under the pointer in the viewer.
+    probe: Option<[f32; 3]>,
     /// Levels of the image on screen.
     histogram: Option<Box<Histogram>>,
     /// "AI-tag this folder", while it runs.
@@ -197,6 +202,8 @@ impl EditorApp {
             selected_node: None,
             graph: GraphUi::default(),
             tool: None,
+            pick: None,
+            probe: None,
             histogram: None,
             tagging: None,
             last_render: None,
@@ -471,6 +478,21 @@ impl EditorApp {
                     result
                 }
                 UiEdit::Lens(lens) => doc.set_lens_correction(&self.registry, lens),
+                UiEdit::SetMany { node, key, values, in_drag } => {
+                    let gesture =
+                        self.drag.as_ref().filter(|d| in_drag && d.node == node && d.param == key).map(|d| d.gesture);
+                    doc.set_params(&self.registry, node, values, gesture)
+                }
+                UiEdit::WbMode { node, mode } => {
+                    match editor::adjust::wb_mode_values(doc, &self.registry, node, mode) {
+                        Some(values) => doc.set_params(&self.registry, node, values, None),
+                        None => Ok(()),
+                    }
+                }
+                UiEdit::Pick(pick) => {
+                    self.pick = pick;
+                    Ok(())
+                }
             };
             if let Err(e) = result {
                 self.toast = Some(error_toast(format!("That change was refused: {e}")));
@@ -910,6 +932,7 @@ impl EditorApp {
             return;
         }
 
+        let mut picked = None;
         if let Some(doc) = &self.doc {
             let response = ui.allocate_rect(rect, Sense::click_and_drag());
             let (w, h) = doc.upright_size();
@@ -921,6 +944,24 @@ impl EditorApp {
                 let factor = pinch * (scroll * WHEEL_ZOOM_PER_POINT).exp();
                 if (factor - 1.0).abs() > 1e-4 {
                     self.view.zoom_by(factor, hover.map(|p| [p.x, p.y]), image, &vp);
+                }
+            }
+            // The colour entering the selected node under the pointer (marked
+            // on the levels and curve), and a click for a waiting picker.
+            let r = self.view.image_rect(image, &vp);
+            let at = |p: egui::Pos2| [(p.x - r.x) / r.w.max(1.0), (p.y - r.y) / r.h.max(1.0)];
+            self.probe = match (self.selected_node, response.hover_pos()) {
+                (Some(node), Some(p)) => doc.probe(&self.registry, node, at(p)),
+                _ => None,
+            };
+            if let Some(pick) = self.pick {
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+                }
+                if response.clicked()
+                    && let Some(p) = response.interact_pointer_pos()
+                {
+                    picked = Some((pick, at(p)));
                 }
             }
             if response.dragged() {
@@ -936,7 +977,7 @@ impl EditorApp {
                     Zoom::Pixels { .. } => self.view.fit(),
                 }
             }
-            if matches!(self.view.zoom(), Zoom::Pixels { .. }) {
+            if self.pick.is_none() && matches!(self.view.zoom(), Zoom::Pixels { .. }) {
                 if response.dragged() {
                     ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
                 } else if response.hovered() {
@@ -960,6 +1001,9 @@ impl EditorApp {
             }
         } else {
             self.empty_state(ui, commands, &t);
+        }
+        if let Some((pick, at)) = picked {
+            self.apply_pick(pick, at);
         }
 
         if ui.input(|i| !i.raw.hovered_files.is_empty()) {
@@ -1125,6 +1169,9 @@ impl EditorApp {
                         selected: self.selected_node,
                         developing: self.developing.is_some(),
                         export_folder: &folder,
+                        histogram: self.histogram.as_deref(),
+                        pick: self.pick,
+                        probe: self.probe,
                     };
                     inspector::settings(ui, doc, cx, edits);
                 }
@@ -1152,14 +1199,39 @@ impl EditorApp {
             .show(ui, |ui| self.central(ui, commands, library));
     }
 
+    /// A click with a picker of the settings panel at the upright point `at`
+    /// (0–1): the colour entering its node there sets its values (one undo
+    /// step). The picker stops after one click.
+    fn apply_pick(&mut self, pick: Pick, at: [f32; 2]) {
+        self.pick = None;
+        let Some(doc) = &mut self.doc else { return };
+        let Some(rgb) = doc.probe(&self.registry, pick.node, at) else { return };
+        let Some(values) = editor::adjust::pick_values(doc, &self.registry, pick, rgb) else {
+            self.toast = Some(info_toast("Nothing to pick there: the colour is black.".to_owned()));
+            return;
+        };
+        if let Err(e) = doc.set_params(&self.registry, pick.node, values, None) {
+            self.toast = Some(error_toast(format!("That change was refused: {e}")));
+        }
+    }
+
     /// The tool keys (C, K, L, M, A, H, S) switch a tool on and off; Esc
-    /// leaves the tool. Not while typing, nor without a photo.
+    /// stops a picker, then leaves the tool. Not while typing, nor without a
+    /// photo.
     fn tool_keys(&mut self, ctx: &egui::Context) {
         if self.doc.is_none() {
             self.tool = None;
+            self.pick = None;
             return;
         }
+        if self.pick.is_some_and(|p| Some(p.node) != self.selected_node) {
+            self.pick = None;
+        }
         if ctx.egui_wants_keyboard_input() || ctx.any_popup_open() {
+            return;
+        }
+        if self.pick.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.pick = None;
             return;
         }
         for &tool in TOOL_GROUPS.iter().flat_map(|g| g.iter()) {
@@ -1187,7 +1259,8 @@ impl EditorApp {
                 GraphAction::Add { after, tool } => {
                     let Some(doc) = &mut self.doc else { continue };
                     let feature = ai_models::feature_for_tool(tool.as_str());
-                    match doc.add_node(&self.registry, after, tool) {
+                    let first = editor::adjust::initial_params(doc, tool.as_str());
+                    match doc.add_node_with(&self.registry, after, tool, first) {
                         Ok(id) => {
                             self.selected_node = Some(id);
                             // A tool that needs AI models offers to download them.

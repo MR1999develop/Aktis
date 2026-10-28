@@ -30,6 +30,15 @@ pub enum Edit {
         /// The new value.
         value: ParamValue,
     },
+    /// Sets several parameters of one tool node in one step (a curve point's
+    /// input and output, a white-balance mode with its kelvin and tint).
+    /// Out-of-range values are clamped.
+    SetParams {
+        /// The tool node.
+        node: NodeId,
+        /// The parameters and their new values.
+        values: Vec<(ParamId, ParamValue)>,
+    },
     /// Returns one parameter to its default.
     ResetParam {
         /// The tool node.
@@ -100,6 +109,10 @@ impl Edit {
         match self {
             Self::SetParam { param, .. } => format!("Change {}", param.as_str().replace('_', " ")),
             Self::ResetParam { param, .. } => format!("Reset {}", param.as_str().replace('_', " ")),
+            Self::SetParams { values, .. } => {
+                let names: Vec<String> = values.iter().map(|(p, _)| p.as_str().replace('_', " ")).collect();
+                format!("Change {}", names.join(", "))
+            }
             Self::InsertSerial { .. } => "Add serial node".to_owned(),
             Self::RemoveNode { .. } => "Remove node".to_owned(),
             Self::Connect(_) => "Connect nodes".to_owned(),
@@ -141,7 +154,7 @@ impl Edit {
     #[must_use]
     pub fn kind(&self) -> EditKind {
         match self {
-            Self::SetParam { .. } | Self::ResetParam { .. } => EditKind::Adjust,
+            Self::SetParam { .. } | Self::SetParams { .. } | Self::ResetParam { .. } => EditKind::Adjust,
             Self::SetWhiteBalance(_) | Self::SetCameraProfile(_) | Self::SetLensCorrection(_) => EditKind::Develop,
             Self::AddMask { .. } | Self::SetMask { .. } => EditKind::Mask,
             Self::InsertSerial { .. }
@@ -160,6 +173,7 @@ impl Edit {
                 Self::SetParam { node: map(*node)?, param: param.clone(), value: *value }
             }
             Self::ResetParam { node, param } => Self::ResetParam { node: map(*node)?, param: param.clone() },
+            Self::SetParams { node, values } => Self::SetParams { node: map(*node)?, values: values.clone() },
             Self::InsertSerial { after, tool, params } => {
                 Self::InsertSerial { after: map(*after)?, tool: tool.clone(), params: params.clone() }
             }
@@ -264,8 +278,8 @@ impl From<GraphError> for EditError {
 }
 
 /// Identifies one continuous gesture (a slider drag, typing in a field).
-/// All `SetParam` edits of the same parameter within one gesture become a
-/// single undo step.
+/// All `SetParam` edits of the same parameter (or `SetParams` edits of the
+/// same parameters) within one gesture become a single undo step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GestureId(u64);
 
@@ -276,6 +290,10 @@ enum Undo {
         node: NodeId,
         param: ParamId,
         previous: Option<ParamValue>,
+    },
+    Params {
+        node: NodeId,
+        previous: Vec<(ParamId, Option<ParamValue>)>,
     },
     Enabled {
         node: NodeId,
@@ -638,6 +656,16 @@ fn validate(recipe: &Recipe, registry: &ToolRegistry, edit: Edit) -> Result<Edit
             let value = p.sanitize(value);
             Ok(Edit::SetParam { node, param, value })
         }
+        Edit::SetParams { node, values } => {
+            let tool = tool_of(recipe, node)?;
+            let d = registry.get(&tool).ok_or_else(|| EditError::UnknownTool(tool.clone()))?.descriptor();
+            let mut clean = Vec::with_capacity(values.len());
+            for (param, value) in values {
+                let p = d.param(&param).ok_or_else(|| EditError::UnknownParam(tool.clone(), param.clone()))?;
+                clean.push((param, p.sanitize(value)));
+            }
+            Ok(Edit::SetParams { node, values: clean })
+        }
         Edit::ResetParam { node, param } => {
             let tool = tool_of(recipe, node)?;
             let d = registry.get(&tool).ok_or_else(|| EditError::UnknownTool(tool.clone()))?.descriptor();
@@ -720,6 +748,12 @@ fn perform(recipe: &mut Recipe, edit: &Edit) -> Result<(Undo, Vec<NodeId>), Edit
             let previous = n.params().reset(param);
             Undo::Param { node: *node, param: param.clone(), previous }
         }
+        Edit::SetParams { node, values } => {
+            let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
+            // Undone newest first, so a parameter named twice gets its first previous value back.
+            let previous = values.iter().map(|(p, v)| (p.clone(), n.params().set(p.clone(), *v))).collect();
+            Undo::Params { node: *node, previous }
+        }
         Edit::SetEnabled { node, enabled } => {
             let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
             let previous = n.set_enabled(*enabled);
@@ -791,6 +825,16 @@ fn revert(recipe: &mut Recipe, undo: &Undo) {
                 };
             }
         }
+        Undo::Params { node, previous } => {
+            if let Some(mut n) = recipe.graph.node_mut(*node) {
+                for (param, value) in previous.iter().rev() {
+                    match value {
+                        Some(v) => n.params().set(param.clone(), *v),
+                        None => n.params().reset(param),
+                    };
+                }
+            }
+        }
         Undo::Enabled { node, previous } => {
             if let Some(mut n) = recipe.graph.node_mut(*node) {
                 n.set_enabled(*previous);
@@ -816,6 +860,11 @@ fn same_param(a: &Edit, b: &Edit) -> bool {
         (Edit::SetParam { node: n1, param: p1, .. }, Edit::SetParam { node: n2, param: p2, .. })
             if n1 == n2 && p1 == p2
     ) || matches!((a, b), (Edit::SetMask { node: n1, .. }, Edit::SetMask { node: n2, .. }) if n1 == n2)
+        || matches!(
+            (a, b),
+            (Edit::SetParams { node: n1, values: v1 }, Edit::SetParams { node: n2, values: v2 })
+                if n1 == n2 && v1.len() == v2.len() && v1.iter().zip(v2).all(|(x, y)| x.0 == y.0)
+        )
 }
 
 #[cfg(test)]

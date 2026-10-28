@@ -1,14 +1,16 @@
 //! The settings of the node selected in the graph, on the right under the
 //! histogram: the lens corrections for the Source, the parameters of a
-//! tool, a note for the other nodes.
+//! tool (with panels of their own for white balance, levels and curve, in
+//! [`crate::adjust_ui`]), a note for the other nodes.
 
 use std::path::Path;
 
 use commands::GestureId;
 use core_model::{LensSettings, NodeId, NodeKind, ParamId, ParamValue};
-use editor::Document;
+use editor::adjust::Pick;
+use editor::{Document, Histogram};
 use eframe::egui::{self, Align, Layout, RichText};
-use tool_api::{ParamKind, ToolRegistry, Unit};
+use tool_api::{ParamDescriptor, ParamKind, ToolRegistry, Unit};
 
 use crate::graph_ui::{node_title, section_title};
 use crate::theme::{FONT, SPACE, Tokens};
@@ -63,6 +65,27 @@ pub enum UiEdit {
     },
     /// New lens-correction settings.
     Lens(LensSettings),
+    /// Several values of one node at once (one undo step; while dragging,
+    /// merged with the drag started with `key`).
+    SetMany {
+        /// The node.
+        node: NodeId,
+        /// The parameter the drag was started with.
+        key: ParamId,
+        /// The values.
+        values: Vec<(ParamId, ParamValue)>,
+        /// Part of the current drag.
+        in_drag: bool,
+    },
+    /// A white-balance mode was chosen: the editor sets its kelvin and tint.
+    WbMode {
+        /// The white-balance node.
+        node: NodeId,
+        /// The mode.
+        mode: tool_adjust::white_balance::Mode,
+    },
+    /// A picker waits for a click in the viewer (`None`: no picker).
+    Pick(Option<Pick>),
 }
 
 /// What the settings panel needs besides the document.
@@ -76,6 +99,12 @@ pub struct Context<'a> {
     pub developing: bool,
     /// Where exports go.
     pub export_folder: &'a Path,
+    /// Levels of the image on screen, for the levels and curve panels.
+    pub histogram: Option<&'a Histogram>,
+    /// The picker waiting for a click in the viewer.
+    pub pick: Option<Pick>,
+    /// The colour entering the selected node under the pointer in the viewer.
+    pub probe: Option<[f32; 3]>,
 }
 
 /// The settings of the selected node.
@@ -95,7 +124,16 @@ pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
         NodeKind::Source => {
             section_title(ui, "Source");
             ui.label(
-                RichText::new("RAW development: demosaicing, white balance and camera profile.").color(t.text_weak),
+                RichText::new(
+                    "RAW development: demosaicing, camera profile and lens corrections, \
+                     with the camera's white balance.",
+                )
+                .color(t.text_weak),
+            );
+            ui.label(
+                RichText::new("To change the white balance, add a White balance node after the Source.")
+                    .size(FONT[1])
+                    .color(t.text_weak),
             );
             ui.add_space(SPACE[2]);
             lens_section(ui, doc, cx.developing, edits);
@@ -117,9 +155,19 @@ pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
             }
             // A one-parameter tool named like its parameter needs no second label.
             let hide_label = row.params.len() == 1 && row.params.iter().all(|p| p.descriptor.label == row.name);
-            ui.add_enabled_ui(row.enabled, |ui| {
-                for p in &row.params {
-                    param_widget(ui, row.node, p, !hide_label, edits);
+            let panel = crate::adjust_ui::PanelContext { histogram: cx.histogram, pick: cx.pick, probe: cx.probe };
+            let tool = match &node.kind {
+                NodeKind::Tool(id) => id.as_str(),
+                _ => "",
+            };
+            ui.add_enabled_ui(row.enabled, |ui| match tool {
+                "white_balance" => crate::adjust_ui::white_balance(ui, &row, panel, edits),
+                "levels" => crate::adjust_ui::levels(ui, &row, panel, edits),
+                "curve" => crate::adjust_ui::curve(ui, &row, panel, edits),
+                _ => {
+                    for p in &row.params {
+                        param_widget(ui, row.node, p, !hide_label, edits);
+                    }
                 }
             });
             if !row.params.is_empty() {
@@ -204,45 +252,70 @@ fn lens_section(ui: &mut egui::Ui, doc: &Document, developing: bool, edits: &mut
     }
 }
 
-fn param_widget(ui: &mut egui::Ui, node: NodeId, row: &editor::ParamRow, show_label: bool, edits: &mut Vec<UiEdit>) {
+/// A slider for a float parameter, with its edits; returns the slider's
+/// response and the width of its track (where it starts on the left).
+pub fn float_slider(
+    ui: &mut egui::Ui,
+    node: NodeId,
+    d: &ParamDescriptor,
+    mut v: f32,
+    edits: &mut Vec<UiEdit>,
+) -> (egui::Response, f32) {
+    let ParamKind::Float { min, max, step, unit, .. } = d.kind else {
+        return (ui.label(""), 0.0);
+    };
+    let param = d.id.clone();
+    let places = decimals(step);
+    let signed = min < 0.0;
+    let track = (ui.available_width() - 90.0).max(100.0);
+    let response = ui
+        .scope(|ui| {
+            ui.spacing_mut().slider_width = track;
+            ui.add(
+                egui::Slider::new(&mut v, min..=max)
+                    .step_by(f64::from(step))
+                    .custom_formatter(move |n, _| format_value(n, places, signed))
+                    .suffix(unit_suffix(unit))
+                    .update_while_editing(false),
+            )
+        })
+        .inner
+        .on_hover_text("Drag, or click the number to type a value. Right-click to reset.");
+    if response.drag_started() {
+        edits.push(UiEdit::BeginDrag { node, param: param.clone() });
+    }
+    if response.changed() {
+        let in_drag = response.dragged() || response.drag_started();
+        edits.push(UiEdit::Set { node, param: param.clone(), value: ParamValue::Float(v), in_drag });
+    }
+    if response.drag_stopped() {
+        edits.push(UiEdit::EndDrag);
+    }
+    response.context_menu(|ui| {
+        if ui.button("Reset to default").clicked() {
+            edits.push(UiEdit::Reset { node, param: param.clone() });
+            ui.close();
+        }
+    });
+    (response, track)
+}
+
+/// The widget of one parameter: a labelled slider, a checkbox or a menu.
+pub fn param_widget(
+    ui: &mut egui::Ui,
+    node: NodeId,
+    row: &editor::ParamRow,
+    show_label: bool,
+    edits: &mut Vec<UiEdit>,
+) {
     let d = &row.descriptor;
     let param = d.id.clone();
     match (&d.kind, row.value) {
-        (ParamKind::Float { min, max, step, unit, .. }, ParamValue::Float(mut v)) => {
+        (ParamKind::Float { .. }, ParamValue::Float(v)) => {
             if show_label {
                 ui.label(RichText::new(d.label).color(ui.visuals().weak_text_color()));
             }
-            let places = decimals(*step);
-            let signed = *min < 0.0;
-            let response = ui
-                .scope(|ui| {
-                    ui.spacing_mut().slider_width = (ui.available_width() - 90.0).max(100.0);
-                    ui.add(
-                        egui::Slider::new(&mut v, *min..=*max)
-                            .step_by(f64::from(*step))
-                            .custom_formatter(move |n, _| format_value(n, places, signed))
-                            .suffix(unit_suffix(*unit))
-                            .update_while_editing(false),
-                    )
-                })
-                .inner
-                .on_hover_text("Drag, or click the number to type a value. Right-click to reset.");
-            if response.drag_started() {
-                edits.push(UiEdit::BeginDrag { node, param: param.clone() });
-            }
-            if response.changed() {
-                let in_drag = response.dragged() || response.drag_started();
-                edits.push(UiEdit::Set { node, param: param.clone(), value: ParamValue::Float(v), in_drag });
-            }
-            if response.drag_stopped() {
-                edits.push(UiEdit::EndDrag);
-            }
-            response.context_menu(|ui| {
-                if ui.button("Reset to default").clicked() {
-                    edits.push(UiEdit::Reset { node, param: param.clone() });
-                    ui.close();
-                }
-            });
+            float_slider(ui, node, d, v, edits);
         }
         (ParamKind::Bool { .. }, ParamValue::Bool(mut b)) => {
             if ui.checkbox(&mut b, d.label).changed() {

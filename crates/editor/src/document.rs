@@ -474,6 +474,27 @@ impl Document {
         Ok(())
     }
 
+    /// Sets several parameters of one node in one undo step (merged with
+    /// the previous step when it set the same parameters in `gesture`).
+    /// Values equal to the current ones change nothing.
+    ///
+    /// # Errors
+    /// [`EditError`] when the node or a parameter does not exist; nothing changes.
+    pub fn set_params(
+        &mut self,
+        registry: &ToolRegistry,
+        node: NodeId,
+        values: Vec<(ParamId, ParamValue)>,
+        gesture: Option<GestureId>,
+    ) -> Result<(), EditError> {
+        if values.iter().all(|(p, v)| self.current_value(node, p) == Some(*v)) {
+            return Ok(());
+        }
+        self.session.apply_in_gesture(registry, Edit::SetParams { node, values }, gesture)?;
+        self.generation += 1;
+        Ok(())
+    }
+
     /// Returns a parameter to its default (one undo step).
     ///
     /// # Errors
