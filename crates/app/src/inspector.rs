@@ -4,8 +4,6 @@
 //! [`crate::adjust_ui`], and the list of spots of a retouch node, in
 //! [`crate::retouch_ui`]), a note for the other nodes.
 
-use std::path::Path;
-
 use commands::GestureId;
 use core_model::{LensSettings, NodeId, NodeKind, ParamId, ParamValue};
 use editor::adjust::Pick;
@@ -98,8 +96,8 @@ pub struct Context<'a> {
     pub selected: Option<NodeId>,
     /// Lens corrections are being applied.
     pub developing: bool,
-    /// Where exports go.
-    pub export_folder: &'a Path,
+    /// The export settings in one line ("JPEG, quality 92, full size").
+    pub export_summary: &'a str,
     /// Levels of the image on screen, for the levels and curve panels.
     pub histogram: Option<&'a Histogram>,
     /// The picker waiting for a click in the viewer.
@@ -187,11 +185,8 @@ pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
         }
         NodeKind::Output => {
             section_title(ui, "Output");
-            ui.label(
-                RichText::new(format!("Exported as JPEG, quality {}.", editor::worker::EXPORT_QUALITY))
-                    .color(t.text_weak),
-            );
-            ui.label(RichText::new(format!("Folder: {}", cx.export_folder.display())).color(t.text_weak));
+            ui.label(RichText::new(format!("Export: {}.", cx.export_summary)).color(t.text_weak));
+            ui.label(RichText::new("Change it in the Export window.").color(t.text_weak));
         }
         NodeKind::Mask => {
             section_title(ui, "Mask");

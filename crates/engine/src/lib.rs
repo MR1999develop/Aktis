@@ -8,17 +8,24 @@
 //! - [`to_display`]: upright 8-bit sRGB pixels for the screen.
 //! - [`export_jpeg`]: upright JPEG with an sRGB profile, written atomically
 //!   under a name that never overwrites an existing file.
+//! - [`finish_for_export`]: the steps after the node graph for the export
+//!   window (geometry, size, 16-bit output pixels, watermark); the file
+//!   formats, names and metadata are in [`export`], re-exported here.
 //! - [`lens_database`] and [`profile_library`]: the lens data and the camera
 //!   profiles the development stage can use on this computer.
 //!
 //! The first-version output render (clip to sRGB) lives in `render-cpu`;
 //! this crate only decides where and in which order things run.
 
+mod finish;
 pub mod geometry;
 
 use std::borrow::Cow;
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+pub use export;
+pub use finish::{finish_for_export, resample};
 
 use core_color::ProfileLibrary;
 use lens_db::LensDatabase;

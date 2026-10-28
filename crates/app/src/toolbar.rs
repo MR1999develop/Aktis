@@ -101,6 +101,8 @@ pub struct BarState {
     pub redo: Option<String>,
     /// An export is running.
     pub exporting: bool,
+    /// Photos Export would export (the selection, else the open photo).
+    pub export_count: usize,
     /// The tool in use.
     pub active: Option<ViewerTool>,
 }
@@ -177,17 +179,22 @@ pub fn toolbar(ui: &mut egui::Ui, state: &BarState) -> Vec<BarAction> {
         // Right: Export.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let export = Button::new(RichText::new("Export\u{2026}").color(t.on_accent).strong()).fill(t.accent);
-            let why = if !state.has_doc {
-                Some("Open a photo first")
+            let why = if state.export_count == 0 {
+                Some("Open or select a photo first")
             } else if state.exporting {
                 Some("An export is running")
             } else {
                 None
             };
             let shortcut = ui.ctx().format_shortcut(&Command::Export.shortcuts()[0]);
+            let what = if state.export_count > 1 {
+                format!("Export the {} selected photos", state.export_count)
+            } else {
+                "Export".to_owned()
+            };
             if ui
                 .add_enabled(why.is_none(), export)
-                .on_hover_text(format!("Export with format, size, name and metadata options ({shortcut})"))
+                .on_hover_text(format!("{what} with format, size, name and metadata options ({shortcut})"))
                 .on_disabled_hover_text(why.unwrap_or_default())
                 .clicked()
             {

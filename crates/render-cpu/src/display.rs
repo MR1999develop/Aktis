@@ -124,6 +124,36 @@ pub fn to_srgb8(image: &ImageF32) -> Vec<u8> {
     out
 }
 
+/// 16-bit sRGB values of `image`, row by row (the curve computed directly:
+/// a table would need 65 536 thresholds per code).
+pub fn to_srgb16(image: &ImageF32) -> Vec<u16> {
+    let (w, h) = (image.width() as usize, image.height() as usize);
+    let m = core_color::rgb_to_rgb(image.space(), WorkingSpace::LinearSrgb);
+    let src = image.pixels();
+    let mut out = vec![0_u16; w * h * 3];
+    if w == 0 || h == 0 {
+        return out;
+    }
+    let cores = thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let threads = cores.min(h.div_ceil(ROWS_PER_THREAD)).max(1);
+    let rows_per_chunk = h.div_ceil(threads);
+    let m = &m;
+    thread::scope(|scope| {
+        for (chunk, part) in out.chunks_mut(rows_per_chunk * w * 3).enumerate() {
+            let first = chunk * rows_per_chunk * w;
+            scope.spawn(move || {
+                for (p, o) in src[first..].iter().zip(part.chunks_exact_mut(3)) {
+                    let rgb = crate::tone::output_rgb([p[0], p[1], p[2]], m);
+                    for (dst, v) in o.iter_mut().zip(rgb) {
+                        *dst = crate::quantize_u16(core_color::srgb_encode(v.clamp(0.0, 1.0)));
+                    }
+                }
+            });
+        }
+    });
+    out
+}
+
 /// Output rows and columns handled together when turning an image: the
 /// source pixels they read then stay in the processor's cache.
 const TILE: usize = 64;
@@ -240,6 +270,19 @@ mod tests {
             assert_eq!((w, h), (upright.width(), upright.height()), "{o:?}");
             assert_eq!(px, slow(&upright), "{o:?}");
         }
+    }
+
+    #[test]
+    fn sixteen_bit_output_agrees_with_the_eight_bit_codes() {
+        let img = sample(53, 177, WorkingSpace::LinearRec2020);
+        let eight = to_srgb8(&img);
+        let sixteen = to_srgb16(&img);
+        assert_eq!(eight.len(), sixteen.len());
+        for (a, b) in eight.iter().zip(&sixteen) {
+            let b8 = (f64::from(*b) / 257.0).round();
+            assert!((b8 - f64::from(*a)).abs() <= 1.0, "{a} vs {b}");
+        }
+        assert!(sixteen.iter().any(|&v| v % 257 != 0), "finer steps than 8 bits");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! What the app remembers between sessions: theme, folders, recent files,
-//! the folder shown in the filmstrip.
+//! the folder shown in the filmstrip, the export window's choices.
 //!
 //! Saved by eframe's storage (a RON file in the system's settings folder).
 //! Every field has a default and unknown or missing fields are ignored, so
@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use engine::export;
 use serde::{Deserialize, Serialize};
 
 /// Key under which the settings are stored.
@@ -68,8 +69,10 @@ pub struct Settings {
     pub theme: ThemeChoice,
     /// Folder the Open dialog starts in.
     pub open_dir: Option<PathBuf>,
-    /// Folder exports go to; `None` = next to the RAW file.
+    /// The folder last chosen in the export window ("Choose…").
     pub export_dir: Option<PathBuf>,
+    /// The export window's last choices.
+    pub export: ExportSettings,
     /// Recently opened files, newest first.
     pub recent: Vec<PathBuf>,
     /// Folder shown in the filmstrip, opened again at start-up.
@@ -97,13 +100,212 @@ impl Settings {
         self.recent.retain(|p| p != path);
     }
 
-    /// Folder an export of `raw` goes to.
+    /// The export options the export window last used.
     #[must_use]
-    pub fn export_folder(&self, raw: &Path) -> PathBuf {
-        self.export_dir
-            .clone()
-            .or_else(|| raw.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_owned))
-            .unwrap_or_else(|| PathBuf::from("."))
+    pub fn export_options(&self) -> export::ExportOptions {
+        self.export.to_options(self.export_dir.as_deref())
+    }
+}
+
+/// File format of exports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExportFormat {
+    /// JPEG.
+    #[default]
+    Jpeg,
+    /// PNG.
+    Png,
+    /// TIFF.
+    Tiff,
+}
+
+/// How the size of exports is chosen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResizeMode {
+    /// Full size.
+    #[default]
+    Original,
+    /// Longer side in pixels.
+    LongEdge,
+    /// Width in pixels.
+    Width,
+    /// Height in pixels.
+    Height,
+    /// A percentage.
+    Percent,
+}
+
+/// Where exports go.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DestinationMode {
+    /// The folder of the RAW file.
+    #[default]
+    NextToOriginal,
+    /// A sub-folder of the RAW file's folder.
+    Subfolder,
+    /// The folder chosen with "Choose…" (`Settings::export_dir`).
+    Folder,
+}
+
+/// Which metadata exports keep.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MetadataMode {
+    /// Everything.
+    #[default]
+    All,
+    /// Everything but the GPS position.
+    AllButGps,
+    /// The copyright notice alone.
+    CopyrightOnly,
+    /// Nothing.
+    None,
+}
+
+/// The export window's choices, remembered between sessions. Every field
+/// has a default, so settings saved by older versions still load.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportSettings {
+    /// File format.
+    pub format: ExportFormat,
+    /// JPEG quality, 1–100.
+    pub jpeg_quality: u8,
+    /// 16 bits per channel for PNG and TIFF.
+    pub sixteen_bit: bool,
+    /// How the size is chosen.
+    pub resize: ResizeMode,
+    /// Pixels for the long edge, width or height.
+    pub size_pixels: u32,
+    /// Percentage for [`ResizeMode::Percent`].
+    pub size_percent: f32,
+    /// Allow making images larger.
+    pub upscale: bool,
+    /// File name pattern with tokens.
+    pub name_pattern: String,
+    /// First `{counter}` value.
+    pub counter_start: u32,
+    /// Digits of `{counter}`.
+    pub counter_digits: u8,
+    /// Where files go.
+    pub destination: DestinationMode,
+    /// Name of the sub-folder for [`DestinationMode::Subfolder`].
+    pub subfolder: String,
+    /// Draw a text watermark.
+    pub watermark: bool,
+    /// Watermark text.
+    pub watermark_text: String,
+    /// Watermark capital height in % of the long edge.
+    pub watermark_size: f32,
+    /// Watermark opacity, 0–1.
+    pub watermark_opacity: f32,
+    /// Watermark position: 0 top left … 8 bottom right, row by row.
+    pub watermark_position: u8,
+    /// Watermark margin in % of the long edge.
+    pub watermark_margin: f32,
+    /// Which metadata to write.
+    pub metadata: MetadataMode,
+    /// Copyright notice; empty keeps the camera's.
+    pub copyright: String,
+}
+
+impl Default for ExportSettings {
+    fn default() -> Self {
+        let mark = export::Watermark::default();
+        Self {
+            format: ExportFormat::Jpeg,
+            jpeg_quality: export::Format::default().jpeg_quality,
+            sixteen_bit: false,
+            resize: ResizeMode::Original,
+            size_pixels: 2048,
+            size_percent: 50.0,
+            upscale: false,
+            name_pattern: "{name}".into(),
+            counter_start: 1,
+            counter_digits: 3,
+            destination: DestinationMode::NextToOriginal,
+            subfolder: "Export".into(),
+            watermark: false,
+            watermark_text: String::new(),
+            watermark_size: mark.size_percent,
+            watermark_opacity: mark.opacity,
+            watermark_position: 8,
+            watermark_margin: mark.margin_percent,
+            metadata: MetadataMode::All,
+            copyright: String::new(),
+        }
+    }
+}
+
+impl ExportSettings {
+    /// The export options these settings describe; `folder` is the folder
+    /// chosen for [`DestinationMode::Folder`] (without one, files go next
+    /// to the originals).
+    #[must_use]
+    pub fn to_options(&self, folder: Option<&Path>) -> export::ExportOptions {
+        use export::{BitDepth, Destination, FileFormat, MetadataChoice, Resize};
+        let kind = match self.format {
+            ExportFormat::Jpeg => FileFormat::Jpeg,
+            ExportFormat::Png => FileFormat::Png,
+            ExportFormat::Tiff => FileFormat::Tiff,
+        };
+        let depth = if self.sixteen_bit { BitDepth::Sixteen } else { BitDepth::Eight };
+        let n = self.size_pixels.max(1);
+        let resize = match self.resize {
+            ResizeMode::Original => Resize::Original,
+            ResizeMode::LongEdge => Resize::LongEdge(n),
+            ResizeMode::Width => Resize::Width(n),
+            ResizeMode::Height => Resize::Height(n),
+            ResizeMode::Percent => Resize::Percent(self.size_percent.clamp(1.0, 400.0)),
+        };
+        let destination = match (self.destination, folder) {
+            (DestinationMode::Subfolder, _) => Destination::Subfolder(self.subfolder.clone()),
+            (DestinationMode::Folder, Some(dir)) => Destination::Folder(dir.to_owned()),
+            _ => Destination::NextToOriginal,
+        };
+        let watermark = (self.watermark && !self.watermark_text.trim().is_empty()).then(|| export::Watermark {
+            text: self.watermark_text.clone(),
+            size_percent: self.watermark_size.clamp(0.5, 20.0),
+            opacity: self.watermark_opacity.clamp(0.05, 1.0),
+            position: export::Position::ALL[usize::from(self.watermark_position.min(8))],
+            margin_percent: self.watermark_margin.clamp(0.0, 20.0),
+        });
+        let metadata = match self.metadata {
+            MetadataMode::All => MetadataChoice::All,
+            MetadataMode::AllButGps => MetadataChoice::AllButGps,
+            MetadataMode::CopyrightOnly => MetadataChoice::CopyrightOnly,
+            MetadataMode::None => MetadataChoice::None,
+        };
+        export::ExportOptions {
+            format: export::Format { kind, jpeg_quality: self.jpeg_quality.clamp(1, 100), depth },
+            size: export::Size { resize, upscale: self.upscale },
+            name: export::NamePattern {
+                pattern: self.name_pattern.clone(),
+                counter_start: self.counter_start,
+                counter_digits: self.counter_digits.clamp(1, 9),
+            },
+            destination,
+            watermark,
+            metadata,
+            copyright: self.copyright.clone(),
+        }
+    }
+
+    /// One line for the Output node: "JPEG, quality 92, full size".
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let format = match self.format {
+            ExportFormat::Jpeg => format!("JPEG, quality {}", self.jpeg_quality),
+            ExportFormat::Png => format!("PNG, {} bit", if self.sixteen_bit { 16 } else { 8 }),
+            ExportFormat::Tiff => format!("TIFF, {} bit", if self.sixteen_bit { 16 } else { 8 }),
+        };
+        let size = match self.resize {
+            ResizeMode::Original => "full size".to_owned(),
+            ResizeMode::LongEdge => format!("long edge {} px", self.size_pixels),
+            ResizeMode::Width => format!("width {} px", self.size_pixels),
+            ResizeMode::Height => format!("height {} px", self.size_pixels),
+            ResizeMode::Percent => format!("{} %", self.size_percent.round()),
+        };
+        format!("{format}, {size}")
     }
 }
 
@@ -127,12 +329,34 @@ mod tests {
     }
 
     #[test]
-    fn exports_go_next_to_the_raw_unless_a_folder_was_chosen() {
+    fn export_settings_describe_the_export_options() {
         let mut s = Settings::default();
-        assert_eq!(s.export_folder(Path::new("shots/a.NEF")), Path::new("shots"));
-        assert_eq!(s.export_folder(Path::new("a.NEF")), Path::new("."));
+        let o = s.export_options();
+        assert_eq!(o.format.kind, export::FileFormat::Jpeg);
+        assert_eq!(o.destination, export::Destination::NextToOriginal);
+        assert_eq!(o.watermark, None);
+        s.export = ExportSettings {
+            format: ExportFormat::Tiff,
+            sixteen_bit: true,
+            resize: ResizeMode::LongEdge,
+            size_pixels: 2000,
+            destination: DestinationMode::Folder,
+            watermark: true,
+            watermark_text: "\u{a9} Me".into(),
+            watermark_position: 0,
+            metadata: MetadataMode::AllButGps,
+            ..ExportSettings::default()
+        };
+        // No folder chosen yet: next to the originals.
+        assert_eq!(s.export_options().destination, export::Destination::NextToOriginal);
         s.export_dir = Some(PathBuf::from("out"));
-        assert_eq!(s.export_folder(Path::new("shots/a.NEF")), Path::new("out"));
+        let o = s.export_options();
+        assert_eq!(o.destination, export::Destination::Folder(PathBuf::from("out")));
+        assert_eq!(o.format.depth, export::BitDepth::Sixteen);
+        assert_eq!(o.size.resize, export::Resize::LongEdge(2000));
+        assert_eq!(o.watermark.map(|w| w.position), Some(export::Position::TopLeft));
+        assert_eq!(o.metadata, export::MetadataChoice::AllButGps);
+        assert_eq!(s.export.summary(), "TIFF, 16 bit, long edge 2000 px");
     }
 
     #[test]

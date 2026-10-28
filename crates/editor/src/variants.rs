@@ -13,6 +13,7 @@
 //! without a database.
 
 use catalog::{StoredVariant, VariantInfo, variant_name};
+use core_model::Recipe;
 use engine::Rgb8Image;
 use recipe_store::{DecodeError, FORMAT_VERSION, Variant};
 use tool_api::ToolRegistry;
@@ -192,6 +193,19 @@ fn newer_notice(format: u32, shown: bool) -> String {
 fn placed(mut view: GraphView, doc: &Document) -> GraphView {
     view.sync(&doc.recipe().graph);
     view
+}
+
+/// The recipe of a stored variant, for using it without opening the photo
+/// (an export): read leniently, so the edit of a newer editor is still
+/// used as far as it is understood; `None` when nothing of it can be read.
+#[must_use]
+pub fn stored_recipe(stored: &StoredVariant) -> Option<Recipe> {
+    if stored.info.format <= FORMAT_VERSION
+        && let Ok(variant) = recipe_store::decode(&stored.data)
+    {
+        return Some(variant.recipe);
+    }
+    recipe_store::decode_recipe_lenient(&stored.data).map(|(_, recipe)| recipe)
 }
 
 /// Builds the document of variant `number` of a photo from what the

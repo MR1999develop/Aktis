@@ -182,6 +182,21 @@ pub fn to_srgb8_oriented(image: &ImageF32, orientation: Orientation) -> (u32, u3
     display::to_srgb8_oriented(image, orientation)
 }
 
+/// Like [`to_srgb8`] at 16 bits per channel (`R G B` per pixel, row by
+/// row), for 16-bit PNG and TIFF export.
+#[must_use]
+pub fn to_srgb16(image: &ImageF32) -> Vec<u16> {
+    display::to_srgb16(image)
+}
+
+/// Rounds an encoded value in [0, 1] to 0–65 535 (never truncates).
+fn quantize_u16(v: f32) -> u16 {
+    let scaled = (v * 65_535.0).round().clamp(0.0, 65_535.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0–65535 above
+    let q = scaled as u16;
+    q
+}
+
 /// Rounds an encoded value in [0, 1] to 0–255 (never truncates).
 fn quantize_u8(v: f32) -> u8 {
     let scaled = (v * 255.0).round().clamp(0.0, 255.0);

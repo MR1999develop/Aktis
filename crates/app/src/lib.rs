@@ -18,6 +18,7 @@ mod adjust_ui;
 mod ai_mask_job;
 mod app;
 mod dialog;
+mod export_ui;
 mod geometry_ui;
 mod graph_ui;
 mod history_ui;
