@@ -7,14 +7,17 @@
 //! is handed to the window as a [`LibraryAction`].
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use catalog::{Catalog, ColorLabel, MAX_RATING, PhotoMeta};
-use editor::{Filmstrip, FolderListing, FolderTree, StripPhoto, ThumbCache, ThumbState, Worker};
+use catalog::{Catalog, ColorLabel, FIRST_VARIANT, MAX_RATING, PhotoMeta, StoredVariant, VariantInfo};
+use editor::variants::Save;
+use editor::{Filmstrip, FolderListing, FolderTree, StripPhoto, ThumbCache, ThumbJob, ThumbState, Worker};
 use eframe::egui::{
     self, Align, Button, Color32, CornerRadius, FontId, Key, Label, Layout, Modifiers, Rect, RichText, Sense, Stroke,
     StrokeKind, TextEdit, TextureHandle, TextureOptions, pos2, vec2,
 };
 
+use crate::actions::Command;
 use crate::dialog::{Choice, dialog, dialog_buttons};
 use crate::icons;
 use crate::theme::{BADGE_STAR, FONT, SPACE, Tokens};
@@ -56,6 +59,8 @@ pub enum LibraryAction {
         /// New path.
         to: PathBuf,
     },
+    /// A command of the open photo's card menu (its variants).
+    Command(Command),
     /// Start "AI-tag this folder".
     TagFolder,
     /// Stop it.
@@ -73,6 +78,18 @@ pub struct TaggingProgress {
     pub total: usize,
 }
 
+/// Why each variant command of the open photo's card menu is unavailable
+/// (`None` when it is available).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VariantBlocks {
+    /// New variant.
+    pub new: Option<&'static str>,
+    /// Clone variant.
+    pub clone: Option<&'static str>,
+    /// Delete variant.
+    pub delete: Option<&'static str>,
+}
+
 /// What a click in a card or its menu asked for.
 #[derive(Debug, Clone, PartialEq)]
 enum CardAction {
@@ -84,6 +101,7 @@ enum CardAction {
     Reveal(PathBuf),
     Export,
     ExportTo,
+    Command(Command),
 }
 
 /// The Rename dialog.
@@ -146,7 +164,7 @@ impl Library {
             Err(e) => (
                 // Ratings still work for this session.
                 Catalog::open_in_memory().ok(),
-                Some(format!("Ratings and keywords will not be kept: {e} ({})", file.display())),
+                Some(format!("Ratings, keywords and edits will not be kept: {e} ({})", file.display())),
             ),
         };
         Self {
@@ -283,11 +301,99 @@ impl Library {
     pub fn request_thumbnails(&mut self, worker: Option<&Worker>) {
         let Some(worker) = worker else { return };
         if let Some(list) = self.previews.to_request(&self.wanted_previews) {
-            worker.request_previews(list);
+            worker.request_previews(self.thumb_jobs(list));
         }
         if let Some(list) = self.thumbs.to_request(&self.wanted) {
-            worker.request_thumbnails(list);
+            worker.request_thumbnails(self.thumb_jobs(list));
         }
+    }
+
+    /// Thumbnail jobs for `paths`, each with the preview of its edit when
+    /// the catalog keeps one (shown instead of the camera's, as in Capture One).
+    fn thumb_jobs(&self, paths: Vec<PathBuf>) -> Vec<ThumbJob> {
+        let edited = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.previews(&paths).ok())
+            .filter(|e| e.len() == paths.len())
+            .unwrap_or_else(|| vec![None; paths.len()]);
+        paths.into_iter().zip(edited).map(|(path, jpeg)| ThumbJob { path, edited: jpeg.map(Arc::from) }).collect()
+    }
+
+    /// Forgets the thumbnail and large preview of `path`, so they are made
+    /// again (its edited preview changed).
+    pub fn forget_thumbnail(&mut self, path: &Path) {
+        self.thumbs.forget(path);
+        self.previews.forget(path);
+    }
+
+    // ----- edits -----
+
+    /// The variants stored for `path` (empty for a photo never edited, or
+    /// when the catalog cannot be read).
+    #[must_use]
+    pub fn variants(&self, path: &Path) -> Vec<VariantInfo> {
+        self.catalog.as_ref().and_then(|c| c.variants(path).ok()).unwrap_or_default()
+    }
+
+    /// The variant shown for `path` and its stored edit (variant 1 and
+    /// nothing for a photo never edited).
+    ///
+    /// # Errors
+    /// A message when the catalog cannot be read.
+    pub fn shown_variant(&self, path: &Path) -> Result<(u32, Option<StoredVariant>), String> {
+        let Some(c) = &self.catalog else { return Ok((FIRST_VARIANT, None)) };
+        let number = c.current_variant(path).map_err(|e| e.to_string())?.unwrap_or(FIRST_VARIANT);
+        let stored = c.load_variant(path, number).map_err(|e| e.to_string())?;
+        Ok((number, stored))
+    }
+
+    /// The stored edit of variant `number` of `path`.
+    ///
+    /// # Errors
+    /// A message when the catalog cannot be read.
+    pub fn load_variant(&self, path: &Path, number: u32) -> Result<Option<StoredVariant>, String> {
+        let Some(c) = &self.catalog else { return Ok(None) };
+        c.load_variant(path, number).map_err(|e| e.to_string())
+    }
+
+    /// Writes what `save` holds for `path`; a new preview replaces the
+    /// filmstrip's thumbnail.
+    ///
+    /// # Errors
+    /// A message when the catalog refused.
+    pub fn save_variant(&mut self, path: &Path, save: &Save) -> Result<(), String> {
+        let Some(c) = &mut self.catalog else { return Ok(()) };
+        match (&save.data, &save.preview) {
+            (Some(data), preview) => c.save_variant(path, &save.info, data, preview.as_deref()),
+            (None, Some(jpeg)) => c.set_variant_preview(path, save.info.number, jpeg),
+            (None, None) => return Ok(()),
+        }
+        .map_err(|e| e.to_string())?;
+        if save.preview.is_some() {
+            self.forget_thumbnail(path);
+        }
+        Ok(())
+    }
+
+    /// Remembers which variant of `path` is shown (in the filmstrip too).
+    ///
+    /// # Errors
+    /// A message when the catalog refused.
+    pub fn set_current_variant(&mut self, path: &Path, number: u32) -> Result<(), String> {
+        let Some(c) = &mut self.catalog else { return Ok(()) };
+        c.set_current_variant(path, number).map_err(|e| e.to_string())?;
+        self.forget_thumbnail(path);
+        Ok(())
+    }
+
+    /// Deletes variant `number` of `path` from the catalog.
+    ///
+    /// # Errors
+    /// A message when the catalog refused.
+    pub fn delete_variant(&mut self, path: &Path, number: u32) -> Result<(), String> {
+        let Some(c) = &mut self.catalog else { return Ok(()) };
+        c.delete_variant(path, number).map_err(|e| e.to_string())
     }
 
     fn metas(&self, photos: &[PathBuf]) -> Vec<PhotoMeta> {
@@ -663,7 +769,13 @@ impl Library {
     // ----- filmstrip -----
 
     /// The filmstrip: one card per photo that passes the filters.
-    pub fn filmstrip(&mut self, ui: &mut egui::Ui, current: Option<&Path>, actions: &mut Vec<LibraryAction>) {
+    pub fn filmstrip(
+        &mut self,
+        ui: &mut egui::Ui,
+        current: Option<&Path>,
+        variant_blocks: VariantBlocks,
+        actions: &mut Vec<LibraryAction>,
+    ) {
         let t = Tokens::of(ui.ctx().theme());
         self.wanted.clear();
         if self.loading.is_some() {
@@ -722,6 +834,7 @@ impl Library {
                             open: current == Some(photo.path.as_path()),
                             selected: strip.is_selected(&photo.path),
                             several,
+                            variants: variant_blocks,
                         };
                         card(ui, &t, photo, thumbs.get(&photo.path), state, [card_w, card_h], &mut card_actions);
                     }
@@ -742,6 +855,7 @@ impl Library {
                 }
                 CardAction::Export => actions.push(LibraryAction::Export),
                 CardAction::ExportTo => actions.push(LibraryAction::ExportTo),
+                CardAction::Command(c) => actions.push(LibraryAction::Command(c)),
                 // On a card of a multiple selection, stars and menus act on all of it.
                 CardAction::Rate(p, r) => {
                     let targets = self.strip.targets(&p);
@@ -1006,6 +1120,8 @@ struct CardState {
     selected: bool,
     /// Several photos are selected (menus say how many they act on).
     several: bool,
+    /// Why the variant commands are unavailable on the open photo.
+    variants: VariantBlocks,
 }
 
 /// One filmstrip card: thumbnail with badges, name, stars, context menu.
@@ -1176,8 +1292,10 @@ fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState, actions: &
     }
     ui.add_enabled(false, Button::new("Batch Rename\u{2026}")).on_disabled_hover_text(soon);
     ui.separator();
-    ui.add_enabled(false, Button::new("New Variant").shortcut_text("F7")).on_disabled_hover_text(soon);
-    ui.add_enabled(false, Button::new("Clone Variant").shortcut_text("F8")).on_disabled_hover_text(soon);
+    // Variants: on the open photo (the same commands as Image ▸ Variants).
+    let why = |block: Option<&'static str>| if is_open { block } else { Some(open_first) };
+    variant_item(ui, Command::NewVariant, "New Variant", why(state.variants.new), actions);
+    variant_item(ui, Command::CloneVariant, "Clone Variant", why(state.variants.clone), actions);
     ui.separator();
     ui.menu_button("Export", |ui| {
         if ui.add_enabled(is_open, Button::new("JPEG")).on_disabled_hover_text(open_first).clicked() {
@@ -1231,5 +1349,21 @@ fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState, actions: &
         }
     });
     ui.separator();
-    ui.add_enabled(false, Button::new("Remove Variant").shortcut_text("Ctrl+Del")).on_disabled_hover_text(soon);
+    variant_item(ui, Command::DeleteVariant, "Delete Variant\u{2026}", why(state.variants.delete), actions);
+}
+
+/// One variant command of a card menu, disabled with the reason `why`.
+fn variant_item(
+    ui: &mut egui::Ui,
+    command: Command,
+    label: &str,
+    why: Option<&'static str>,
+    actions: &mut Vec<CardAction>,
+) {
+    let shortcut = ui.ctx().format_shortcut(&command.shortcuts()[0]);
+    let button = Button::new(label).shortcut_text(shortcut);
+    if ui.add_enabled(why.is_none(), button).on_disabled_hover_text(why.unwrap_or_default()).clicked() {
+        actions.push(CardAction::Command(command));
+        ui.close();
+    }
 }

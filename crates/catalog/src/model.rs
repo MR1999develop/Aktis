@@ -122,6 +122,45 @@ impl PhotoMeta {
     }
 }
 
+/// One variant of a photo, as the catalog lists it. A variant is one
+/// version of the photo's edit (as in Capture One): its own recipe,
+/// history, node positions and preview. A photo never edited has none
+/// stored; it shows as variant 1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantInfo {
+    /// Number, unique for the photo, starting at 1.
+    pub number: u32,
+    /// Name shown in menus ("Variant 2").
+    pub name: String,
+    /// Version of the text format the edit was saved in (by the editor
+    /// that saved it; a newer one than this build reads is shown read-only).
+    pub format: u32,
+}
+
+/// A variant's stored edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredVariant {
+    /// Number, name and format.
+    pub info: VariantInfo,
+    /// The edit as text (written by the `recipe-store` crate).
+    pub data: String,
+}
+
+/// Number of the first variant of every photo.
+pub const FIRST_VARIANT: u32 = 1;
+
+/// The number a new variant gets: one above the highest, 1 for the first.
+#[must_use]
+pub fn next_variant_number(variants: &[VariantInfo]) -> u32 {
+    variants.iter().map(|v| v.number).max().map_or(FIRST_VARIANT, |n| n.saturating_add(1))
+}
+
+/// The name a variant gets: "Variant 2".
+#[must_use]
+pub fn variant_name(number: u32) -> String {
+    format!("Variant {number}")
+}
+
 /// A set of ratings to show, as in a photo viewer's "Rating (multi-select)":
 /// any mix of 0 (unrated) to 5 stars; empty means all.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -262,6 +301,15 @@ pub fn tag_counts<'a>(metas: impl IntoIterator<Item = &'a PhotoMeta>) -> Vec<(St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_variant_gets_the_number_above_the_highest() {
+        let v = |number| VariantInfo { number, name: variant_name(number), format: 1 };
+        assert_eq!(next_variant_number(&[]), FIRST_VARIANT);
+        assert_eq!(next_variant_number(&[v(1), v(4), v(2)]), 5);
+        assert_eq!(next_variant_number(&[v(u32::MAX)]), u32::MAX);
+        assert_eq!(variant_name(3), "Variant 3");
+    }
 
     fn meta(rating: u8, label: Option<ColorLabel>, tags: &[&str]) -> PhotoMeta {
         PhotoMeta {

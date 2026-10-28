@@ -57,6 +57,25 @@ pub fn read_thumbnail(path: &Path, max_side: u32) -> Result<Thumbnail, RawIoErro
     Ok(Thumbnail { width, height, rgb })
 }
 
+/// A JPEG kept by the editor (the preview of an edited photo, already
+/// upright), no larger than `max_side` on its longer side.
+///
+/// # Errors
+/// [`RawIoError::Decode`] when the bytes are not a readable JPEG.
+pub fn decode_jpeg(bytes: &[u8], max_side: u32) -> Result<Thumbnail, RawIoError> {
+    let max_side = max_side.max(1);
+    let image = catch_unwind(AssertUnwindSafe(|| image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg)))
+        .map_err(|_| RawIoError::DecoderCrashed)?
+        .map_err(|e| RawIoError::Decode(e.to_string()))?;
+    let image = if image.width().max(image.height()) > max_side { image.thumbnail(max_side, max_side) } else { image };
+    let rgb = image.to_rgb8();
+    let (width, height) = (rgb.width(), rgb.height());
+    if width == 0 || height == 0 {
+        return Err(RawIoError::Decode("the stored preview is empty".to_owned()));
+    }
+    Ok(Thumbnail { width, height, rgb: rgb.into_raw() })
+}
+
 /// Turns packed RGB pixels upright; returns the new width, height and pixels.
 /// A buffer shorter than `w × h × 3` gives an empty image.
 #[must_use]

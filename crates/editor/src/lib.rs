@@ -12,6 +12,7 @@
 //!   drawn, moved and hit;
 //! - [`overview`]: the viewer's grid when several photos are selected;
 //! - [`thumbs`]: the filmstrip's thumbnail cache;
+//! - [`variants`]: saving edits in the catalog and reopening them, per variant;
 //! - [`history_order`]: History-tab gestures as step orders;
 //! - [`histogram`]: levels of the displayed image;
 //! - [`retouch`]: where the spots of the Heal and Clone tools go.
@@ -32,6 +33,7 @@ pub mod masking;
 pub mod overview;
 pub mod retouch;
 pub mod thumbs;
+pub mod variants;
 pub mod view;
 pub mod worker;
 
@@ -45,4 +47,4 @@ pub use library::{
 pub use overview::OverviewLayout;
 pub use thumbs::{ThumbCache, ThumbState};
 pub use view::{Rect, ViewState, Viewport, Zoom, needs_full_resolution};
-pub use worker::{Event, Quality, RenderPlan, RenderRequest, RenderTiming, Worker};
+pub use worker::{Event, Quality, RenderPlan, RenderRequest, RenderTiming, ThumbJob, Worker};

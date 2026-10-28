@@ -11,13 +11,20 @@
 //! drawing) and ask for the next render. Nothing slow runs here: decoding,
 //! rendering, folder listings and thumbnails happen in [`editor::Worker`],
 //! AI keywords in a [`TaggingJob`].
+//!
+//! Edits are saved in the catalog, per variant, as Capture One does: when
+//! another photo or variant is opened, when the window closes, and
+//! [`variants::AUTOSAVE_SECONDS`] after a change (see [`editor::variants`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use catalog::{VariantInfo, next_variant_number, variant_name};
 use core_model::{DevelopSettings, NodeId, NodeKind};
 use editor::adjust::Pick;
+use editor::graph_view::GraphView;
+use editor::variants::{self, Reopened, VariantState};
 use editor::{
     Document, Event, Histogram, Quality, RenderPlan, RenderRequest, RenderTiming, ViewState, Viewport, Worker, Zoom,
 };
@@ -29,11 +36,12 @@ use tool_api::ToolRegistry;
 
 use crate::actions::Command;
 use crate::ai_mask_job::AiMaskJob;
+use crate::dialog::{Choice, dialog, dialog_buttons};
 use crate::geometry_ui::{GeoEdit, GeometryUi};
 use crate::graph_ui::{GraphAction, GraphUi};
 use crate::history_ui::{LeftTab, TabAction, Tabs};
 use crate::inspector::{self, Drag, UiEdit};
-use crate::library_ui::{Library, LibraryAction, TaggingProgress};
+use crate::library_ui::{Library, LibraryAction, TaggingProgress, VariantBlocks};
 use crate::mask_ui::{MaskEdit, MaskUi};
 use crate::models_ui::ModelsUi;
 use crate::prefs_ui::Preferences;
@@ -165,6 +173,14 @@ pub struct EditorApp {
     tagging: Option<TaggingJob>,
     /// Time, kind and size of the last render shown.
     last_render: Option<(RenderTiming, Quality, [u32; 2])>,
+    /// What the catalog has for the open variant; `None` without a photo.
+    variant: Option<VariantState>,
+    /// The open photo's stored variants, for the menus and the status bar.
+    variants: Vec<VariantInfo>,
+    /// When the open variant first differed from what is saved.
+    dirty_since: Option<Instant>,
+    /// The variant whose deletion waits for confirmation.
+    confirm_delete: Option<VariantInfo>,
 }
 
 impl std::fmt::Debug for EditorApp {
@@ -242,6 +258,10 @@ impl EditorApp {
             loupe: None,
             tagging: None,
             last_render: None,
+            variant: None,
+            variants: Vec::new(),
+            dirty_since: None,
+            confirm_delete: None,
         };
         if let Some(problem) = app.library.catalog_problem.take() {
             app.toast = Some(error_toast(problem));
@@ -327,7 +347,13 @@ impl EditorApp {
             Command::Open => self.pick_and_open(),
             Command::Export => self.export(ctx),
             Command::ExportTo => self.export_to(ctx),
-            Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Command::Quit => {
+                self.save_edit(true);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Command::NewVariant => self.add_variant(false),
+            Command::CloneVariant => self.add_variant(true),
+            Command::DeleteVariant => self.ask_delete_variant(),
             Command::Undo => {
                 if let Some(doc) = &mut self.doc {
                     doc.undo();
@@ -367,19 +393,31 @@ impl EditorApp {
                     self.opening = None;
                     match result {
                         Ok(opened) => {
+                            // The photo being left is saved first.
+                            self.save_edit(true);
                             let path = opened.path.clone();
                             let first = self.doc.as_ref().map_or(1, |d| d.generation() + 1);
-                            let doc = Document::new(*opened, first);
+                            let reopened = match self.library.shown_variant(&path) {
+                                Ok((number, stored)) => {
+                                    variants::reopen(*opened, first, &self.registry, number, stored)
+                                }
+                                Err(e) => {
+                                    // Never save over an edit that could not be read.
+                                    let mut r =
+                                        variants::reopen(*opened, first, &self.registry, catalog::FIRST_VARIANT, None);
+                                    let why =
+                                        format!("Read-only: the saved edit of this photo could not be read ({e}).");
+                                    r.doc.set_read_only(true);
+                                    r.state.read_only = Some(why.clone());
+                                    r.notice = Some(why);
+                                    r
+                                }
+                            };
                             self.settings.opened(&path);
-                            self.plan.reset(first);
                             self.view.fit();
-                            self.texture = None;
-                            self.histogram = None;
-                            self.drag = None;
-                            // A new photo starts from the Source alone: show its settings.
-                            self.selected_node = Some(doc.recipe().graph.source());
-                            self.graph.reset();
-                            self.doc = Some(doc);
+                            // A development in flight is for the photo being left.
+                            self.developing = None;
+                            self.install(reopened, false, false);
                             // The filmstrip shows the photo's folder.
                             if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
                                 && self.library.folder() != Some(dir)
@@ -487,7 +525,10 @@ impl EditorApp {
     }
 
     fn consume_shortcuts(ctx: &egui::Context) -> Vec<Command> {
-        let table = Command::shortcut_table();
+        // Keys that also edit text stay with a text field that has the keyboard.
+        let typing = ctx.egui_wants_keyboard_input();
+        let table: Vec<_> =
+            Command::shortcut_table().into_iter().filter(|(_, c)| !(typing && c.yields_to_text())).collect();
         ctx.input_mut(|i| table.iter().filter(|(s, _)| i.consume_shortcut(s)).map(|(_, c)| *c).collect())
     }
 
@@ -562,9 +603,12 @@ impl EditorApp {
                         && doc.path() == from
                     {
                         doc.file_renamed(to.clone());
+                        // The catalog moved the edits with the file.
+                        self.variants = self.library.variants(&to);
                     }
                     follow_rename(&mut self.settings.recent, &from, &to);
                 }
+                LibraryAction::Command(command) => self.run(command, ctx),
                 LibraryAction::TagFolder => self.start_tagging(ctx),
                 LibraryAction::StopTagging => {
                     if let Some(job) = &self.tagging {
@@ -753,6 +797,237 @@ impl EditorApp {
         }
     }
 
+    // ----- edits in the catalog -----
+
+    /// Shows a document: another photo (`same_photo` false), or another
+    /// variant of the open one. `keep_shown`: the image on screen shows the
+    /// new document too (a clone), so it can make its preview.
+    fn install(&mut self, reopened: Reopened, same_photo: bool, keep_shown: bool) {
+        let Reopened { doc, view, state, notice } = reopened;
+        self.plan.reset(doc.generation());
+        self.drag = None;
+        self.pick = None;
+        if !same_photo {
+            self.texture = None;
+            self.histogram = None;
+        }
+        if !keep_shown {
+            self.shown = None;
+        }
+        // Show the Source's settings, as for a new photo.
+        self.selected_node = Some(doc.recipe().graph.source());
+        self.graph.restore(view);
+        self.variants = self.library.variants(doc.path());
+        self.doc = Some(doc);
+        self.variant = Some(state);
+        self.dirty_since = None;
+        self.confirm_delete = None;
+        if let Some(text) = notice {
+            self.toast = Some(info_toast(text));
+        }
+    }
+
+    /// Writes the open variant to the catalog when it changed, with a
+    /// preview of the image on screen: the current render, or when
+    /// `closing` (the variant is being left) the last one shown. Returns
+    /// `false` when the catalog refused (told to the user).
+    fn save_edit(&mut self, closing: bool) -> bool {
+        let (Some(doc), Some(state)) = (&self.doc, &mut self.variant) else { return true };
+        let view = self.graph.view();
+        if !state.is_dirty(doc, view) && !state.preview_due() {
+            self.dirty_since = None;
+            return true;
+        }
+        let current = !self.plan.is_stale(doc.generation()) && !self.plan.is_waiting() && !doc.needs_develop();
+        let shown = self.shown.as_ref().filter(|_| closing || current);
+        let save = state.to_save(doc, view, shown);
+        let wrote_edit = save.data.is_some();
+        if !save.is_empty()
+            && let Err(e) = self.library.save_variant(doc.path(), &save)
+        {
+            self.toast = Some(error_toast(format!("The edit could not be saved: {e}")));
+            // Try again at the next autosave.
+            self.dirty_since = Some(Instant::now());
+            return false;
+        }
+        state.saved(doc, view, save);
+        self.dirty_since = None;
+        if wrote_edit {
+            self.variants = self.library.variants(doc.path());
+        }
+        true
+    }
+
+    /// Saves the open variant [`variants::AUTOSAVE_SECONDS`] after it
+    /// changed, and its preview once the screen shows the saved edit.
+    fn autosave(&mut self, ctx: &egui::Context) {
+        let (Some(doc), Some(state)) = (&self.doc, &self.variant) else {
+            self.dirty_since = None;
+            return;
+        };
+        if state.is_dirty(doc, self.graph.view()) {
+            let since = *self.dirty_since.get_or_insert_with(Instant::now);
+            let wait = Duration::from_secs(variants::AUTOSAVE_SECONDS);
+            match wait.checked_sub(since.elapsed()) {
+                Some(left) if !left.is_zero() => ctx.request_repaint_after(left),
+                _ => {
+                    self.save_edit(false);
+                }
+            }
+        } else {
+            self.dirty_since = None;
+            let current = !self.plan.is_stale(doc.generation()) && !self.plan.is_waiting() && !doc.needs_develop();
+            if state.preview_due() && current && self.shown.is_some() {
+                self.save_edit(false);
+            }
+        }
+    }
+
+    /// The open photo's variants: those stored and the open one.
+    fn variant_list(&self) -> Vec<VariantInfo> {
+        variants::variant_list(&self.variants, self.variant.as_ref().map(|s| &s.info))
+    }
+
+    /// Why each variant command is unavailable now.
+    fn variant_blocks(&self) -> VariantBlocks {
+        let Some(state) = &self.variant else {
+            let why = Some("Open a photo first");
+            return VariantBlocks { new: why, clone: why, delete: why };
+        };
+        let read_only = state.read_only.is_some();
+        VariantBlocks {
+            new: None,
+            clone: read_only.then_some("A read-only variant cannot be cloned"),
+            delete: if read_only {
+                Some("A read-only variant cannot be deleted")
+            } else if self.variant_list().len() < 2 {
+                Some("A photo keeps at least one variant")
+            } else {
+                None
+            },
+        }
+    }
+
+    /// New variant (the photo as it came from the camera) or Clone variant
+    /// (a copy of the open one, with its history and node positions).
+    fn add_variant(&mut self, clone: bool) {
+        let blocks = self.variant_blocks();
+        if let Some(why) = if clone { blocks.clone } else { blocks.new } {
+            self.toast = Some(info_toast(why.to_owned()));
+            return;
+        }
+        // The open variant is stored first, so it stays in the list.
+        if let Some(state) = &mut self.variant {
+            state.ensure_stored();
+        }
+        if !self.save_edit(true) {
+            return;
+        }
+        let number = next_variant_number(&self.variant_list());
+        let Some(doc) = &self.doc else { return };
+        let path = doc.path().to_owned();
+        let first = doc.generation() + 1;
+        let (doc, view) = if clone {
+            let history = Some(doc.saved_history());
+            let copy = Document::restored(doc.opened().clone(), first, &self.registry, doc.recipe().clone(), history);
+            (copy.0, self.graph.view().clone())
+        } else {
+            (Document::new(doc.opened().clone(), first), GraphView::default())
+        };
+        let state = VariantState::unsaved(number, variant_name(number));
+        self.install(Reopened { doc, view, state, notice: None }, true, clone);
+        // Written now; its preview follows once the screen shows it.
+        if !self.save_edit(true) {
+            return;
+        }
+        if let Err(e) = self.library.set_current_variant(&path, number) {
+            self.toast = Some(error_toast(format!("The variant could not be chosen: {e}")));
+            return;
+        }
+        let verb = if clone { "Cloned as" } else { "Created" };
+        self.toast = Some(info_toast(format!("{verb} {}", variant_name(number))));
+    }
+
+    /// Opens variant `number` of the open photo, after saving the one open.
+    fn switch_variant(&mut self, number: u32) {
+        let Some(doc) = &self.doc else { return };
+        if self.variant.as_ref().is_some_and(|s| s.info.number == number) {
+            return;
+        }
+        let (path, opened, first) = (doc.path().to_owned(), doc.opened().clone(), doc.generation() + 1);
+        if !self.save_edit(true) {
+            return;
+        }
+        let stored = match self.library.load_variant(&path, number) {
+            Ok(stored) => stored,
+            Err(e) => {
+                self.toast = Some(error_toast(format!("The variant could not be read: {e}")));
+                return;
+            }
+        };
+        let reopened = variants::reopen(opened, first, &self.registry, number, stored);
+        self.install(reopened, true, false);
+        if let Err(e) = self.library.set_current_variant(&path, number) {
+            self.toast = Some(error_toast(format!("The variant could not be chosen: {e}")));
+        }
+    }
+
+    /// Delete variant: asks for confirmation first.
+    fn ask_delete_variant(&mut self) {
+        if let Some(why) = self.variant_blocks().delete {
+            self.toast = Some(info_toast(why.to_owned()));
+            return;
+        }
+        self.confirm_delete = self.variant.as_ref().map(|s| s.info.clone());
+    }
+
+    /// Deletes the open variant (confirmed) and opens a neighbour.
+    fn delete_variant(&mut self, deleted: &VariantInfo) {
+        let Some(path) = self.doc.as_ref().map(|d| d.path().to_owned()) else { return };
+        if self.variant.as_ref().is_none_or(|s| s.info.number != deleted.number) {
+            return; // another variant is open now
+        }
+        let Some(next) = variants::after_delete(&self.variant_list(), deleted.number) else { return };
+        if let Err(e) = self.library.delete_variant(&path, deleted.number) {
+            self.toast = Some(error_toast(format!("The variant could not be deleted: {e}")));
+            return;
+        }
+        // Nothing left to save of it.
+        self.variant = None;
+        self.switch_variant(next);
+        if self.variant.is_some() {
+            self.toast = Some(info_toast(format!("Deleted {}", deleted.name)));
+        }
+    }
+
+    /// The "Delete variant" confirmation, when asked.
+    fn delete_dialog(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.confirm_delete.clone() else { return };
+        let t = Tokens::of(ctx.theme());
+        let mut choice = None;
+        dialog(ctx, "rne-delete-variant", |ui| {
+            ui.label(RichText::new(format!("Delete {}?", target.name)).size(FONT[4]).strong());
+            ui.add_space(SPACE[1]);
+            ui.label(
+                RichText::new(
+                    "Its edits, history and preview are removed from the catalog. The RAW file and the other \
+                     variants are not touched. This cannot be undone.",
+                )
+                .color(t.text_weak),
+            );
+            ui.add_space(SPACE[2]);
+            choice = dialog_buttons(ui, &t, Some("Delete"), "Cancel", |_| {});
+        });
+        match choice {
+            Some(Choice::Action) => {
+                self.confirm_delete = None;
+                self.delete_variant(&target);
+            }
+            Some(Choice::Cancel) => self.confirm_delete = None,
+            None => {}
+        }
+    }
+
     // ----- drawing -----
 
     fn menu_bar(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
@@ -766,6 +1041,10 @@ impl EditorApp {
         let mut open_prefs = false;
         let mut open_folder = false;
         let mut graph_actions = Vec::new();
+        let blocks = self.variant_blocks();
+        let variant_list = self.variant_list();
+        let current_variant = self.variant.as_ref().map(|s| s.info.number);
+        let mut switch_to = None;
         // The selected node, when it is one that can be bypassed or deleted
         // (the same commands as its right-click menu in the graph).
         let editable_node = self.selected_node.and_then(|id| {
@@ -831,6 +1110,23 @@ impl EditorApp {
                     ui.close();
                 }
             });
+            ui.menu_button("Image", |ui| {
+                ui.menu_button("Variants", |ui| {
+                    menu_item(ui, Command::NewVariant, None, blocks.new, commands);
+                    menu_item(ui, Command::CloneVariant, None, blocks.clone, commands);
+                    menu_item(ui, Command::DeleteVariant, None, blocks.delete, commands);
+                    ui.separator();
+                    if variant_list.is_empty() {
+                        ui.add_enabled(false, Button::new("No photo open"));
+                    }
+                    for v in &variant_list {
+                        if ui.radio(current_variant == Some(v.number), v.name.as_str()).clicked() {
+                            switch_to = Some(v.number);
+                            ui.close();
+                        }
+                    }
+                });
+            });
             ui.menu_button("View", |ui| {
                 let why = (!has_doc).then_some("Open an image first");
                 for c in [Command::ZoomFit, Command::Zoom100, Command::ZoomIn, Command::ZoomOut] {
@@ -884,9 +1180,13 @@ impl EditorApp {
         if let Some(path) = open_recent {
             self.open(path);
         }
+        if let Some(number) = switch_to {
+            self.switch_variant(number);
+        }
     }
 
-    fn status_bar(&self, ui: &mut egui::Ui) {
+    /// The status line; a variant chosen in its variant menu goes to `switch_to`.
+    fn status_bar(&self, ui: &mut egui::Ui, switch_to: &mut Option<u32>) {
         let t = Tokens::of(ui.ctx().theme());
         ui.horizontal(|ui| {
             if let Some(folder) = self.library.folder() {
@@ -929,6 +1229,26 @@ impl EditorApp {
                         ui.weak("No lens corrections").on_hover_text(notes);
                     }
                     None => {}
+                }
+            }
+            if let Some(state) = &self.variant {
+                // Which variant is open, with the others a click away.
+                let list = self.variant_list();
+                let place = list.iter().position(|v| v.number == state.info.number).map_or(1, |i| i + 1);
+                ui.separator();
+                ui.menu_button(format!("{} \u{b7} {place}/{}", state.info.name, list.len()), |ui| {
+                    for v in &list {
+                        if ui.radio(v.number == state.info.number, v.name.as_str()).clicked() {
+                            *switch_to = Some(v.number);
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Variants of this photo (also in Image \u{25b8} Variants)");
+                if let Some(why) = &state.read_only {
+                    ui.separator();
+                    ui.label(RichText::new("Read-only").strong().color(t.warning)).on_hover_text(why.as_str());
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1368,6 +1688,20 @@ impl EditorApp {
                     });
                 }
                 Some(doc) => {
+                    // Saved by a newer editor (or unreadable): say so above the settings.
+                    if let Some(why) = self.variant.as_ref().and_then(|s| s.read_only.as_deref()) {
+                        ui.add_space(SPACE[1]);
+                        Frame::NONE
+                            .fill(t.bg_raised)
+                            .stroke(egui::Stroke::new(1.0, t.warning))
+                            .corner_radius(egui::CornerRadius::same(4))
+                            .inner_margin(Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.label(RichText::new(why).color(t.warning));
+                            });
+                        ui.add_space(SPACE[1]);
+                    }
                     let folder = self.settings.export_folder(doc.path());
                     let cx = inspector::Context {
                         registry: &self.registry,
@@ -1696,13 +2030,15 @@ impl eframe::App for EditorApp {
         if matches!(self.tool, Some(ViewerTool::Masks | ViewerTool::AiSelect)) {
             self.mask_ui.keys(&ctx);
         }
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        let mut switch_variant = None;
+        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &mut switch_variant));
         egui::Panel::left("library")
             .resizable(true)
             .default_size(LEFT_WIDTH[0])
             .size_range(LEFT_WIDTH[1]..=LEFT_WIDTH[2])
             .frame(Frame::NONE.fill(t.bg))
             .show(ui, |ui| self.left_panel(ui, &mut library, &mut tabs));
+        let blocks = self.variant_blocks();
         // The filmstrip, right of the Explorer: drag its right edge to widen
         // it; the thumbnails grow, then line up in columns.
         let max_strip = (ctx.content_rect().width() * 0.75).max(FILMSTRIP_WIDTH);
@@ -1713,7 +2049,7 @@ impl eframe::App for EditorApp {
             .frame(Frame::NONE.fill(t.bar).inner_margin(Margin::symmetric(6, 6)))
             .show(ui, |ui| {
                 let current = self.doc.as_ref().map(|d| d.path().to_owned());
-                self.library.filmstrip(ui, current.as_deref(), &mut library);
+                self.library.filmstrip(ui, current.as_deref(), blocks, &mut library);
             });
         let scope = egui::Panel::right("inspector")
             .resizable(true)
@@ -1733,6 +2069,7 @@ impl eframe::App for EditorApp {
         if self.prefs.show(&ctx, &mut self.settings) {
             ctx.set_theme(theme_preference(self.settings.theme));
         }
+        self.delete_dialog(&ctx);
 
         self.apply_edits(edits);
         self.apply_tabs(tabs);
@@ -1740,7 +2077,16 @@ impl eframe::App for EditorApp {
         for command in commands {
             self.run(command, &ctx);
         }
+        if let Some(number) = switch_variant {
+            self.switch_variant(number);
+        }
         self.check_selection();
+        // Closing the window: save the open variant while the screen still shows it.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.save_edit(true);
+        } else {
+            self.autosave(&ctx);
+        }
         self.library.request_thumbnails(self.worker.as_ref());
         if let Some(dir) = self.library.folder() {
             self.settings.library_dir = Some(dir.to_owned());
@@ -1758,7 +2104,10 @@ impl eframe::App for EditorApp {
         self.update_title(&ctx);
     }
 
+    /// Called every 30 seconds and when the window closes: the settings,
+    /// and the open variant when it changed.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.save_edit(false);
         eframe::set_value(storage, STORAGE_KEY, &self.settings);
     }
 }

@@ -10,6 +10,8 @@ publish.workspace = true
 core-model.workspace = true
 # rawler does not follow SemVer yet: pinned exactly, upgraded deliberately.
 rawler = "=0.8.0"
+# The JPEG decoder rawler already uses, for the edited previews the catalog keeps.
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 
 [dev-dependencies]
 develop.workspace = true

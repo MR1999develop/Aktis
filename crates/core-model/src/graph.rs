@@ -110,6 +110,8 @@ pub enum GraphError {
     TooFewInputs,
     /// Output is not reachable from Source through image links.
     OutputNotConnected,
+    /// A graph read back from storage breaks a rule (the text says which).
+    Malformed(&'static str),
 }
 
 impl fmt::Display for GraphError {
@@ -124,6 +126,7 @@ impl fmt::Display for GraphError {
             Self::ProtectedNode(id) => write!(f, "node {id} is the source or the output and cannot change"),
             Self::TooFewInputs => write!(f, "a parallel node needs at least two inputs"),
             Self::OutputNotConnected => write!(f, "the output is not connected to the source"),
+            Self::Malformed(why) => write!(f, "the stored graph is not valid: {why}"),
         }
     }
 }
@@ -159,6 +162,58 @@ impl NodeGraph {
         let mut links = BTreeSet::new();
         links.insert(Link { from: source, from_port: 0, to: output, to_port: 0 });
         Self { nodes, links, next_id: 2, source, output }
+    }
+
+    /// Rebuilds a graph read back from storage, keeping its node ids, after
+    /// checking every rule the edits keep: one Source and one Output, unique
+    /// ids below `next_id`, a mask definition exactly on mask nodes, links
+    /// between existing ports of the same kind, one link per input, no loop.
+    ///
+    /// # Errors
+    /// [`GraphError`] naming the first rule broken.
+    pub fn from_parts(nodes: Vec<Node>, links: Vec<Link>, next_id: u32) -> Result<Self, GraphError> {
+        let mut map = BTreeMap::new();
+        let (mut source, mut output) = (None, None);
+        for node in nodes {
+            if node.id.0 >= next_id {
+                return Err(GraphError::Malformed("a node id is not below the next free id"));
+            }
+            match node.kind {
+                NodeKind::Source if source.replace(node.id).is_some() => {
+                    return Err(GraphError::Malformed("more than one source"));
+                }
+                NodeKind::Output if output.replace(node.id).is_some() => {
+                    return Err(GraphError::Malformed("more than one output"));
+                }
+                NodeKind::Parallel { inputs } if inputs < 2 => return Err(GraphError::TooFewInputs),
+                _ => {}
+            }
+            if node.mask.is_some() != (node.kind == NodeKind::Mask) {
+                return Err(GraphError::Malformed("a mask definition belongs to mask nodes only"));
+            }
+            if map.insert(node.id, node).is_some() {
+                return Err(GraphError::Malformed("two nodes share an id"));
+            }
+        }
+        let (Some(source), Some(output)) = (source, output) else {
+            return Err(GraphError::Malformed("the source or the output is missing"));
+        };
+        let mut graph = Self { nodes: map, links: BTreeSet::new(), next_id, source, output };
+        for link in links {
+            if graph.input_link(link.to, link.to_port).is_some() {
+                return Err(GraphError::Malformed("an input is fed by two links"));
+            }
+            // `connect` checks nodes, ports, kinds and loops.
+            graph.connect(link)?;
+        }
+        Ok(graph)
+    }
+
+    /// The id the next added node will get (stored with the graph so ids
+    /// are never reused).
+    #[must_use]
+    pub fn next_id(&self) -> u32 {
+        self.next_id
     }
 
     /// The Source node's id.
@@ -516,6 +571,53 @@ mod tests {
         let m = g.add_mask_node(MaskDef::default());
         g.node_mut(m).expect("exists").mask().expect("mask node").invert = true;
         assert!(g.node(m).and_then(|n| n.mask.as_ref()).is_some_and(|d| d.invert));
+    }
+
+    #[test]
+    fn a_graph_rebuilt_from_its_parts_is_identical_and_keeps_its_next_id() {
+        let mut g = NodeGraph::new();
+        let a = g.insert_serial(g.source(), exposure(), Params::new()).expect("insert");
+        let m = g.add_mask_node(MaskDef::default());
+        g.connect(Link { from: m, from_port: 0, to: a, to_port: 1 }).expect("mask link");
+        g.remove_node(m).expect("remove");
+        let nodes: Vec<Node> = g.nodes().cloned().collect();
+        let links: Vec<Link> = g.links().copied().collect();
+        let back = NodeGraph::from_parts(nodes, links, g.next_id()).expect("valid");
+        assert_eq!(back, g);
+        assert_eq!(back.next_id(), 4, "the id of the removed mask is not reused");
+    }
+
+    #[test]
+    fn broken_stored_graphs_are_refused() {
+        let g = NodeGraph::new();
+        let nodes: Vec<Node> = g.nodes().cloned().collect();
+        let links: Vec<Link> = g.links().copied().collect();
+        let only_source = vec![nodes[0].clone()];
+        assert!(matches!(NodeGraph::from_parts(only_source, vec![], 2), Err(GraphError::Malformed(_))));
+        let twice = vec![nodes[0].clone(), nodes[1].clone(), nodes[1].clone()];
+        assert!(matches!(NodeGraph::from_parts(twice, vec![], 2), Err(GraphError::Malformed(_))));
+        assert!(matches!(NodeGraph::from_parts(nodes.clone(), links.clone(), 1), Err(GraphError::Malformed(_))));
+        let mut masked = nodes.clone();
+        masked[0].mask = Some(MaskDef::default());
+        assert!(matches!(NodeGraph::from_parts(masked, vec![], 2), Err(GraphError::Malformed(_))));
+        let mut a = nodes.clone();
+        a.push(Node {
+            id: NodeId(2),
+            kind: tool("exposure"),
+            params: Params::new(),
+            enabled: true,
+            label: String::new(),
+            mask: None,
+        });
+        let looped = vec![Link { from: NodeId(2), from_port: 0, to: NodeId(2), to_port: 0 }];
+        assert_eq!(NodeGraph::from_parts(a.clone(), looped, 3), Err(GraphError::Cycle));
+        let doubled = vec![
+            Link { from: NodeId(0), from_port: 0, to: NodeId(1), to_port: 0 },
+            Link { from: NodeId(2), from_port: 0, to: NodeId(1), to_port: 0 },
+        ];
+        assert!(matches!(NodeGraph::from_parts(a.clone(), doubled, 3), Err(GraphError::Malformed(_))));
+        let wrong_port = vec![Link { from: NodeId(0), from_port: 0, to: NodeId(2), to_port: 1 }];
+        assert_eq!(NodeGraph::from_parts(a, wrong_port, 3), Err(GraphError::PortKindMismatch));
     }
 
     #[test]

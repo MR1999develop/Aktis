@@ -2,22 +2,38 @@
 //!
 //! Photos are keyed by their full path. Writes that touch several photos
 //! run in one transaction, so a crash never leaves half of a change.
+//!
+//! Layout versions: 1 had ratings, labels and keywords; 2 adds the edits
+//! (table `variants`, one row per variant of a photo) and the variant shown
+//! (column `photos.variant`). A version-1 file is upgraded on open.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::model::{ColorLabel, MAX_RATING, PhotoMeta, Tag, TagSource};
+use crate::model::{ColorLabel, MAX_RATING, PhotoMeta, StoredVariant, Tag, TagSource, VariantInfo};
 
 /// Layout version of the database; older files are upgraded on open.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS photos (
-    path   TEXT PRIMARY KEY NOT NULL,
-    rating INTEGER NOT NULL DEFAULT 0,
-    label  TEXT
+    path    TEXT PRIMARY KEY NOT NULL,
+    rating  INTEGER NOT NULL DEFAULT 0,
+    label   TEXT,
+    variant INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS variants (
+    path    TEXT NOT NULL,
+    number  INTEGER NOT NULL,
+    name    TEXT NOT NULL,
+    format  INTEGER NOT NULL,
+    data    TEXT NOT NULL,
+    preview BLOB,
+    updated INTEGER NOT NULL,
+    PRIMARY KEY (path, number)
 );
 CREATE TABLE IF NOT EXISTS tags (
     path       TEXT NOT NULL,
@@ -110,7 +126,7 @@ impl Catalog {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> Result<Self, CatalogError> {
+    fn init(mut conn: Connection) -> Result<Self, CatalogError> {
         // Write-ahead logging: readers never wait for a writer. The pragma answers
         // with the mode in use ("memory" for an in-memory database).
         let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
@@ -118,8 +134,17 @@ impl Catalog {
         if version > SCHEMA_VERSION {
             return Err(CatalogError::NewerVersion(version));
         }
-        conn.execute_batch(SCHEMA)?;
-        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+        // Create and upgrade in one transaction: a crash leaves the old layout whole.
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA)?;
+        // Version 1 had no variant column (its table existed, so CREATE left it as it was).
+        let has_variant: i64 =
+            tx.query_row("SELECT COUNT(*) FROM pragma_table_info('photos') WHERE name = 'variant'", [], |r| r.get(0))?;
+        if has_variant == 0 {
+            tx.execute_batch("ALTER TABLE photos ADD COLUMN variant INTEGER NOT NULL DEFAULT 1;")?;
+        }
+        tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+        tx.commit()?;
         Ok(Self { conn })
     }
 
@@ -259,11 +284,147 @@ impl Catalog {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM photos WHERE path = ?1", params![t])?;
         tx.execute("DELETE FROM tags WHERE path = ?1", params![t])?;
+        tx.execute("DELETE FROM variants WHERE path = ?1", params![t])?;
         tx.execute("UPDATE photos SET path = ?2 WHERE path = ?1", params![f, t])?;
         tx.execute("UPDATE tags SET path = ?2 WHERE path = ?1", params![f, t])?;
+        tx.execute("UPDATE variants SET path = ?2 WHERE path = ?1", params![f, t])?;
         tx.commit()?;
         Ok(())
     }
+
+    // ----- edits -----
+
+    /// The variants stored for `path`, by number; empty for a photo never edited.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn variants(&self, path: &Path) -> Result<Vec<VariantInfo>, CatalogError> {
+        let mut stmt =
+            self.conn.prepare("SELECT number, name, format FROM variants WHERE path = ?1 ORDER BY number")?;
+        let rows = stmt
+            .query_map(params![key(path)], |r| {
+                Ok(VariantInfo { number: r.get(0)?, name: r.get(1)?, format: r.get(2)? })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// The variant shown for `path`: the one chosen last when it still
+    /// exists, else the lowest; `None` for a photo never edited.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn current_variant(&self, path: &Path) -> Result<Option<u32>, CatalogError> {
+        let sql = format!("SELECT number FROM variants WHERE path = ?1 ORDER BY {CHOSEN_FIRST}, number LIMIT 1");
+        let number = self.conn.query_row(&sql, params![key(path)], |r| r.get(0)).optional()?;
+        Ok(number)
+    }
+
+    /// Remembers which variant of `path` is shown.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`].
+    pub fn set_current_variant(&mut self, path: &Path, number: u32) -> Result<(), CatalogError> {
+        self.conn.execute(
+            "INSERT INTO photos (path, variant) VALUES (?1, ?2)
+             ON CONFLICT(path) DO UPDATE SET variant = excluded.variant",
+            params![key(path), number],
+        )?;
+        Ok(())
+    }
+
+    /// The stored edit of one variant, if there is one.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn load_variant(&self, path: &Path, number: u32) -> Result<Option<StoredVariant>, CatalogError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT name, format, data FROM variants WHERE path = ?1 AND number = ?2",
+                params![key(path), number],
+                |r| {
+                    let info = VariantInfo { number, name: r.get(0)?, format: r.get(1)? };
+                    Ok(StoredVariant { info, data: r.get(2)? })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Stores (creates or replaces) the edit of variant `info.number` of
+    /// `path`. `preview`, a small JPEG of the edited image, replaces the
+    /// stored one when given; `None` keeps it.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn save_variant(
+        &mut self,
+        path: &Path,
+        info: &VariantInfo,
+        data: &str,
+        preview: Option<&[u8]>,
+    ) -> Result<(), CatalogError> {
+        self.conn.execute(
+            "INSERT INTO variants (path, number, name, format, data, preview, updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(path, number) DO UPDATE SET
+                 name = excluded.name,
+                 format = excluded.format,
+                 data = excluded.data,
+                 preview = COALESCE(excluded.preview, variants.preview),
+                 updated = excluded.updated",
+            params![key(path), info.number, info.name, info.format, data, preview, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Replaces the preview of a stored variant (nothing happens when the
+    /// variant is not stored).
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`].
+    pub fn set_variant_preview(&mut self, path: &Path, number: u32, jpeg: &[u8]) -> Result<(), CatalogError> {
+        self.conn.execute(
+            "UPDATE variants SET preview = ?3 WHERE path = ?1 AND number = ?2",
+            params![key(path), number, jpeg],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes one variant of `path`.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`].
+    pub fn delete_variant(&mut self, path: &Path, number: u32) -> Result<(), CatalogError> {
+        self.conn.execute("DELETE FROM variants WHERE path = ?1 AND number = ?2", params![key(path), number])?;
+        Ok(())
+    }
+
+    /// The preview of the shown variant of each photo, in the same order;
+    /// `None` for a photo never edited (or saved without a preview).
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn previews(&self, paths: &[PathBuf]) -> Result<Vec<Option<Vec<u8>>>, CatalogError> {
+        let sql = format!("SELECT preview FROM variants WHERE path = ?1 ORDER BY {CHOSEN_FIRST}, number LIMIT 1");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut out = Vec::with_capacity(paths.len());
+        for p in paths {
+            let preview: Option<Option<Vec<u8>>> = stmt.query_row(params![key(p)], |r| r.get(0)).optional()?;
+            out.push(preview.flatten());
+        }
+        Ok(out)
+    }
+}
+
+/// `ORDER BY` term putting first the variant chosen for the photo `?1`.
+const CHOSEN_FIRST: &str = "number = COALESCE((SELECT variant FROM photos WHERE path = ?1), 1) DESC";
+
+/// Seconds since 1970, for the `updated` column.
+fn now() -> i64 {
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    i64::try_from(secs).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]
@@ -327,6 +488,79 @@ mod tests {
         let m = c.meta(&p("new.NEF")).unwrap();
         assert_eq!(m.rating, 3);
         assert!(m.has_tag("pier"));
+    }
+
+    fn info(number: u32) -> VariantInfo {
+        VariantInfo { number, name: crate::model::variant_name(number), format: 1 }
+    }
+
+    #[test]
+    fn variants_are_stored_listed_and_deleted() {
+        let mut c = Catalog::open_in_memory().unwrap();
+        let a = p("a.NEF");
+        assert!(c.variants(&a).unwrap().is_empty());
+        assert_eq!(c.current_variant(&a).unwrap(), None);
+        c.save_variant(&a, &info(1), "{\"one\":1}", Some(b"jpeg-1".as_slice())).unwrap();
+        c.save_variant(&a, &info(2), "{\"two\":2}", None).unwrap();
+        assert_eq!(c.variants(&a).unwrap(), vec![info(1), info(2)]);
+        assert_eq!(c.current_variant(&a).unwrap(), Some(1), "the first when none was chosen");
+        let stored = c.load_variant(&a, 2).unwrap().unwrap();
+        assert_eq!((stored.info, stored.data.as_str()), (info(2), "{\"two\":2}"));
+        assert_eq!(c.load_variant(&a, 3).unwrap(), None);
+
+        c.set_current_variant(&a, 2).unwrap();
+        assert_eq!(c.current_variant(&a).unwrap(), Some(2));
+        assert_eq!(c.previews(&[a.clone(), p("b.NEF")]).unwrap(), vec![None, None], "variant 2 has no preview");
+        c.set_variant_preview(&a, 2, b"jpeg-2").unwrap();
+        assert_eq!(c.previews(std::slice::from_ref(&a)).unwrap(), vec![Some(b"jpeg-2".to_vec())]);
+
+        // Saving again without a preview keeps it; with one replaces it.
+        c.save_variant(&a, &info(2), "{\"two\":3}", None).unwrap();
+        assert_eq!(c.previews(std::slice::from_ref(&a)).unwrap(), vec![Some(b"jpeg-2".to_vec())]);
+        assert_eq!(c.load_variant(&a, 2).unwrap().unwrap().data, "{\"two\":3}");
+
+        c.delete_variant(&a, 2).unwrap();
+        assert_eq!(c.current_variant(&a).unwrap(), Some(1), "the chosen one is gone: the lowest");
+        assert_eq!(c.previews(std::slice::from_ref(&a)).unwrap(), vec![Some(b"jpeg-1".to_vec())]);
+        assert_eq!(c.meta(&a).unwrap(), PhotoMeta::default(), "choosing a variant leaves rating and label alone");
+    }
+
+    #[test]
+    fn renaming_moves_the_edits_too() {
+        let mut c = Catalog::open_in_memory().unwrap();
+        c.save_variant(&p("old.NEF"), &info(1), "old", None).unwrap();
+        c.save_variant(&p("new.NEF"), &info(4), "stale", None).unwrap();
+        c.rename(&p("old.NEF"), &p("new.NEF")).unwrap();
+        assert!(c.variants(&p("old.NEF")).unwrap().is_empty());
+        assert_eq!(c.variants(&p("new.NEF")).unwrap(), vec![info(1)]);
+    }
+
+    #[test]
+    fn a_version_1_catalog_is_upgraded_and_keeps_its_data() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE photos (path TEXT PRIMARY KEY NOT NULL, rating INTEGER NOT NULL DEFAULT 0, label TEXT);
+             CREATE TABLE tags (path TEXT NOT NULL, name TEXT NOT NULL COLLATE NOCASE, source TEXT NOT NULL,
+                                confidence REAL, PRIMARY KEY (path, name));
+             INSERT INTO photos (path, rating, label) VALUES ('a.NEF', 4, 'Green');
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+        let mut c = Catalog::init(conn).unwrap();
+        let m = c.meta(&p("a.NEF")).unwrap();
+        assert_eq!((m.rating, m.label), (4, Some(ColorLabel::Green)));
+        c.save_variant(&p("a.NEF"), &info(1), "x", None).unwrap();
+        c.set_current_variant(&p("a.NEF"), 1).unwrap();
+        assert_eq!(c.current_variant(&p("a.NEF")).unwrap(), Some(1));
+        let version: i64 = c.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn a_catalog_from_a_newer_editor_is_refused() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA user_version = 99;").unwrap();
+        assert!(matches!(Catalog::init(conn), Err(CatalogError::NewerVersion(99))));
     }
 
     #[test]

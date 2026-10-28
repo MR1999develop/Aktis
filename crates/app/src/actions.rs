@@ -28,6 +28,13 @@ pub enum Command {
     ZoomIn,
     /// View ▸ Zoom out.
     ZoomOut,
+    /// Image ▸ Variants ▸ New variant: the photo as it came from the
+    /// camera, edited apart from its other variants.
+    NewVariant,
+    /// Image ▸ Variants ▸ Clone variant: a copy of the open variant.
+    CloneVariant,
+    /// Image ▸ Variants ▸ Delete variant…
+    DeleteVariant,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -47,6 +54,9 @@ const ZOOM_FIT: &[KeyboardShortcut] = &[k(CMD, Key::Num0)];
 const ZOOM_100: &[KeyboardShortcut] = &[k(CMD, Key::Num1)];
 const ZOOM_IN: &[KeyboardShortcut] = &[k(CMD, Key::Plus), k(CMD, Key::Equals)];
 const ZOOM_OUT: &[KeyboardShortcut] = &[k(CMD, Key::Minus)];
+const NEW_VARIANT: &[KeyboardShortcut] = &[k(Modifiers::NONE, Key::F7)];
+const CLONE_VARIANT: &[KeyboardShortcut] = &[k(Modifiers::NONE, Key::F8)];
+const DELETE_VARIANT: &[KeyboardShortcut] = &[k(CMD, Key::Delete)];
 
 impl Command {
     /// Menu label, sentence case.
@@ -63,6 +73,9 @@ impl Command {
             Self::Zoom100 => "100 %",
             Self::ZoomIn => "Zoom in",
             Self::ZoomOut => "Zoom out",
+            Self::NewVariant => "New variant",
+            Self::CloneVariant => "Clone variant",
+            Self::DeleteVariant => "Delete variant\u{2026}",
         }
     }
 
@@ -80,11 +93,21 @@ impl Command {
             Self::Zoom100 => ZOOM_100,
             Self::ZoomIn => ZOOM_IN,
             Self::ZoomOut => ZOOM_OUT,
+            Self::NewVariant => NEW_VARIANT,
+            Self::CloneVariant => CLONE_VARIANT,
+            Self::DeleteVariant => DELETE_VARIANT,
         }
     }
 
+    /// Commands whose keys also edit text (Ctrl+Delete deletes a word):
+    /// not taken from a text field that has the keyboard.
+    #[must_use]
+    pub fn yields_to_text(self) -> bool {
+        matches!(self, Self::NewVariant | Self::CloneVariant | Self::DeleteVariant)
+    }
+
     /// Every command.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 13] = [
         Self::Open,
         Self::Export,
         Self::ExportTo,
@@ -95,6 +118,9 @@ impl Command {
         Self::Zoom100,
         Self::ZoomIn,
         Self::ZoomOut,
+        Self::NewVariant,
+        Self::CloneVariant,
+        Self::DeleteVariant,
     ];
 
     /// Every shortcut with its command, those with Shift first: egui's

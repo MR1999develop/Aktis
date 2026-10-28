@@ -298,6 +298,38 @@ tested offline.
   Heal/Clone switch, Delete or Backspace or the Delete button. Double-click
   does not zoom while these tools are on. The inspector lists a retouch
   node's spots with a Remove button each.
+## Edits saved in the catalog, variants: written, to be compiled and checked on Windows
+
+- Non-destructive and automatic, as in Capture One: the open photo's edit is
+  saved in the catalog (no sidecar files; the RAW is never written) when
+  another photo or variant is opened, when the window closes (close request,
+  Quit, and eframe's `save`), and 30 s after a change.
+- What is saved, per variant: the recipe, the history (base recipe, steps
+  with their skipped reason, redo list), the node positions with the graph's
+  pan and zoom, the variant's name, and a 1024 px JPEG of the edited image,
+  shown in the filmstrip and in the tiles of a multiple selection instead
+  of the camera's embedded preview.
+- `recipe-store` (new crate): hand-written JSON with `"format": 1`; every
+  edit, node, mask and develop setting round-trips exactly (floats
+  included). The history is restored by replaying the steps through
+  `EditSession::restore` (same validation as new edits); if it does not lead
+  to the saved recipe (a tool missing in this build) the recipe is kept and
+  the history dropped, with a notice.
+- An edit saved by a newer editor (higher format) opens read-only: its
+  recipe is shown when this version can read it, otherwise the photo is
+  shown unedited; every change is refused (`EditError::ReadOnly`), nothing
+  is saved over it, a banner above the settings and the status bar say why.
+  A damaged edit is kept read-only the same way.
+- Variants: Image ▸ Variants ▸ New variant (F7, from the original), Clone
+  variant (F8, with history and node positions), Delete variant… (Ctrl+Del,
+  with confirmation; a photo keeps at least one), and the list to switch;
+  the same commands in the open photo's card menu; the status bar shows
+  "Variant 2 · 2/3" with the list. The variant shown last is remembered and
+  its preview is the photo's thumbnail.
+- Catalog layout 2 (`SCHEMA_VERSION` 2): table `variants (path, number,
+  name, format, data, preview, updated)` and `photos.variant`; layout-1
+  catalogs are upgraded on open in one transaction. The SQL was checked with
+  Python's sqlite3; the Rust store and the window were not compiled here.
 
 ## Tests and CI
 
