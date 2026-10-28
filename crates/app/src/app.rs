@@ -692,6 +692,13 @@ impl EditorApp {
         let mut theme_choice = self.settings.theme;
         let mut open_models = false;
         let mut open_folder = false;
+        let mut graph_actions = Vec::new();
+        // The selected node, when it is one that can be bypassed or deleted
+        // (the same commands as its right-click menu in the graph).
+        let editable_node = self.selected_node.and_then(|id| {
+            let node = self.doc.as_ref()?.recipe().graph.node(id)?;
+            matches!(node.kind, NodeKind::Tool(_) | NodeKind::Mask).then_some((id, node.enabled))
+        });
 
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -724,6 +731,27 @@ impl EditorApp {
                 menu_item(ui, Command::Undo, undo_label, undo.is_none().then_some("Nothing to undo"), commands);
                 let redo_label = redo.as_ref().map(|l| format!("Redo {}", lowercase_first(l)));
                 menu_item(ui, Command::Redo, redo_label, redo.is_none().then_some("Nothing to redo"), commands);
+                ui.separator();
+                let why = "Select a node in the graph first";
+                let bypass_label = if editable_node.is_some_and(|(_, on)| !on) { "Enable node" } else { "Bypass node" };
+                if ui
+                    .add_enabled(editable_node.is_some(), Button::new(bypass_label))
+                    .on_disabled_hover_text(why)
+                    .clicked()
+                    && let Some((id, on)) = editable_node
+                {
+                    graph_actions.push(GraphAction::Enable(id, !on));
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(editable_node.is_some(), Button::new("Delete node"))
+                    .on_disabled_hover_text(why)
+                    .clicked()
+                    && let Some((id, _)) = editable_node
+                {
+                    graph_actions.push(GraphAction::Remove(id));
+                    ui.close();
+                }
             });
             ui.menu_button("View", |ui| {
                 let why = (!has_doc).then_some("Open an image first");
@@ -753,6 +781,9 @@ impl EditorApp {
             });
         });
 
+        if !graph_actions.is_empty() {
+            self.apply_graph(graph_actions);
+        }
         if open_models {
             self.models.open_manager();
         }
