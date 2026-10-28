@@ -505,7 +505,7 @@ pub fn find_source(image: &ImageF32, at: [f32; 2], radius: f32) -> [f32; 2] {
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_precision_loss, clippy::float_cmp)]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::float_cmp)]
 mod tests {
     use super::*;
     use core_model::{Params, WorkingSpace};
