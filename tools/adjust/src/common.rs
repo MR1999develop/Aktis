@@ -24,6 +24,22 @@ pub fn float(id: &str, label: &'static str, range: [f32; 2], default: f32, step:
     ParamDescriptor { id: pid(id), label, kind: ParamKind::Float { min: range[0], max: range[1], default, step, unit } }
 }
 
+/// An on/off parameter.
+pub fn toggle(id: &str, label: &'static str, default: bool) -> ParamDescriptor {
+    ParamDescriptor { id: pid(id), label, kind: tool_api::ParamKind::Bool { default } }
+}
+
+/// A choice among `options`.
+pub fn choice(id: &str, label: &'static str, options: &[&'static str], default: u32) -> ParamDescriptor {
+    ParamDescriptor { id: pid(id), label, kind: tool_api::ParamKind::Choice { options: options.to_vec(), default } }
+}
+
+/// Signed difference `a − b` of two hues, in degrees, −180 to 180.
+pub fn hue_diff(a: f32, b: f32) -> f32 {
+    let d = (a - b).rem_euclid(360.0);
+    if d > 180.0 { d - 360.0 } else { d }
+}
+
 /// A −100 … 100 slider at 0.
 pub fn slider(id: &str, label: &'static str) -> ParamDescriptor {
     float(id, label, [-100.0, 100.0], 0.0, 1.0, Unit::None)

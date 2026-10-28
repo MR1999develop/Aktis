@@ -36,13 +36,17 @@ pub fn lightness_id(zone: usize) -> String {
     format!("{}_lightness", ZONES[zone].0)
 }
 
-static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
-    id: ToolId::new("color_balance").expect("constant id is valid"),
-    version: 1,
-    name: "Colour balance",
-    category: Category::Color,
-    stage: Stage::Graph,
-    params: (0..ZONES.len())
+/// Id of the master tint's hue (degrees), applied to every tone.
+pub const MASTER_HUE: &str = "master_hue";
+/// Id of the master tint's amount (0–100).
+pub const MASTER_AMOUNT: &str = "master_amount";
+/// Id of the master lightness (−100 to 100).
+pub const MASTER_LIGHTNESS: &str = "master_lightness";
+/// Id of the master saturation (−100 to 100).
+pub const MASTER_SATURATION: &str = "master_saturation";
+
+static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| {
+    let mut params: Vec<ParamDescriptor> = (0..ZONES.len())
         .flat_map(|z| -> [ParamDescriptor; 3] {
             [
                 float(&hue_id(z), "Hue", [0.0, 360.0], 0.0, 1.0, Unit::Degrees),
@@ -50,7 +54,19 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
                 slider(&lightness_id(z), "Lightness"),
             ]
         })
-        .collect(),
+        .collect();
+    params.push(float(MASTER_HUE, "Hue", [0.0, 360.0], 0.0, 1.0, Unit::Degrees));
+    params.push(float(MASTER_AMOUNT, "Amount", [0.0, 100.0], 0.0, 1.0, Unit::None));
+    params.push(slider(MASTER_LIGHTNESS, "Lightness"));
+    params.push(slider(MASTER_SATURATION, "Saturation"));
+    ToolDescriptor {
+        id: ToolId::new("color_balance").expect("constant id is valid"),
+        version: 2,
+        name: "Colour balance",
+        category: Category::Color,
+        stage: Stage::Graph,
+        params,
+    }
 });
 
 /// Weights of the shadows, midtones and highlights for a tone `e` stops from grey.
@@ -71,20 +87,39 @@ impl Tool for ColorBalance {
     }
 
     fn apply_cpu(&self, image: &mut ImageF32, params: &ResolvedParams) {
-        let zones: [([f32; 3], f32, f32); 3] = std::array::from_fn(|z| {
-            (hue_direction(params.float(&hue_id(z))), params.float(&amount_id(z)), params.float(&lightness_id(z)))
+        // Shadows, midtones, highlights, then the master (weight 1).
+        let zones: [([f32; 3], f32, f32); 4] = std::array::from_fn(|z| match z {
+            3 => (hue_direction(params.float(MASTER_HUE)), params.float(MASTER_AMOUNT), params.float(MASTER_LIGHTNESS)),
+            _ => (hue_direction(params.float(&hue_id(z))), params.float(&amount_id(z)), params.float(&lightness_id(z))),
         });
-        if zones.iter().all(|(_, a, l)| *a == 0.0 && *l == 0.0) {
+        let saturation = params.float(MASTER_SATURATION);
+        if zones.iter().all(|(_, a, l)| *a == 0.0 && *l == 0.0) && saturation == 0.0 {
             return;
         }
         for p in image.pixels_mut() {
             let Some(e) = stops_from_grey(luma([p[0], p[1], p[2]])) else { continue };
-            let w = zone_weights(e);
+            let zw = zone_weights(e);
+            let w = [zw[0], zw[1], zw[2], 1.0];
             for (ch, v) in p[..3].iter_mut().enumerate() {
                 let stops: f32 =
                     zones.iter().zip(w).map(|((dir, a, l), w)| w * (a / 100.0 * 0.6 * dir[ch] + l / 100.0 * 0.8)).sum();
                 *v *= stops.exp2();
             }
+            if saturation != 0.0 {
+                let y = luma([p[0], p[1], p[2]]);
+                let k = 1.0 + saturation / 100.0;
+                for v in &mut p[..3] {
+                    *v = y + (*v - y) * k;
+                }
+            }
+        }
+    }
+
+    /// Version 1 had no master: its parameters are valid as they are.
+    fn migrate(&self, from_version: u32, params: tool_api::Params) -> Result<tool_api::Params, tool_api::ToolError> {
+        match from_version {
+            1 | 2 => Ok(params),
+            found => Err(tool_api::ToolError::UnsupportedVersion { found, current: 2 }),
         }
     }
 
@@ -98,9 +133,9 @@ impl Tool for ColorBalance {
     let th = clamp(e / 3.0, 0.0, 1.0);
     let ws = 1.0 - ts * ts * (3.0 - 2.0 * ts);
     let wh = th * th * (3.0 - 2.0 * th);
-    let w = vec3<f32>(ws, clamp(1.0 - ws - wh, 0.0, 1.0), wh);
+    let w = vec4<f32>(ws, clamp(1.0 - ws - wh, 0.0, 1.0), wh, 1.0);
     var stops = vec3<f32>(0.0);
-    for (var z = 0u; z < 3u; z++) {
+    for (var z = 0u; z < 4u; z++) {
         let b = z * 3u;
         let hue = radians(params.v[b / 4u][b % 4u]);
         let amount = params.v[(b + 1u) / 4u][(b + 1u) % 4u];
@@ -109,7 +144,13 @@ impl Tool for ColorBalance {
         let dir = vec3<f32>(cos(hue), cos(hue - third), cos(hue - 2.0 * third));
         stops = stops + w[z] * (amount / 100.0 * 0.6 * dir + vec3<f32>(light / 100.0 * 0.8));
     }
-    return vec4<f32>(c.rgb * exp2(stops), c.a);",
+    var rgb = c.rgb * exp2(stops);
+    let sat = params.v[3].x;
+    if (sat != 0.0) {
+        let y2 = dot(rgb, vec3<f32>(0.2627, 0.6780, 0.0593));
+        rgb = vec3<f32>(y2) + (rgb - vec3<f32>(y2)) * (1.0 + sat / 100.0);
+    }
+    return vec4<f32>(rgb, c.a);",
         }
     }
 }
@@ -149,6 +190,17 @@ mod tests {
         assert!(dark[2] > dark[0] * 1.5, "{dark:?}");
         let bright = run(&tint, [2.0, 2.0, 2.0]);
         assert!((bright[2] - bright[0]).abs() < 1e-5, "{bright:?}");
+    }
+
+    #[test]
+    fn the_master_tints_every_tone_and_sets_saturation() {
+        let warm = [(MASTER_HUE.to_owned(), 30.0), (MASTER_AMOUNT.to_owned(), 100.0)];
+        for grey in [0.01, 0.18, 2.0] {
+            let o = run(&warm, [grey, grey, grey]);
+            assert!(o[0] > o[2], "{grey}: {o:?}");
+        }
+        let flat = run(&[(MASTER_SATURATION.to_owned(), -100.0)], [0.4, 0.2, 0.1]);
+        assert!((flat[0] - flat[2]).abs() < 1e-6, "{flat:?}");
     }
 
     #[test]

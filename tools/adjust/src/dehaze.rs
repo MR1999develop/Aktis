@@ -13,20 +13,35 @@
 use std::sync::LazyLock;
 
 use core_model::ImageF32;
-use tool_api::{Category, GpuKernel, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId};
+use tool_api::{Category, GpuKernel, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId, Unit};
 
-use crate::common::{blur, slider};
+use crate::common::{blur, choice, float, luma, slider, smoothstep};
 
 /// Id of the amount (−100 adds haze, 100 removes the most).
 pub const AMOUNT: &str = "amount";
+/// Id of the shadow tone (an index into [`SHADOW_TONES`]).
+pub const SHADOW_TONE: &str = "shadow_tone";
+/// Ids of the custom shadow colour's red, green and blue (0–1).
+pub const TONE_RGB: [&str; 3] = ["tone_red", "tone_green", "tone_blue"];
+
+/// What the shadows are taken to after removing haze, as in Capture One:
+/// neutral (any colour cast the haze left in them removed), or a colour
+/// chosen by the user (typed or picked on the photo).
+pub const SHADOW_TONES: [&str; 2] = ["Auto", "Custom"];
 
 static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     id: ToolId::new("dehaze").expect("constant id is valid"),
-    version: 1,
+    version: 2,
     name: "Dehaze",
     category: Category::Details,
     stage: Stage::Graph,
-    params: vec![slider(AMOUNT, "Amount")],
+    params: vec![
+        slider(AMOUNT, "Amount"),
+        choice(SHADOW_TONE, "Shadow tone", &SHADOW_TONES, 0),
+        float(TONE_RGB[0], "Shadow red", [0.0, 1.0], 0.5, 0.01, Unit::None),
+        float(TONE_RGB[1], "Shadow green", [0.0, 1.0], 0.5, 0.01, Unit::None),
+        float(TONE_RGB[2], "Shadow blue", [0.0, 1.0], 0.5, 0.01, Unit::None),
+    ],
 });
 
 /// The dehaze tool.
@@ -49,6 +64,49 @@ fn airlight(pixels: &[[f32; 4]], dark: &[f32]) -> [f32; 3] {
     }
     #[allow(clippy::cast_possible_truncation)] // a colour
     sum.map(|s| (s / f64::from(n.max(1))) as f32)
+}
+
+/// Takes the shadows' colour cast to `tone` (a colour, its brightness
+/// ignored) or, for `None`, to neutral, by `strength` (0–1): the cast is
+/// the mean colour of the darkest tenth of the pixels; each pixel moves by
+/// the difference, weighted by how dark it is.
+fn shadow_tone(image: &mut ImageF32, tone: Option<[f32; 3]>, strength: f32) {
+    let mut lumas: Vec<f32> = image.pixels().iter().map(|p| luma([p[0], p[1], p[2]])).collect();
+    if lumas.is_empty() {
+        return;
+    }
+    lumas.sort_by(f32::total_cmp);
+    let limit = lumas[lumas.len() / 10];
+    let (mut sum, mut n) = ([0.0_f64; 3], 0_u32);
+    for p in image.pixels() {
+        if luma([p[0], p[1], p[2]]) <= limit {
+            for (s, v) in sum.iter_mut().zip(p) {
+                *s += f64::from(v.max(0.0));
+            }
+            n += 1;
+        }
+    }
+    #[allow(clippy::cast_possible_truncation)] // a colour
+    let cast = sum.map(|s| (s / f64::from(n.max(1))) as f32);
+    let y = luma(cast);
+    if y <= 1e-6 {
+        return;
+    }
+    let target = match tone {
+        Some(t) => {
+            let ty = luma(t).max(1e-6);
+            t.map(|v| v / ty * y)
+        }
+        None => [y; 3],
+    };
+    let shift: [f32; 3] = std::array::from_fn(|c| (target[c] - cast[c]) * strength);
+    let dark = (limit * 4.0).max(1e-4);
+    for p in image.pixels_mut() {
+        let w = 1.0 - smoothstep(0.0, dark, luma([p[0], p[1], p[2]]));
+        for c in 0..3 {
+            p[c] += shift[c] * w;
+        }
+    }
 }
 
 impl Tool for Dehaze {
@@ -83,6 +141,19 @@ impl Tool for Dehaze {
             for c in 0..3 {
                 p[c] = (p[c] - air[c]) / t + air[c];
             }
+        }
+        let tone = match params.choice(SHADOW_TONE) {
+            1 => Some(TONE_RGB.map(|id| params.float(id))),
+            _ => None,
+        };
+        shadow_tone(image, tone, amount / 100.0);
+    }
+
+    /// Version 1 had no shadow tone (it was Auto, unapplied): its parameters are valid as they are.
+    fn migrate(&self, from_version: u32, params: tool_api::Params) -> Result<tool_api::Params, tool_api::ToolError> {
+        match from_version {
+            1 | 2 => Ok(params),
+            found => Err(tool_api::ToolError::UnsupportedVersion { found, current: 2 }),
         }
     }
 
@@ -129,6 +200,18 @@ mod tests {
         let after = run(100.0);
         let spread = |img: &ImageF32| img.pixels()[30 * 40 + 30][0] - img.pixels()[30 * 40 + 5][0];
         assert!(spread(&after) > spread(&before) * 1.2, "{} {}", spread(&after), spread(&before));
+    }
+
+    #[test]
+    fn auto_shadow_tone_neutralises_a_cast_in_the_shadows() {
+        let px =
+            (0..20 * 20).map(|i| if i % 2 == 0 { [0.02, 0.03, 0.06, 1.0] } else { [0.5, 0.5, 0.5, 1.0] }).collect();
+        let mut img = ImageF32::from_pixels(20, 20, WorkingSpace::LinearRec2020, px).expect("20×20");
+        shadow_tone(&mut img, None, 1.0);
+        let d = img.pixels()[0];
+        assert!((d[0] - d[2]).abs() < 0.01, "{d:?}");
+        let b = img.pixels()[1];
+        assert!((b[0] - 0.5).abs() < 1e-3, "the light pixels stay: {b:?}");
     }
 
     #[test]
