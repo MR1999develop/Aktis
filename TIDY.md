@@ -165,8 +165,8 @@
   not done yet.
 - Mask brush (Capture One): Opacity is the stroke's strength; Capture
   One's Flow (amount per pass, building up), Airbrush and pen pressure need
-  per-dab accumulation in `masks::brush`; not done. Fill Mask and Rasterize
-  Mask are missing too, and the grey-scale mask view (Alt+M).
+  per-dab accumulation in `masks::brush`; not done. Fill Mask is in the
+  options bar; Rasterize Mask and the grey-scale mask view (Alt+M) are missing.
 - Zoom (Capture One): the Zoom cursor (Z, click to zoom in, drag a box),
   the Pan cursor (H) with right-click Navigator, the Loupe (P) and Shift +
   wheel zooming every photo shown are not done; Space held pans and the

@@ -2213,6 +2213,7 @@ impl EditorApp {
                 MaskEdit::Stroke { node, .. }
                 | MaskEdit::Click { node, .. }
                 | MaskEdit::Subject { node }
+                | MaskEdit::Fill { node }
                 | MaskEdit::Def { node, .. } => node,
             };
             let Some(doc) = &mut self.doc else { return };
@@ -2225,6 +2226,7 @@ impl EditorApp {
                     editor::masking::add_click(current.as_ref(), at, include, new_object)
                 }
                 MaskEdit::Subject { .. } => editor::masking::add_subject(current.as_ref()),
+                MaskEdit::Fill { .. } => editor::masking::fill(current.as_ref()),
                 MaskEdit::Def { def, .. } => def,
                 MaskEdit::ChooseStyleBrush(_) | MaskEdit::StyleStroke { .. } => continue,
             };

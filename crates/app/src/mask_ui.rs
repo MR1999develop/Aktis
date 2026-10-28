@@ -62,6 +62,11 @@ pub enum MaskEdit {
         /// The tool node.
         node: NodeId,
     },
+    /// Fill Mask: the whole image, to erase from.
+    Fill {
+        /// The tool node.
+        node: NodeId,
+    },
     /// Feather, invert or clear: the whole new definition.
     Def {
         /// The tool node.
@@ -477,6 +482,9 @@ impl MaskUi {
                                 }
                             }
                             ui.separator();
+                            if ui.button("Fill").on_hover_text("Select the whole image, then erase (E) what to leave out").clicked() {
+                                edits.push(MaskEdit::Fill { node });
+                            }
                             ui.checkbox(&mut self.show, "Show").on_hover_text("Show the mask in red (M)");
                             if let Some(def) = def {
                                 let mut next = def.clone();

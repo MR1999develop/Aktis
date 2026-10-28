@@ -53,6 +53,30 @@ pub fn add_stroke(def: Option<&MaskDef>, points: Vec<NormPoint>, brush: Brush, e
     def.sanitized()
 }
 
+/// The stroke that covers a whole image: along the top and bottom edges
+/// with the largest hard brush (half the long side), which reaches the
+/// middle from both edges whatever the shape of the photo.
+#[must_use]
+pub fn fill_stroke() -> BrushStroke {
+    let p = |x, y| NormPoint::new(x, y).unwrap_or_else(|| unreachable!("the corners are inside the image"));
+    BrushStroke {
+        points: vec![p(0.0, 0.0), p(1.0, 0.0), p(1.0, 1.0), p(0.0, 1.0)],
+        radius: core_model::MAX_BRUSH_RADIUS,
+        hardness: 1.0,
+        opacity: 1.0,
+    }
+}
+
+/// Fill Mask, as in Capture One: `def` (or a new mask) selecting the whole
+/// image, ready to be erased from; feather and opacity are kept, what was
+/// painted or selected is replaced, invert is cleared.
+#[must_use]
+pub fn fill(def: Option<&MaskDef>) -> MaskDef {
+    let def = def.cloned().unwrap_or_default();
+    let brush = BrushMask { strokes: vec![fill_stroke()], edge_aware: false };
+    MaskDef { components: vec![MaskComponent::brush("Fill", MaskOp::Add, brush)], invert: false, ..def }.sanitized()
+}
+
 /// `def` (or a new mask) with a click of AI Select at `at`: added to the
 /// last object's clicks (`include` false marks something to leave out), or
 /// a new object when `new_object` or the last component is not one. The
@@ -136,6 +160,21 @@ mod tests {
 
     fn p(x: f32, y: f32) -> NormPoint {
         NormPoint::new(x, y).unwrap()
+    }
+
+    #[test]
+    fn fill_replaces_the_mask_with_the_whole_image_and_keeps_its_softness() {
+        let painted = add_stroke(None, vec![p(0.5, 0.5)], Brush::default(), false);
+        let soft = MaskDef { feather: 0.01, invert: true, ..painted };
+        let filled = fill(Some(&soft));
+        assert_eq!(filled.components.len(), 1);
+        assert!(!filled.invert && (filled.feather - 0.01).abs() < 1e-6);
+        let MaskSource::Brush(b) = &filled.components[0].source else { panic!("a brush component") };
+        assert_eq!(b.strokes, vec![fill_stroke()]);
+        // Erasing afterwards goes into its own component.
+        let erased = add_stroke(Some(&filled), vec![p(0.2, 0.2)], Brush::default(), true);
+        assert_eq!(erased.components.len(), 2);
+        assert_eq!(erased.components[1].op, MaskOp::Subtract);
     }
 
     #[test]
