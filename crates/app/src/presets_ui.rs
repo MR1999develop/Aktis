@@ -199,13 +199,9 @@ impl PresetsUi {
             egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                 if !draft.brush {
                     let sel = &mut draft.selection;
-                    // Lens corrections and geometry belong to one photo (lens, framing):
-                    // not offered, as in Capture One's styles.
+                    // The camera profile, lens corrections and geometry belong to one
+                    // photo (its camera, lens and framing): not offered.
                     ui.checkbox(&mut sel.white_balance, "White balance (development)");
-                    ui.checkbox(&mut sel.profile, "Camera profile").on_hover_text(
-                        "The colour profile of the camera (ICC/DCP) chosen for the photo: \
-                         useful only on photos of the same camera",
-                    );
                     ui.separator();
                 }
                 if draft.choices.is_empty() {
