@@ -979,6 +979,7 @@ mod tests {
             options,
             software: "test".into(),
             custom_lenses: Default::default(),
+            camera_defaults: Default::default(),
         });
         assert!(!handle.is_cancelled());
         let events = wait_for(&worker, |e| matches!(e, Event::ExportFinished(_)));
