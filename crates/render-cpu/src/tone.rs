@@ -7,8 +7,9 @@
 //! the whole picture evenly instead of mostly the highlights; the shadows
 //! sink into a toe and the highlights roll off into a shoulder instead of
 //! clipping. It is applied to the brightest channel and every channel is
-//! scaled by the same factor, so hues are kept; colours far above white
-//! fade to white as film does. Colours outside sRGB are brought inside by
+//! scaled by the same factor, so hues are kept; in the shoulder colours
+//! pale towards their grey as the curve flattens, and far above white they
+//! fade to white, as film does. Colours outside sRGB are brought inside by
 //! moving them towards the grey of the same luminance, never by clipping
 //! one channel.
 
@@ -24,6 +25,11 @@ pub const SHOULDER_FROM: f32 = 2.0;
 pub const WHITE_FROM: f32 = 1.0;
 /// …and at which it has turned fully white (3 stops over white).
 pub const WHITE_AT: f32 = 8.0;
+/// How much of the shoulder's compression also takes colour away: bright
+/// colours pale as they approach white, as on film and in Capture One,
+/// instead of staying as saturated as in the midtones (exposure would
+/// otherwise look like it adds saturation).
+pub const HIGHLIGHT_FADE: f32 = 0.5;
 
 /// The shape of one base curve: every curve passes through middle grey at
 /// its displayed value, with `slope` through the midtones.
@@ -99,6 +105,28 @@ pub fn curve_value(curve: BaseCurve, n: f32) -> f32 {
     core_color::srgb_decode(y.clamp(0.0, 1.0))
 }
 
+/// How far the curve has flattened at scene value `n`: 0 below the
+/// shoulder, rising towards 1 as the slope falls to nothing.
+#[must_use]
+pub fn shoulder_compression(curve: BaseCurve, n: f32) -> f32 {
+    if n.is_nan() || n <= 0.0 {
+        return 0.0;
+    }
+    if n.is_infinite() {
+        return 1.0;
+    }
+    let shape = Shape::of(curve);
+    let e = (n / GREY).log2();
+    if e <= shape.shoulder_from {
+        return 0.0;
+    }
+    let room = 1.0 - (grey_out() + shape.slope * shape.shoulder_from);
+    1.0 - (-(e - shape.shoulder_from) * shape.slope / room).exp()
+}
+
+/// Rec. 2020 luminance weights (the working space).
+const LUMA: [f32; 3] = [0.2627, 0.6780, 0.0593];
+
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -120,12 +148,14 @@ pub fn output_rgb_with(rgb: [f32; 3], to_srgb: &Matrix3, curve: BaseCurve) -> [f
     }
     let f = curve_value(curve, n);
     let scale = f / n;
+    let kept = rgb.map(|v| v * scale);
+    // Paler in the shoulder: towards the grey of the same luminance.
+    let fade = HIGHLIGHT_FADE * shoulder_compression(curve, n);
+    let y = kept[0] * LUMA[0] + kept[1] * LUMA[1] + kept[2] * LUMA[2];
+    let paled = kept.map(|v| v + (y - v) * fade);
     // Towards white as the light grows far above white.
     let w = smoothstep(WHITE_FROM, WHITE_AT, n);
-    let c = rgb.map(|v| {
-        let kept = v * scale;
-        kept + (f - kept) * w
-    });
+    let c = paled.map(|v| v + (f - v) * w);
     gamut_map(to_srgb.apply(c))
 }
 
@@ -203,7 +233,8 @@ mod tests {
         let out = output_rgb(orange, &ID);
         assert!(out[0] < 1.0);
         let ratio = out[1] / out[0];
-        assert!(ratio > 0.5 && ratio < 0.6, "the hue is kept: {out:?}");
+        assert!(out[0] > out[1] && out[1] > out[2], "still orange: {out:?}");
+        assert!(ratio > 0.5 && ratio < 0.85, "not clipped to yellow: {out:?}");
         // Far above white: white.
         let out = output_rgb([60.0, 30.0, 6.0], &ID);
         assert!(out.iter().all(|v| *v > 0.98), "{out:?}");
@@ -212,6 +243,25 @@ mod tests {
         let b = output_rgb([1.5, 0.75, 0.15], &ID);
         assert!(b.iter().zip(&a).all(|(b, a)| b >= a));
         assert_eq!(output_rgb([-0.1, -0.2, -0.3], &ID), [0.0; 3]);
+    }
+
+    #[test]
+    fn more_exposure_does_not_add_saturation() {
+        // The same orange, one stop brighter each time: as displayed, its
+        // channels come closer (paler), never further apart.
+        let spread = |k: f32| {
+            let out = output_rgb([0.2 * k, 0.1 * k, 0.02 * k], &ID);
+            out[2] / out[0]
+        };
+        let mut last = spread(1.0);
+        for stop in 1..6 {
+            let s = spread(2.0_f32.powi(stop));
+            assert!(s >= last - 1e-4, "stop {stop}: {s} < {last}");
+            last = s;
+        }
+        // Midtones are untouched by the fade.
+        assert!(shoulder_compression(BaseCurve::FilmStandard, GREY).abs() < 1e-9);
+        assert!(shoulder_compression(BaseCurve::FilmStandard, 4.0) > 0.8);
     }
 
     #[test]

@@ -218,6 +218,9 @@ pub struct EditorApp {
     workspace_name: Option<String>,
     /// The Save Custom Lens window: the name being typed.
     custom_lens_name: Option<String>,
+    /// The node to select when this photo opens (the one selected when the
+    /// editor was closed), once.
+    restore_node: Option<(PathBuf, NodeId)>,
     /// The custom lens whose deletion waits for confirmation.
     delete_custom_lens: Option<String>,
     /// Wheel scrolling not yet turned into a zoom step.
@@ -313,6 +316,7 @@ impl EditorApp {
             close_refused: false,
             workspace_name: None,
             custom_lens_name: None,
+            restore_node: None,
             delete_custom_lens: None,
             wheel: 0.0,
         };
@@ -328,6 +332,12 @@ impl EditorApp {
         }
         // The photo given on the command line, else the one open when the editor was closed.
         let last = app.settings.recent.first().filter(|p| p.is_file()).cloned();
+        // The last photo comes back with the node that was selected in it.
+        if open.is_none()
+            && let (Some(path), Some(node)) = (&last, app.settings.last_node)
+        {
+            app.restore_node = Some((path.clone(), NodeId::from_raw(node)));
+        }
         if let Some(path) = open.or(last) {
             app.open(path);
         }
@@ -989,8 +999,15 @@ impl EditorApp {
         if !keep_shown {
             self.shown = None;
         }
-        // Show the Source's settings, as for a new photo.
+        // Show the Source's settings, as for a new photo, or the node that
+        // was selected when the editor was closed on this photo.
         self.selected_node = Some(doc.recipe().graph.source());
+        if let Some((path, node)) = self.restore_node.take()
+            && path == doc.path()
+            && doc.recipe().graph.node(node).is_some()
+        {
+            self.selected_node = Some(node);
+        }
         self.recent_nodes.clear();
         self.graph.restore(view);
         // A style brush armed on the photo being left is not carried over.
@@ -2904,6 +2921,7 @@ impl eframe::App for EditorApp {
     /// and the open variant when it changed.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.save_edit(false);
+        self.settings.last_node = self.doc.as_ref().and(self.selected_node).map(NodeId::get);
         eframe::set_value(storage, STORAGE_KEY, &self.settings);
     }
 }

@@ -180,6 +180,9 @@ pub struct Settings {
     /// Folder of the presets and style brushes; `None`: `Presets` in the
     /// editor's data folder.
     pub presets_dir: Option<PathBuf>,
+    /// The node selected in the photo open when the editor was closed (the
+    /// first of `recent`), selected again when it reopens.
+    pub last_node: Option<u32>,
 }
 
 impl Settings {
