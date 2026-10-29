@@ -6,30 +6,163 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// A group of the catalog's photos, as the Explorer lists them (Capture
-/// One's catalog collections).
+/// A group of the catalog's photos, as the Library lists them (Capture
+/// One's catalog collections, folders and albums).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Collection {
-    /// Every photo of the catalog.
+    /// Every photo of the catalog, those in the Trash apart.
     All,
     /// The photos of the last import.
     LastImport,
+    /// The photos of one import (Recent Imports), by its number.
+    Import(i64),
+    /// Photos whose edit was saved in the last [`RECENT_EDIT_DAYS`] days,
+    /// the latest first.
+    RecentEdits,
+    /// Photos moved to the Trash: still in the catalog until it is emptied.
+    Trash,
     /// The photos imported from one folder (not its sub-folders).
     Folder(PathBuf),
+    /// The photos of an album, by its number.
+    Album(i64),
 }
 
+/// How far back Recent Edits goes.
+pub const RECENT_EDIT_DAYS: i64 = 30;
+
+/// How many imports Recent Imports lists.
+pub const RECENT_IMPORTS: usize = 10;
+
 impl Collection {
-    /// Name shown in the Explorer.
+    /// Name shown in the Library; an import and an album are named by
+    /// their [`ImportBatch`] and [`Album`].
     #[must_use]
     pub fn label(&self) -> String {
         match self {
             Self::All => "All Images".to_owned(),
             Self::LastImport => "Last Import".to_owned(),
+            Self::Import(n) => format!("Import {n}"),
+            Self::RecentEdits => "Recent Edits".to_owned(),
+            Self::Trash => "Trash".to_owned(),
             Self::Folder(dir) => {
                 dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned())
             }
+            Self::Album(n) => format!("Album {n}"),
         }
     }
+
+    /// Whether the photos shown are in the Trash (actions there restore or
+    /// remove instead of trashing).
+    #[must_use]
+    pub fn is_trash(&self) -> bool {
+        matches!(self, Self::Trash)
+    }
+}
+
+/// One import of the catalog, for Recent Imports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportBatch {
+    /// Its number (the import's order).
+    pub number: i64,
+    /// When it was made, in seconds since 1970 (UTC).
+    pub when: i64,
+    /// Photos it added that are still in the catalog (the Trash apart).
+    pub count: usize,
+}
+
+impl ImportBatch {
+    /// "29 Oct 2026", the day of the import (UTC).
+    #[must_use]
+    pub fn day_text(&self) -> String {
+        const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        let d = crate::import::Day::from_unix(self.when);
+        let month = MONTHS.get(usize::try_from(d.month).unwrap_or(1).saturating_sub(1)).copied().unwrap_or("");
+        format!("{} {month} {}", d.day, d.year)
+    }
+}
+
+/// An album: photos put together by hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Album {
+    /// Its number, never reused.
+    pub id: i64,
+    /// Name shown.
+    pub name: String,
+    /// Photos in it (the Trash apart).
+    pub count: usize,
+}
+
+/// One folder of the catalog's folder tree, as the Library shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderNode {
+    /// The folder.
+    pub path: PathBuf,
+    /// Name shown: the folder's name, or several names joined by the
+    /// separator when folders without photos of their own lead to a
+    /// single sub-folder ("DATI\Photos"), or the drive.
+    pub name: String,
+    /// Photos imported from the folder itself.
+    pub own: usize,
+    /// Photos in it and in its sub-folders.
+    pub total: usize,
+    /// Its sub-folders that hold photos, by name.
+    pub children: Vec<FolderNode>,
+}
+
+/// The tree of the folders photos were imported from, with their counts
+/// (`folders`: each folder and the photos imported from it). Folders on
+/// the way that hold no photos of their own and lead to a single
+/// sub-folder are shown as one ("D:\DATI\Photos"), so the tree starts
+/// where the photos are.
+#[must_use]
+pub fn folder_tree(folders: &[(PathBuf, usize)]) -> Vec<FolderNode> {
+    let mut nodes: BTreeMap<PathBuf, (usize, Vec<PathBuf>)> = BTreeMap::new();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for (dir, n) in folders {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        nodes.entry(dir.clone()).or_default().0 += n;
+        // Link every folder on the way up to its parent.
+        let mut child = dir.clone();
+        loop {
+            match child.parent().filter(|p| !p.as_os_str().is_empty()) {
+                Some(parent) => {
+                    let parent = parent.to_path_buf();
+                    let entry = nodes.entry(parent.clone()).or_default();
+                    if !entry.1.contains(&child) {
+                        entry.1.push(child.clone());
+                    }
+                    child = parent;
+                }
+                None => {
+                    if !roots.contains(&child) {
+                        roots.push(child.clone());
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    fn build(path: &Path, nodes: &BTreeMap<PathBuf, (usize, Vec<PathBuf>)>) -> FolderNode {
+        let (own, kids) = nodes.get(path).cloned().unwrap_or_default();
+        let mut children: Vec<FolderNode> = kids.iter().map(|k| build(k, nodes)).collect();
+        children.sort_by_key(|c| c.name.to_lowercase());
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let total = own + children.iter().map(|c| c.total).sum::<usize>();
+        let mut node = FolderNode { path: path.to_path_buf(), name, own, total, children };
+        // One step that only leads on: shown with its single sub-folder.
+        while node.own == 0 && node.children.len() == 1 {
+            let only = node.children.remove(0);
+            let sep =
+                if node.name.ends_with(['/', '\\']) { String::new() } else { std::path::MAIN_SEPARATOR.to_string() };
+            node = FolderNode { name: format!("{}{sep}{}", node.name, only.name), ..only };
+        }
+        node
+    }
+    let mut out: Vec<FolderNode> = roots.iter().map(|r| build(r, &nodes)).collect();
+    out.sort_by_key(|c| c.name.to_lowercase());
+    out
 }
 
 /// Sorts `paths` by file name (case apart), then by folder.
@@ -336,7 +469,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_folder_tree_sums_its_sub_folders_and_skips_empty_steps() {
+        let p = |s: &str| PathBuf::from(s);
+        let folders =
+            [(p("/data/photos/2026/a"), 3), (p("/data/photos/2026/b"), 2), (p("/data/photos"), 1), (p("/x"), 4)];
+        let tree = folder_tree(&folders);
+        // The root holds two branches, so it stays.
+        assert_eq!(tree.len(), 1);
+        assert_eq!((tree[0].total, tree[0].children.len()), (10, 2));
+        let data = &tree[0].children[0];
+        assert_eq!(data.path, p("/data/photos"), "data leads only to photos: one step");
+        assert_eq!(data.name, format!("data{}photos", std::path::MAIN_SEPARATOR));
+        assert_eq!((data.own, data.total), (1, 6));
+        let year = &data.children[0];
+        assert_eq!((year.name.as_str(), year.total, year.children.len()), ("2026", 5, 2));
+        assert_eq!(year.children[0].name, "a");
+        assert_eq!((tree[0].children[1].name.as_str(), tree[0].children[1].own), ("x", 4));
+        assert!(folder_tree(&[]).is_empty());
+    }
+
+    #[test]
     fn collections_have_names_and_paths_sort_by_file_name() {
+        assert!(Collection::Trash.is_trash() && !Collection::All.is_trash());
+        let batch = ImportBatch { number: 3, when: 1_793_268_000, count: 4 };
+        assert_eq!(batch.day_text(), "29 Oct 2026");
         assert_eq!(Collection::All.label(), "All Images");
         assert_eq!(Collection::Folder(PathBuf::from("D:/Photos/Trip")).label(), "Trip");
         let mut paths = vec![PathBuf::from("b/A2.NEF"), PathBuf::from("a/a1.NEF"), PathBuf::from("a/A2.NEF")];

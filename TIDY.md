@@ -205,3 +205,10 @@
   lens database or custom lenses, but the camera defaults of its camera
   model (tuned for RAW files) still apply to it. The thumbnail decodes
   the whole picture (no embedded preview used).
+- Library collections: Recent Imports shows the day in UTC (no local
+  time zone yet, so no time of day); a catalog folder shows its own photos,
+  not those of its sub-folders; moving to the Trash has no undo (Restore in
+  the Trash); photos are dragged onto albums only from the filmstrip (not
+  from the overview tiles); album photos are listed by name, not in the
+  order they were added; smart albums, projects and groups were left out
+  by choice.

@@ -9,7 +9,9 @@
 //! (table `imported`), every photo an older file knew about counting as
 //! imported; 4 adds each imported photo's file name and capture time
 //! (duplicate checks) and the photographer and copyright given at import
-//! (table `texts`). Older files are upgraded on open.
+//! (table `texts`); 5 adds the Trash (column `imported.trashed`) and the
+//! albums (tables `albums` and `album_photos`). Older files are upgraded
+//! on open.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -18,10 +20,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::import::{ImportMetadata, ImportedPhoto, ShotKey};
-use crate::model::{Collection, ColorLabel, MAX_RATING, PhotoMeta, StoredVariant, Tag, TagSource, VariantInfo};
+use crate::model::{
+    Album, Collection, ColorLabel, ImportBatch, MAX_RATING, PhotoMeta, StoredVariant, Tag, TagSource, VariantInfo,
+};
 
 /// Layout version of the database; older files are upgraded on open.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS photos (
@@ -57,6 +61,18 @@ CREATE TABLE IF NOT EXISTS imported (
     captured TEXT
 );
 CREATE INDEX IF NOT EXISTS imported_by_folder ON imported(folder);
+CREATE TABLE IF NOT EXISTS albums (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name    TEXT NOT NULL,
+    created INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS album_photos (
+    album INTEGER NOT NULL,
+    path  TEXT NOT NULL,
+    added INTEGER NOT NULL,
+    PRIMARY KEY (album, path)
+);
+CREATE INDEX IF NOT EXISTS album_photos_by_path ON album_photos(path);
 CREATE TABLE IF NOT EXISTS texts (
     path  TEXT NOT NULL,
     field TEXT NOT NULL,
@@ -163,15 +179,16 @@ impl Catalog {
         if has_variant == 0 {
             tx.execute_batch("ALTER TABLE photos ADD COLUMN variant INTEGER NOT NULL DEFAULT 1;")?;
         }
-        // Version 3 had no name and capture time of the imported photos.
-        for column in ["name", "captured"] {
+        // Version 3 had no name and capture time of the imported photos,
+        // version 4 no Trash.
+        for (column, kind) in [("name", "TEXT"), ("captured", "TEXT"), ("trashed", "INTEGER")] {
             let has: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('imported') WHERE name = ?1",
                 params![column],
                 |r| r.get(0),
             )?;
             if has == 0 {
-                tx.execute_batch(&format!("ALTER TABLE imported ADD COLUMN {column} TEXT;"))?;
+                tx.execute_batch(&format!("ALTER TABLE imported ADD COLUMN {column} {kind};"))?;
             }
         }
         // The index needs the name column, so it comes after the upgrade.
@@ -343,6 +360,8 @@ impl Catalog {
         tx.execute("UPDATE imported SET path = ?2 WHERE path = ?1", params![f, t])?;
         tx.execute("DELETE FROM texts WHERE path = ?1", params![t])?;
         tx.execute("UPDATE texts SET path = ?2 WHERE path = ?1", params![f, t])?;
+        tx.execute("DELETE FROM album_photos WHERE path = ?1", params![t])?;
+        tx.execute("UPDATE album_photos SET path = ?2 WHERE path = ?1", params![f, t])?;
         tx.commit()?;
         Ok(())
     }
@@ -470,12 +489,13 @@ impl Catalog {
         Ok(n > 0)
     }
 
-    /// The photos of `collection`, by path.
+    /// The photos of `collection`, by name (Recent Edits: the latest edit
+    /// first). Photos in the Trash are only in [`Collection::Trash`].
     ///
     /// # Errors
     /// [`CatalogError::Sqlite`] when the database cannot be read.
     pub fn collection(&self, collection: &Collection) -> Result<Vec<PathBuf>, CatalogError> {
-        let rows = |sql: &str, arg: Option<String>| -> Result<Vec<PathBuf>, CatalogError> {
+        let rows = |sql: &str, arg: Option<rusqlite::types::Value>| -> Result<Vec<PathBuf>, CatalogError> {
             let mut stmt = self.conn.prepare(sql)?;
             let map = |r: &rusqlite::Row<'_>| r.get::<_, String>(0);
             let paths = match arg {
@@ -484,27 +504,195 @@ impl Catalog {
             };
             Ok(paths.into_iter().map(PathBuf::from).collect())
         };
+        use rusqlite::types::Value;
+        let live = "trashed IS NULL";
         let mut paths = match collection {
-            Collection::All => rows("SELECT path FROM imported", None)?,
-            Collection::LastImport => {
-                rows("SELECT path FROM imported WHERE batch = (SELECT MAX(batch) FROM imported)", None)?
+            Collection::All => rows(&format!("SELECT path FROM imported WHERE {live}"), None)?,
+            Collection::LastImport => rows(
+                &format!("SELECT path FROM imported WHERE {live} AND batch = (SELECT MAX(batch) FROM imported)"),
+                None,
+            )?,
+            Collection::Import(n) => {
+                rows(&format!("SELECT path FROM imported WHERE {live} AND batch = ?1"), Some(Value::Integer(*n)))?
             }
-            Collection::Folder(dir) => rows("SELECT path FROM imported WHERE folder = ?1", Some(key(dir)))?,
+            Collection::RecentEdits => {
+                let since = now() - crate::model::RECENT_EDIT_DAYS * 86_400;
+                // Newest first: not sorted by name.
+                return rows(
+                    "SELECT v.path FROM variants v JOIN imported i ON i.path = v.path
+                     WHERE i.trashed IS NULL GROUP BY v.path HAVING MAX(v.updated) >= ?1
+                     ORDER BY MAX(v.updated) DESC",
+                    Some(Value::Integer(since)),
+                );
+            }
+            Collection::Trash => rows("SELECT path FROM imported WHERE trashed IS NOT NULL", None)?,
+            Collection::Folder(dir) => {
+                rows(&format!("SELECT path FROM imported WHERE {live} AND folder = ?1"), Some(Value::Text(key(dir))))?
+            }
+            Collection::Album(id) => rows(
+                "SELECT a.path FROM album_photos a JOIN imported i ON i.path = a.path
+                 WHERE i.trashed IS NULL AND a.album = ?1",
+                Some(Value::Integer(*id)),
+            )?,
         };
         crate::model::sort_by_name(&mut paths);
         Ok(paths)
     }
 
-    /// The folders with imported photos and how many each has, by path.
+    /// The folders with imported photos and how many each has, by path
+    /// (the Trash apart).
     ///
     /// # Errors
     /// [`CatalogError::Sqlite`] when the database cannot be read.
     pub fn imported_folders(&self) -> Result<Vec<(PathBuf, usize)>, CatalogError> {
-        let mut stmt = self.conn.prepare("SELECT folder, COUNT(*) FROM imported GROUP BY folder ORDER BY folder")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT folder, COUNT(*) FROM imported WHERE trashed IS NULL GROUP BY folder ORDER BY folder")?;
         let rows = stmt
             .query_map([], |r| Ok((PathBuf::from(r.get::<_, String>(0)?), r.get::<_, i64>(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows.into_iter().map(|(p, n)| (p, usize::try_from(n).unwrap_or(0))).collect())
+    }
+
+    /// The last `limit` imports that still have photos, the latest first.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn recent_imports(&self, limit: usize) -> Result<Vec<ImportBatch>, CatalogError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT batch, MAX(imported), COUNT(*) FROM imported WHERE trashed IS NULL
+             GROUP BY batch ORDER BY batch DESC LIMIT ?1",
+        )?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = stmt
+            .query_map(params![limit], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(number, when, count)| ImportBatch { number, when, count: usize::try_from(count).unwrap_or(0) })
+            .collect())
+    }
+
+    // ----- Trash -----
+
+    /// Moves `paths` to the Trash: they leave every other collection but
+    /// stay in the catalog, with their edits, until the Trash is emptied.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn trash(&mut self, paths: &[PathBuf]) -> Result<(), CatalogError> {
+        let tx = self.conn.transaction()?;
+        let now = now();
+        for p in paths {
+            tx.execute("UPDATE imported SET trashed = ?2 WHERE path = ?1", params![key(p), now])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Takes `paths` out of the Trash, back where they were.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn restore(&mut self, paths: &[PathBuf]) -> Result<(), CatalogError> {
+        let tx = self.conn.transaction()?;
+        for p in paths {
+            tx.execute("UPDATE imported SET trashed = NULL WHERE path = ?1", params![key(p)])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Removes every photo of the Trash from the catalog (the files are not
+    /// touched); returns them.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn empty_trash(&mut self) -> Result<Vec<PathBuf>, CatalogError> {
+        let gone = self.collection(&Collection::Trash)?;
+        self.remove(&gone)?;
+        Ok(gone)
+    }
+
+    // ----- albums -----
+
+    /// The albums, by name, with how many photos each holds.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn albums(&self) -> Result<Vec<Album>, CatalogError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT al.id, al.name,
+                    (SELECT COUNT(*) FROM album_photos a JOIN imported i ON i.path = a.path
+                     WHERE a.album = al.id AND i.trashed IS NULL)
+             FROM albums al ORDER BY al.name COLLATE NOCASE, al.id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().map(|(id, name, n)| Album { id, name, count: usize::try_from(n).unwrap_or(0) }).collect())
+    }
+
+    /// Makes an album called `name` (trimmed); returns its number.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`].
+    pub fn create_album(&mut self, name: &str) -> Result<i64, CatalogError> {
+        self.conn.execute("INSERT INTO albums (name, created) VALUES (?1, ?2)", params![name.trim(), now()])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Renames album `id`.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`].
+    pub fn rename_album(&mut self, id: i64, name: &str) -> Result<(), CatalogError> {
+        self.conn.execute("UPDATE albums SET name = ?2 WHERE id = ?1", params![id, name.trim()])?;
+        Ok(())
+    }
+
+    /// Deletes album `id`; its photos stay in the catalog.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn delete_album(&mut self, id: i64) -> Result<(), CatalogError> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM album_photos WHERE album = ?1", params![id])?;
+        tx.execute("DELETE FROM albums WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Puts `paths` in album `id` (those already there stay once); returns
+    /// how many were added.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn add_to_album(&mut self, id: i64, paths: &[PathBuf]) -> Result<usize, CatalogError> {
+        let tx = self.conn.transaction()?;
+        let now = now();
+        let mut added = 0;
+        for p in paths {
+            added += tx.execute(
+                "INSERT OR IGNORE INTO album_photos (album, path, added) VALUES (?1, ?2, ?3)",
+                params![id, key(p), now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(added)
+    }
+
+    /// Takes `paths` out of album `id`; they stay in the catalog.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn remove_from_album(&mut self, id: i64, paths: &[PathBuf]) -> Result<(), CatalogError> {
+        let tx = self.conn.transaction()?;
+        for p in paths {
+            tx.execute("DELETE FROM album_photos WHERE album = ?1 AND path = ?2", params![id, key(p)])?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// How many photos `collection` holds.
@@ -524,7 +712,7 @@ impl Catalog {
         let tx = self.conn.transaction()?;
         for p in paths {
             let k = key(p);
-            for table in ["imported", "photos", "tags", "variants", "texts"] {
+            for table in ["imported", "photos", "tags", "variants", "texts", "album_photos"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE path = ?1"), params![k])?;
             }
         }
@@ -738,6 +926,69 @@ mod tests {
         assert_eq!(c.credits(&shot.path).unwrap(), (Some("Ann".into()), None), "a blank copyright is not kept");
         c.rename(&shot.path, &p("D/2026/IMG_1b.CR3")).unwrap();
         assert_eq!(c.credits(&p("D/2026/IMG_1b.CR3")).unwrap().0.as_deref(), Some("Ann"));
+    }
+
+    #[test]
+    fn the_trash_hides_photos_until_restored_or_emptied() {
+        let mut c = Catalog::open_in_memory().unwrap();
+        let (a, b) = (p("d/a.NEF"), p("d/b.NEF"));
+        c.import(&[a.clone(), b.clone()]).unwrap();
+        c.set_rating(std::slice::from_ref(&a), 5).unwrap();
+        c.trash(std::slice::from_ref(&a)).unwrap();
+        assert_eq!(c.collection(&Collection::All).unwrap(), [b.clone()]);
+        assert_eq!(c.collection(&Collection::Folder(p("d"))).unwrap(), [b.clone()]);
+        assert_eq!(c.collection(&Collection::Trash).unwrap(), [a.clone()]);
+        assert_eq!(c.imported_folders().unwrap(), [(p("d"), 1)]);
+        assert!(c.is_imported(&a).unwrap(), "still in the catalog");
+        c.restore(std::slice::from_ref(&a)).unwrap();
+        assert_eq!(c.count(&Collection::All).unwrap(), 2);
+        assert_eq!(c.meta(&a).unwrap().rating, 5, "nothing lost on the way");
+        c.trash(std::slice::from_ref(&a)).unwrap();
+        assert_eq!(c.empty_trash().unwrap(), [a.clone()]);
+        assert!(!c.is_imported(&a).unwrap() && c.collection(&Collection::Trash).unwrap().is_empty());
+    }
+
+    #[test]
+    fn albums_hold_photos_by_hand_and_imports_are_listed() {
+        let mut c = Catalog::open_in_memory().unwrap();
+        let (a, b, x) = (p("d/a.NEF"), p("d/b.NEF"), p("e/x.NEF"));
+        c.import(&[a.clone(), b.clone()]).unwrap();
+        c.import(std::slice::from_ref(&x)).unwrap();
+        let imports = c.recent_imports(10).unwrap();
+        assert_eq!(imports.iter().map(|i| (i.number, i.count)).collect::<Vec<_>>(), [(2, 1), (1, 2)]);
+        assert_eq!(c.collection(&Collection::Import(1)).unwrap(), [a.clone(), b.clone()]);
+        let best = c.create_album(" Best ").unwrap();
+        let other = c.create_album("Another").unwrap();
+        assert_eq!(c.add_to_album(best, &[x.clone(), a.clone()]).unwrap(), 2);
+        assert_eq!(c.add_to_album(best, std::slice::from_ref(&a)).unwrap(), 0);
+        assert_eq!(c.collection(&Collection::Album(best)).unwrap(), [a.clone(), x.clone()]);
+        let names: Vec<(String, usize)> = c.albums().unwrap().into_iter().map(|al| (al.name, al.count)).collect();
+        assert_eq!(names, [("Another".to_owned(), 0), ("Best".to_owned(), 2)]);
+        c.trash(std::slice::from_ref(&x)).unwrap();
+        assert_eq!(c.albums().unwrap()[1].count, 1, "the Trash is not counted");
+        c.remove_from_album(best, std::slice::from_ref(&a)).unwrap();
+        assert!(c.collection(&Collection::Album(best)).unwrap().is_empty());
+        c.rename_album(other, "Kept").unwrap();
+        c.delete_album(best).unwrap();
+        assert_eq!(c.albums().unwrap().len(), 1);
+        assert!(c.is_imported(&a).unwrap(), "deleting an album keeps its photos");
+    }
+
+    #[test]
+    fn recent_edits_are_the_photos_saved_lately_latest_first() {
+        let mut c = Catalog::open_in_memory().unwrap();
+        let (a, b, old) = (p("d/a.NEF"), p("d/b.NEF"), p("d/old.NEF"));
+        c.import(&[a.clone(), b.clone(), old.clone()]).unwrap();
+        for (path, updated) in [(&a, now() - 100), (&b, now() - 10), (&old, now() - 40 * 86_400)] {
+            c.conn
+                .execute(
+                    "INSERT INTO variants (path, number, name, format, data, preview, updated)
+                     VALUES (?1, 1, 'Variant 1', 1, '', NULL, ?2)",
+                    params![key(path), updated],
+                )
+                .unwrap();
+        }
+        assert_eq!(c.collection(&Collection::RecentEdits).unwrap(), [b, a]);
     }
 
     #[test]

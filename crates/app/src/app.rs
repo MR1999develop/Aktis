@@ -1067,6 +1067,19 @@ impl EditorApp {
         for action in actions {
             match action {
                 LibraryAction::Import(photos) => self.start_import(photos, &ImportSettings::default(), false, ctx),
+                LibraryAction::Trashed { photos, emptied } => {
+                    // The open photo leaves the collections with them: saved, then closed.
+                    if self.doc.as_ref().is_some_and(|d| photos.iter().any(|p| p == d.path())) && self.save_edit(true) {
+                        self.close_photo();
+                    }
+                    let n = photos.len();
+                    let text = if n == 1 { "1 photo".to_owned() } else { format!("{n} photos") };
+                    self.toast = Some(info_toast(if emptied {
+                        format!("{text} removed from the catalog; the files stay on the disk")
+                    } else {
+                        format!("{text} moved to the Trash (Catalog Collections)")
+                    }));
+                }
                 LibraryAction::Open(path) => {
                     let already = self.doc.as_ref().is_some_and(|d| d.path() == path);
                     let pending = self.opening_path.as_ref() == Some(&path);
@@ -1839,9 +1852,10 @@ impl EditorApp {
                     count.push_str(&format!(", {selected} selected"));
                 }
                 // A collection is named and hovered with its catalog, a disk folder with its path.
-                let (name, hover) = match self.library.collection() {
-                    Some(c) => (c.label(), format!("Catalog {}", editor::catalogs::name(self.library.catalog_dir()))),
-                    None => (editor::library::folder_name(folder), folder.display().to_string()),
+                let name = self.library.shown_name().unwrap_or_default();
+                let hover = match self.library.collection() {
+                    Some(_) => format!("Catalog {}", editor::catalogs::name(self.library.catalog_dir())),
+                    None => folder.display().to_string(),
                 };
                 ui.label(RichText::new(format!("{name} \u{b7} {count}")).color(t.text_weak)).on_hover_text(hover);
                 ui.separator();
@@ -3217,7 +3231,7 @@ impl eframe::App for EditorApp {
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(t.canvas))
             .show(ui, |ui| self.center(ui, &mut commands, &mut library));
-        self.library.rename_dialog(&ctx, &mut library);
+        self.library.dialogs(&ctx, &mut library);
         self.workspace_dialog(&ctx);
         self.catalog_dialogs(&ctx);
         self.custom_lens_dialog(&ctx);

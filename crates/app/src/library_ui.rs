@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use catalog::{
-    Catalog, Collection, ColorLabel, FIRST_VARIANT, ImportMetadata, ImportedPhoto, MAX_RATING, PhotoMeta, ShotKey,
-    StoredVariant, VariantInfo,
+    Album, Catalog, Collection, ColorLabel, FIRST_VARIANT, FolderNode, ImportBatch, ImportMetadata, ImportedPhoto,
+    MAX_RATING, PhotoMeta, ShotKey, StoredVariant, VariantInfo,
 };
 use editor::variants::Save;
 use editor::{Filmstrip, FolderListing, FolderTree, StripPhoto, ThumbCache, ThumbJob, ThumbState, Worker};
@@ -47,6 +47,17 @@ const MAX_OVERVIEW_THUMBS: usize = 60;
 /// Height of the line above the overview tiles.
 const OVERVIEW_HEADER: f32 = 30.0;
 
+#[path = "library_collections.rs"]
+mod collections;
+
+/// How many photos the Library's catalog collections hold, as last read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Counts {
+    all: usize,
+    edits: usize,
+    trash: usize,
+}
+
 /// What the library asks of the window.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LibraryAction {
@@ -77,6 +88,15 @@ pub enum LibraryAction {
     Error(String),
     /// Import these photos into the catalog.
     Import(Vec<PathBuf>),
+    /// These photos left the catalog's collections, moved to the Trash or
+    /// (`emptied`) removed from the catalog with the Trash: the window
+    /// closes the open photo if it is one of them.
+    Trashed {
+        /// The photos.
+        photos: Vec<PathBuf>,
+        /// The Trash was emptied.
+        emptied: bool,
+    },
 }
 
 /// Progress of a running "AI-tag this folder", for the Explorer.
@@ -114,6 +134,11 @@ enum CardAction {
     Command(Command),
     ApplyPreset(PathBuf, usize),
     SavePreset(PathBuf),
+    Trash(PathBuf),
+    Restore(PathBuf),
+    AddToAlbum(PathBuf, i64),
+    NewAlbum(PathBuf),
+    RemoveFromAlbum(PathBuf, i64),
 }
 
 /// The Rename dialog.
@@ -132,10 +157,19 @@ pub struct Library {
     catalog_dir: PathBuf,
     /// The catalog collection in the filmstrip; `None` for a folder of the disk.
     collection: Option<Collection>,
-    /// The folders with imported photos and their counts, and the counts of
-    /// All Images and Last Import, as last read.
-    folders: Vec<(PathBuf, usize)>,
-    counts: (usize, usize),
+    /// The catalog's folders, imports, albums and counts, as last read.
+    folder_nodes: Vec<FolderNode>,
+    imports: Vec<ImportBatch>,
+    albums: Vec<Album>,
+    counts: Counts,
+    /// Catalog folders shown closed in the Library.
+    folders_closed: HashSet<PathBuf>,
+    /// The New Album / Rename Album window, while open.
+    album_dialog: Option<collections::AlbumDialog>,
+    /// The album whose deletion waits for confirmation.
+    delete_album: Option<Album>,
+    /// Emptying the Trash waits for confirmation.
+    confirm_empty_trash: bool,
     /// The photos of the disk folder shown that are not in the catalog yet.
     not_imported: Vec<PathBuf>,
     /// The photos of the current folder and the filters.
@@ -157,6 +191,8 @@ pub struct Library {
     scroll_to: Option<PathBuf>,
     /// Filmstrip rows drawn at the last frame.
     shown_rows: std::ops::Range<usize>,
+    /// The pointer was over the filmstrip at the last frame (Delete trashes then).
+    strip_hovered: bool,
     /// Names of the presets offered in the card menu ("Group / Name").
     presets: Vec<String>,
 }
@@ -190,8 +226,14 @@ impl Library {
             tree: FolderTree::new(roots),
             catalog_dir: catalog_dir.to_owned(),
             collection: None,
-            folders: Vec::new(),
-            counts: (0, 0),
+            folder_nodes: Vec::new(),
+            imports: Vec::new(),
+            albums: Vec::new(),
+            counts: Counts::default(),
+            folders_closed: HashSet::new(),
+            album_dialog: None,
+            delete_album: None,
+            confirm_empty_trash: false,
             not_imported: Vec::new(),
             strip: Filmstrip::default(),
             catalog,
@@ -204,6 +246,7 @@ impl Library {
             rename: None,
             scroll_to: None,
             shown_rows: 0..0,
+            strip_hovered: false,
             presets: Vec::new(),
         };
         library.refresh_collections();
@@ -241,10 +284,11 @@ impl Library {
     /// A message when the catalog refuses them.
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<usize, String> {
         let catalog = self.catalog.as_mut().ok_or("there is no catalog")?;
+        let batch = catalog.next_import().map_err(|e| e.to_string())?;
         let added = catalog.import(paths).map_err(|e| e.to_string())?;
         self.refresh_collections();
         if added > 0 {
-            self.show_collection(Collection::LastImport);
+            self.show_collection(Collection::Import(batch));
         }
         Ok(added)
     }
@@ -283,8 +327,8 @@ impl Library {
         self.refresh_collections();
         // As Capture One: the photos show up in the import as they come in
         // (the selection stays, the collection being the same).
-        if first || self.collection == Some(Collection::LastImport) {
-            self.show_collection(Collection::LastImport);
+        if first || self.collection == Some(Collection::Import(batch)) {
+            self.show_collection(Collection::Import(batch));
         }
         Ok(added)
     }
@@ -298,7 +342,7 @@ impl Library {
     /// How many photos the catalog holds.
     #[must_use]
     pub fn photo_count(&self) -> usize {
-        self.counts.0
+        self.counts.all
     }
 
     /// The catalog collection in the filmstrip, if it shows one.
@@ -322,17 +366,47 @@ impl Library {
         self.collection = Some(collection);
     }
 
-    /// Reads again the catalog's folders and counts for the Explorer.
-    /// Also which photos of a disk folder shown are not imported yet.
+    /// Reads again the catalog's folders, imports, albums and counts for
+    /// the Library. Also which photos of a disk folder shown are not
+    /// imported yet.
     fn refresh_collections(&mut self) {
         let Some(c) = self.catalog.as_ref() else { return };
-        self.folders = c.imported_folders().unwrap_or_default();
-        self.counts = (c.count(&Collection::All).unwrap_or(0), c.count(&Collection::LastImport).unwrap_or(0));
+        self.folder_nodes = catalog::folder_tree(&c.imported_folders().unwrap_or_default());
+        self.imports = c.recent_imports(catalog::RECENT_IMPORTS).unwrap_or_default();
+        self.albums = c.albums().unwrap_or_default();
+        let count = |k: &Collection| c.count(k).unwrap_or(0);
+        self.counts = Counts {
+            all: count(&Collection::All),
+            edits: count(&Collection::RecentEdits),
+            trash: count(&Collection::Trash),
+        };
         self.not_imported = if self.collection.is_none() {
             self.strip.photos.iter().map(|p| p.path.clone()).filter(|p| !c.is_imported(p).unwrap_or(false)).collect()
         } else {
             Vec::new()
         };
+    }
+
+    /// Name of what the filmstrip shows: the collection (an import by its
+    /// day, an album by its name) or the disk folder.
+    #[must_use]
+    pub fn shown_name(&self) -> Option<String> {
+        match &self.collection {
+            Some(Collection::Import(n)) => Some(
+                self.imports
+                    .iter()
+                    .find(|i| i.number == *n)
+                    .map_or_else(|| Collection::Import(*n).label(), |i| format!("Import of {}", i.day_text())),
+            ),
+            Some(Collection::Album(id)) => Some(
+                self.albums
+                    .iter()
+                    .find(|a| a.id == *id)
+                    .map_or_else(|| Collection::Album(*id).label(), |a| a.name.clone()),
+            ),
+            Some(c) => Some(c.label()),
+            None => self.strip.folder.as_deref().map(editor::library::folder_name),
+        }
     }
 
     /// The folder in the filmstrip.
@@ -773,6 +847,11 @@ impl Library {
         {
             self.begin_rename(path.to_owned());
         }
+        // Delete moves to the Trash, as in Capture One (not from a disk folder),
+        // with the pointer over the filmstrip: elsewhere it deletes a node or a spot.
+        if self.strip_hovered && self.collection.as_ref().is_some_and(|c| !c.is_trash()) && pressed(Key::Delete) {
+            self.trash(&targets, actions);
+        }
     }
 
     // ----- Explorer -----
@@ -796,9 +875,9 @@ impl Library {
         ui.add_space(SPACE[0]);
         egui::ScrollArea::vertical()
             .id_salt("explorer-catalog")
-            .max_height((ui.available_height() * 0.3).max(90.0))
+            .max_height((ui.available_height() * 0.45).max(120.0))
             .auto_shrink([false, true])
-            .show(ui, |ui| self.collections(ui, &t));
+            .show(ui, |ui| self.collections(ui, &t, actions));
         ui.separator();
         ui.horizontal(|ui| {
             ui.label(RichText::new("Disk").strong().color(t.text_weak))
@@ -812,7 +891,7 @@ impl Library {
                 }
             });
         });
-        let tree_height = (ui.available_height() * 0.35).max(100.0);
+        let tree_height = (ui.available_height() * 0.3).max(90.0);
         egui::ScrollArea::vertical()
             .id_salt("explorer-folders")
             .max_height(tree_height)
@@ -843,37 +922,6 @@ impl Library {
             ui.add_space(SPACE[2]);
             self.ai_tags(ui, &t, tagging, actions);
         });
-    }
-
-    /// The catalog's collections: All Images, Last Import and the folders
-    /// photos were imported from.
-    fn collections(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        let mut chosen = None;
-        let entries = [(Collection::All, self.counts.0), (Collection::LastImport, self.counts.1)];
-        for (c, n) in entries {
-            let on = self.collection.as_ref() == Some(&c);
-            if choice(ui, on, format!("{}  {n}", c.label())).clicked() {
-                chosen = Some(c);
-            }
-        }
-        if self.folders.is_empty() {
-            ui.label(
-                RichText::new("No photos yet: File \u{25b8} Import Images\u{2026}").size(FONT[0]).color(t.text_weak),
-            );
-        } else {
-            ui.label(RichText::new("Folders").size(FONT[0]).color(t.text_weak));
-        }
-        for (dir, n) in &self.folders {
-            let c = Collection::Folder(dir.clone());
-            let on = self.collection.as_ref() == Some(&c);
-            let r = choice(ui, on, format!("{}  {n}", c.label())).on_hover_text(dir.display().to_string());
-            if r.clicked() {
-                chosen = Some(c);
-            }
-        }
-        if let Some(c) = chosen {
-            self.show_collection(c);
-        }
     }
 
     fn folder_tree(&mut self, ui: &mut egui::Ui, t: &Tokens, worker: Option<&Worker>) {
@@ -1039,6 +1087,7 @@ impl Library {
     ) {
         let t = Tokens::of(ui.ctx().theme());
         self.wanted.clear();
+        self.strip_hovered = ui.rect_contains_pointer(ui.max_rect());
         if self.loading.is_some() {
             ui.add_space(SPACE[3]);
             ui.vertical_centered(|ui| {
@@ -1051,9 +1100,14 @@ impl Library {
         if visible.is_empty() {
             ui.add_space(SPACE[3]);
             let text = if self.strip.folder.is_none() {
-                "Choose a folder in the Explorer"
+                "Choose a collection or a folder in the Library"
             } else if self.strip.photos.is_empty() {
-                "No photos in this folder"
+                match &self.collection {
+                    Some(Collection::Trash) => "The Trash is empty",
+                    Some(Collection::Album(_)) => "No photos in this album: drag some onto its name",
+                    Some(_) => "No photos here",
+                    None => "No photos in this folder",
+                }
             } else {
                 "No photo matches the filters"
             };
@@ -1080,8 +1134,9 @@ impl Library {
 
         let mut card_actions = Vec::new();
         let several = self.strip.selection().len() > 1;
-        let Self { strip, thumbs, wanted, shown_rows, presets, .. } = self;
+        let Self { strip, thumbs, wanted, shown_rows, presets, albums, collection, .. } = self;
         let presets: &[String] = presets;
+        let (albums, collection): (&[Album], Option<&Collection>) = (albums, collection.as_ref());
         let row_count = visible.len().div_ceil(columns);
         area.show_rows(ui, card_h, row_count, |ui, rows| {
             let first = rows.start.saturating_sub(PREFETCH_ROWS) * columns;
@@ -1098,6 +1153,8 @@ impl Library {
                             several,
                             variants: variant_blocks,
                             presets,
+                            albums,
+                            collection,
                         };
                         let thumb = thumbs.get(&photo.path);
                         card(ui, &t, photo, thumb, state, [card_w, card_h], &mut card_actions);
@@ -1105,6 +1162,7 @@ impl Library {
                 });
             }
         });
+        self.drag_hint(ui.ctx(), &t);
         // The overview of a multiple selection shows its thumbnails too.
         let extra: Vec<PathBuf> =
             self.strip.selection().into_iter().filter(|p| !self.wanted.contains(p)).take(MAX_OVERVIEW_THUMBS).collect();
@@ -1136,6 +1194,26 @@ impl Library {
                     }
                 }
                 CardAction::Rename(p) => self.begin_rename(p),
+                CardAction::Trash(p) => {
+                    let targets = self.strip.targets(&p);
+                    self.trash(&targets, actions);
+                }
+                CardAction::Restore(p) => {
+                    let targets = self.strip.targets(&p);
+                    self.restore(&targets, actions);
+                }
+                CardAction::AddToAlbum(p, id) => {
+                    let targets = self.strip.targets(&p);
+                    self.add_to_album(id, &targets, actions);
+                }
+                CardAction::NewAlbum(p) => {
+                    let targets = self.strip.targets(&p);
+                    self.begin_new_album(targets);
+                }
+                CardAction::RemoveFromAlbum(p, id) => {
+                    let targets = self.strip.targets(&p);
+                    self.remove_from_album(id, &targets, actions);
+                }
                 CardAction::OpenWith(p) => {
                     if let Err(e) = launch(&platform::open_with_default_app(platform::Os::current(), &p)) {
                         actions.push(LibraryAction::Error(format!("Cannot open the file: {e}")));
@@ -1258,7 +1336,13 @@ impl Library {
     }
 
     /// The Rename dialog, when open.
-    pub fn rename_dialog(&mut self, ctx: &egui::Context, actions: &mut Vec<LibraryAction>) {
+    /// The Library's windows: Rename, New/Rename Album, the confirmations.
+    pub fn dialogs(&mut self, ctx: &egui::Context, actions: &mut Vec<LibraryAction>) {
+        self.rename_dialog(ctx, actions);
+        self.album_dialogs(ctx, actions);
+    }
+
+    fn rename_dialog(&mut self, ctx: &egui::Context, actions: &mut Vec<LibraryAction>) {
         let Some(d) = &mut self.rename else { return };
         let t = Tokens::of(ctx.theme());
         let (mut confirm, mut cancel) = (false, false);
@@ -1399,6 +1483,11 @@ struct CardState<'a> {
     variants: VariantBlocks,
     /// The presets the menu offers.
     presets: &'a [String],
+    /// The albums the menu offers.
+    albums: &'a [Album],
+    /// What the filmstrip shows: in the Trash photos are restored, in an
+    /// album taken out of it.
+    collection: Option<&'a Collection>,
 }
 
 /// One filmstrip card: thumbnail with badges, name, stars, context menu.
@@ -1413,7 +1502,9 @@ fn card(
 ) {
     let is_open = state.open;
     let height = size[1];
-    let (rect, response) = ui.allocate_exact_size(vec2(size[0], height), Sense::click());
+    // Dragged onto an album to put it there (with the selection it is in).
+    let (rect, response) = ui.allocate_exact_size(vec2(size[0], height), Sense::click_and_drag());
+    response.dnd_set_drag_payload(collections::DraggedPhoto(photo.path.clone()));
     let hover = match thumb {
         Some(ThumbState::Failed(why)) => format!("{}\nNo preview: {why}", photo.path.display()),
         _ => photo.path.display().to_string(),
@@ -1646,6 +1737,8 @@ fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState<'_>, action
             ui.close();
         }
     });
+    ui.separator();
+    collections::card_menu_items(ui, path, group, state.albums, state.collection, actions);
     ui.separator();
     variant_item(ui, Command::DeleteVariant, "Delete Variant\u{2026}", why(state.variants.delete), actions);
 }
