@@ -45,8 +45,16 @@ pub enum ViewerBackground {
 }
 
 impl ViewerBackground {
-    /// Every choice, in menu order.
-    pub const ALL: [Self; 5] = [Self::Interface, Self::White, Self::LightGrey, Self::MiddleGrey, Self::Black];
+    /// Every choice offered, in menu order: the interface's colour or white,
+    /// as in Capture One. The greys and black of earlier versions are read
+    /// back as the interface's colour.
+    pub const ALL: [Self; 2] = [Self::Interface, Self::White];
+
+    /// The choice as used: the ones no longer offered become [`Self::Interface`].
+    #[must_use]
+    pub fn offered(self) -> Self {
+        if self == Self::White { Self::White } else { Self::Interface }
+    }
 
     /// Name in the Preferences.
     #[must_use]

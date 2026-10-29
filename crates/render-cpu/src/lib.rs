@@ -241,7 +241,7 @@ mod tests {
     fn middle_grey_maps_to_its_srgb_code_value() {
         let img =
             ImageF32::from_pixels(1, 1, WorkingSpace::LinearSrgb, vec![[0.18, 0.18, 0.18, 1.0]]).expect("1×1 image");
-        assert_eq!(to_srgb8(&img), vec![118, 118, 118]);
+        assert_eq!(to_srgb8(&img), vec![128, 128, 128], "Film Standard shows middle grey at half");
     }
 
     #[test]

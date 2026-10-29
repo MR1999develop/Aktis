@@ -201,12 +201,9 @@ pub const SPOT_SHADOW: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 150);
 #[must_use]
 pub fn viewer_background(choice: crate::settings::ViewerBackground, canvas: Color32) -> Color32 {
     use crate::settings::ViewerBackground as B;
-    match choice {
-        B::Interface => canvas,
+    match choice.offered() {
         B::White => Color32::from_rgb(0xff, 0xff, 0xff),
-        B::LightGrey => Color32::from_rgb(0xc8, 0xc8, 0xc8),
-        B::MiddleGrey => Color32::from_rgb(0x77, 0x77, 0x77),
-        B::Black => Color32::from_rgb(0x00, 0x00, 0x00),
+        _ => canvas,
     }
 }
 

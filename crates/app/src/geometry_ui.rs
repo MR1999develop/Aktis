@@ -120,7 +120,8 @@ impl GeometryUi {
     }
 
     /// The crop overlay over the photo shown in `screen` (the whole frame,
-    /// `frame_aspect` = width / height). Returns whether the pointer drag
+    /// `frame_aspect` = width / height, `frame_px` its size in pixels, for
+    /// the size shown on the box). Returns whether the pointer drag
     /// belongs to the crop box (so the viewer does not pan), and the box
     /// to apply when the user double-clicked inside it.
     pub fn crop_overlay(
@@ -129,6 +130,7 @@ impl GeometryUi {
         response: &Response,
         screen: Rect,
         frame_aspect: f32,
+        frame_px: [f32; 2],
     ) -> (bool, bool) {
         let t = Tokens::of(ui.ctx().theme());
         let Some(b) = self.crop else { return (false, false) };
@@ -167,7 +169,8 @@ impl GeometryUi {
                 t.text_strong,
             );
         }
-        let label = format!("{:.0} \u{d7} {:.0} %", b[2] * 100.0, b[3] * 100.0);
+        // The size the crop will have, in pixels of the photo.
+        let label = format!("{:.0} \u{d7} {:.0} px", b[2] * frame_px[0], b[3] * frame_px[1]);
         painter.text(
             boxed.left_top() + vec2(4.0, -4.0),
             Align2::LEFT_BOTTOM,

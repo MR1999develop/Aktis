@@ -1870,7 +1870,7 @@ impl EditorApp {
                 }
                 match self.tool.filter(|_| !space) {
                     Some(ViewerTool::Crop) => {
-                        let (owned, apply) = self.geometry_ui.crop_overlay(ui, &response, screen, frame_aspect);
+                        let (owned, apply) = self.geometry_ui.crop_overlay(ui, &response, screen, frame_aspect, image);
                         tool_drag = owned;
                         crop_apply = apply;
                     }

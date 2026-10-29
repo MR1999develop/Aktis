@@ -17,7 +17,9 @@ pub struct Preferences {
 impl Preferences {
     /// Opens the window on a copy of `settings`.
     pub fn open(&mut self, settings: &Settings) {
-        self.draft = Some(settings.clone());
+        let mut draft = settings.clone();
+        draft.viewer_background = draft.viewer_background.offered();
+        self.draft = Some(draft);
     }
 
     /// Draws the window when open; with OK the changes go into `settings`

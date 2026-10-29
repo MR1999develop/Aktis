@@ -8,7 +8,7 @@
 //! sink into a toe and the highlights roll off into a shoulder instead of
 //! clipping. It is applied to the brightest channel and every channel is
 //! scaled by the same factor, so hues are kept; in the shoulder colours
-//! pale towards their grey as the curve flattens, and far above white they
+//! pale towards white as the curve flattens, and far above white they
 //! fade to white, as film does. Colours outside sRGB are brought inside by
 //! moving them towards the grey of the same luminance, never by clipping
 //! one channel.
@@ -18,7 +18,13 @@ use core_model::{BaseCurve, Matrix3};
 /// Middle grey of the scene (linear).
 pub const GREY: f32 = 0.18;
 /// Displayed value (sRGB-encoded) per stop through the midtones of Film Standard.
-pub const SLOPE: f32 = 0.2;
+pub const SLOPE: f32 = 0.21;
+/// Where Film Standard shows middle grey (sRGB-encoded): a little brighter
+/// than its plain encoding (0.46), as Capture One's film curves do.
+pub const FILM_GREY: f32 = 0.5;
+/// Colour boost of Film Standard: film curves give livelier colours than a
+/// plain tone curve.
+pub const FILM_SATURATION: f32 = 1.15;
 /// Stops above middle grey where Film Standard's shoulder starts (white is +2.47).
 pub const SHOULDER_FROM: f32 = 2.0;
 /// Brightest-channel value from which a colour starts fading to white…
@@ -26,7 +32,7 @@ pub const WHITE_FROM: f32 = 1.0;
 /// …and at which it has turned fully white (3 stops over white).
 pub const WHITE_AT: f32 = 8.0;
 /// How much of the shoulder's compression also takes colour away: bright
-/// colours pale as they approach white, as on film and in Capture One,
+/// colours pale towards white as they approach it, as on film and in Capture One,
 /// instead of staying as saturated as in the midtones (exposure would
 /// otherwise look like it adds saturation).
 pub const HIGHLIGHT_FADE: f32 = 0.5;
@@ -35,6 +41,8 @@ pub const HIGHLIGHT_FADE: f32 = 0.5;
 /// its displayed value, with `slope` through the midtones.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Shape {
+    /// Displayed (sRGB-encoded) value of middle grey.
+    grey: f32,
     /// Displayed value per stop at middle grey.
     slope: f32,
     /// Stops above grey where the shoulder starts.
@@ -43,17 +51,26 @@ struct Shape {
     /// `Some(p)` with `p > 0` a power law that keeps the deep shadows
     /// brighter (less contrast there).
     toe_power: Option<f32>,
+    /// Colour boost (1 = none).
+    saturation: f32,
 }
 
 impl Shape {
     fn of(curve: BaseCurve) -> Self {
+        let film = Self {
+            grey: FILM_GREY,
+            slope: SLOPE,
+            shoulder_from: SHOULDER_FROM,
+            toe_power: None,
+            saturation: FILM_SATURATION,
+        };
         match curve.resolved() {
-            BaseCurve::FilmExtraShadow => Self { slope: SLOPE, shoulder_from: SHOULDER_FROM, toe_power: Some(2.5) },
-            BaseCurve::FilmHighContrast => Self { slope: 0.24, shoulder_from: 1.8, toe_power: None },
-            BaseCurve::LinearResponse => Self { slope: 0.15, shoulder_from: 2.3, toe_power: Some(4.0) },
-            BaseCurve::Auto | BaseCurve::FilmStandard => {
-                Self { slope: SLOPE, shoulder_from: SHOULDER_FROM, toe_power: None }
+            BaseCurve::FilmExtraShadow => Self { toe_power: Some(2.5), ..film },
+            BaseCurve::FilmHighContrast => Self { slope: 0.24, shoulder_from: 1.6, saturation: 1.2, ..film },
+            BaseCurve::LinearResponse => {
+                Self { grey: grey_out(), slope: 0.15, shoulder_from: 2.3, toe_power: Some(4.0), saturation: 1.0 }
             }
+            BaseCurve::Auto | BaseCurve::FilmStandard => film,
         }
     }
 }
@@ -86,7 +103,7 @@ pub fn curve_value(curve: BaseCurve, n: f32) -> f32 {
     }
     let shape = Shape::of(curve);
     let e = (n / GREY).log2();
-    let g = grey_out();
+    let g = shape.grey;
     let s = shape.slope;
     let y = if e <= 0.0 {
         // Toe: the midtone slope at grey, fading to black.
@@ -120,7 +137,7 @@ pub fn shoulder_compression(curve: BaseCurve, n: f32) -> f32 {
     if e <= shape.shoulder_from {
         return 0.0;
     }
-    let room = 1.0 - (grey_out() + shape.slope * shape.shoulder_from);
+    let room = 1.0 - (shape.grey + shape.slope * shape.shoulder_from);
     1.0 - (-(e - shape.shoulder_from) * shape.slope / room).exp()
 }
 
@@ -149,10 +166,16 @@ pub fn output_rgb_with(rgb: [f32; 3], to_srgb: &Matrix3, curve: BaseCurve) -> [f
     let f = curve_value(curve, n);
     let scale = f / n;
     let kept = rgb.map(|v| v * scale);
-    // Paler in the shoulder: towards the grey of the same luminance.
+    // The curve's colour boost, around the grey of the same luminance;
+    // none left in the shoulder, where colours pale instead.
+    let sat = 1.0 + (Shape::of(curve).saturation - 1.0) * (1.0 - shoulder_compression(curve, n));
+    let ky = kept[0] * LUMA[0] + kept[1] * LUMA[1] + kept[2] * LUMA[2];
+    let kept = kept.map(|v| ky + (v - ky) * sat);
+    // Paler in the shoulder: the other channels rise towards the brightest,
+    // so the colour whitens as on film and more light is never darker.
     let fade = HIGHLIGHT_FADE * shoulder_compression(curve, n);
-    let y = kept[0] * LUMA[0] + kept[1] * LUMA[1] + kept[2] * LUMA[2];
-    let paled = kept.map(|v| v + (y - v) * fade);
+    let top = kept[0].max(kept[1]).max(kept[2]);
+    let paled = kept.map(|v| v + (top - v) * fade);
     // Towards white as the light grows far above white.
     let w = smoothstep(WHITE_FROM, WHITE_AT, n);
     let c = paled.map(|v| v + (f - v) * w);
@@ -191,8 +214,9 @@ mod tests {
     }
 
     #[test]
-    fn middle_grey_keeps_its_brightness() {
-        assert!((film_curve(GREY) - GREY).abs() < 1e-4);
+    fn middle_grey_shows_a_little_brighter_than_its_plain_encoding() {
+        assert!((displayed(GREY) - FILM_GREY).abs() < 1e-4);
+        assert!(FILM_GREY > core_color::srgb_encode(GREY));
     }
 
     #[test]
@@ -218,7 +242,7 @@ mod tests {
             last = y;
         }
         let white = displayed(1.0);
-        assert!(white > 0.9 && white < 0.96, "white just below the top: {white}");
+        assert!(white > 0.94 && white < 0.99, "white just below the top: {white}");
         assert!(displayed(8.0) > 0.99, "three stops over white is white");
         assert!(displayed(0.001) < 0.03, "deep shadows stay dark");
         assert_eq!(film_curve(0.0), 0.0);
@@ -241,7 +265,7 @@ mod tests {
         // More light is never darker.
         let a = output_rgb([1.0, 0.5, 0.1], &ID);
         let b = output_rgb([1.5, 0.75, 0.15], &ID);
-        assert!(b.iter().zip(&a).all(|(b, a)| b >= a));
+        assert!(b.iter().zip(&a).all(|(b, a)| b >= a), "{a:?} {b:?}");
         assert_eq!(output_rgb([-0.1, -0.2, -0.3], &ID), [0.0; 3]);
     }
 
@@ -267,7 +291,8 @@ mod tests {
     #[test]
     fn every_base_curve_keeps_grey_rises_steadily_and_stays_below_white() {
         for curve in BaseCurve::ALL {
-            assert!((curve_value(curve, GREY) - GREY).abs() < 1e-4, "{curve:?} moves middle grey");
+            let grey = core_color::srgb_encode(curve_value(curve, GREY));
+            assert!((0.45..=0.52).contains(&grey), "{curve:?} shows middle grey at {grey}");
             let mut last = curve_value(curve, 0.004);
             for i in 2..6000 {
                 #[allow(clippy::cast_precision_loss)]
