@@ -930,10 +930,11 @@ impl EditorApp {
         let photos: Vec<PathBuf> = dropped
             .iter()
             .flat_map(|p| if p.is_dir() { editor::catalogs::raw_files(p, true) } else { vec![p.clone()] })
-            .filter(|p| raw_io::has_raw_extension(p))
+            .filter(|p| raw_io::has_photo_extension(p))
             .collect();
         if photos.is_empty() {
-            self.toast = Some(info_toast("There are no RAW files among the dropped files".to_owned()));
+            self.toast =
+                Some(info_toast("There are no photos (RAW, DNG, JPEG, TIFF) among the dropped files".to_owned()));
             return;
         }
         // Dropped photos are added where they are, the duplicates left out;
@@ -1275,7 +1276,7 @@ impl EditorApp {
             geometry: doc.recipe().geometry,
             // While the crop is edited the whole frame shows around it.
             crop: self.tool != Some(ViewerTool::Crop),
-            curve: doc.recipe().curve,
+            curve: doc.output_curve(),
         });
         self.plan.requested(doc.generation(), quality);
     }
@@ -2325,7 +2326,7 @@ impl EditorApp {
                 ui.label(RichText::new("Import your photos").size(FONT[4]).strong().color(t.text_strong));
                 ui.add_space(SPACE[0]);
                 ui.label(
-                    RichText::new(format!("Drag RAW files or a folder here, or press {shortcut}")).color(t.text_weak),
+                    RichText::new(format!("Drag photos or a folder here, or press {shortcut}")).color(t.text_weak),
                 );
                 ui.add_space(SPACE[3]);
                 let button = Button::new(RichText::new("Import Images\u{2026}").color(t.on_accent)).fill(t.accent);
@@ -2451,7 +2452,7 @@ impl EditorApp {
                     ui.vertical_centered(|ui| {
                         ui.label(RichText::new("No photo open").size(FONT[3]).strong());
                         ui.label(
-                            RichText::new("Choose one in the filmstrip, or drop a RAW file here.").color(t.text_weak),
+                            RichText::new("Choose one in the filmstrip, or drop a photo here.").color(t.text_weak),
                         );
                     });
                 }

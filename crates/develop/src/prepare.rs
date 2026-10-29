@@ -294,6 +294,7 @@ mod tests {
             aperture: Some(4.0),
             focus_distance: None,
             color_matrices: Vec::new(),
+            rendered: false,
         }
     }
 

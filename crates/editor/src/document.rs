@@ -510,6 +510,14 @@ impl Document {
         self.session.recipe()
     }
 
+    /// The base curve the picture is shown with: the recipe's, with Auto
+    /// resolved for the file (Linear for a JPEG or TIFF).
+    #[must_use]
+    pub fn output_curve(&self) -> core_model::BaseCurve {
+        let rendered = self.opened.raw.as_ref().is_some_and(|r| r.capture.rendered);
+        self.recipe().curve.for_source(rendered)
+    }
+
     /// Increases with every change to the recipe.
     #[must_use]
     pub fn generation(&self) -> u64 {

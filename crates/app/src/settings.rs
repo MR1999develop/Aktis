@@ -175,6 +175,8 @@ pub struct ImportSettings {
     pub backup_dir: Option<PathBuf>,
     /// Leave out photos already in the catalog (file name and capture time).
     pub skip_duplicates: bool,
+    /// Import the JPEG of a RAW+JPEG pair too (Capture One's default).
+    pub jpeg_twins: bool,
     /// Preset applied to every photo ("Group / Name"), if any.
     pub preset: Option<String>,
     /// Photographer given to every photo.
@@ -196,6 +198,7 @@ impl Default for ImportSettings {
             backup: false,
             backup_dir: None,
             skip_duplicates: true,
+            jpeg_twins: true,
             preset: None,
             artist: String::new(),
             copyright: String::new(),
@@ -238,6 +241,17 @@ impl ImportSettings {
     #[must_use]
     pub fn problem(&self) -> Option<String> {
         self.destination().err().or_else(|| self.backup_folder().err())
+    }
+
+    /// The photos imported out of those `found`: without the JPEG of each
+    /// RAW+JPEG pair unless the pairs come in whole.
+    #[must_use]
+    pub fn files(&self, found: &[PathBuf]) -> Vec<PathBuf> {
+        if self.jpeg_twins {
+            found.to_vec()
+        } else {
+            catalog::without_jpeg_twins(found, raw_io::has_raw_extension, raw_io::has_jpeg_extension)
+        }
     }
 
     /// What the import gives to every photo.
@@ -567,6 +581,10 @@ mod tests {
         assert!(o.problem().is_some(), "the backup is the copies' folder");
         o.backup_dir = Some(PathBuf::from("E:/Backup"));
         assert_eq!(o.backup_folder(), Ok(Some(PathBuf::from("E:/Backup"))));
+        let found = [PathBuf::from("d/a.NEF"), PathBuf::from("d/a.JPG")];
+        assert_eq!(o.files(&found).len(), 2);
+        o.jpeg_twins = false;
+        assert_eq!(o.files(&found), [PathBuf::from("d/a.NEF")]);
         o.artist = "  Ann ".into();
         o.keywords = "sea, boat".into();
         o.rating = 9;

@@ -1053,7 +1053,7 @@ impl Library {
             let text = if self.strip.folder.is_none() {
                 "Choose a folder in the Explorer"
             } else if self.strip.photos.is_empty() {
-                "No RAW files in this folder"
+                "No photos in this folder"
             } else {
                 "No photo matches the filters"
             };

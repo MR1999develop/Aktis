@@ -218,7 +218,7 @@ pub fn list_folder(dir: &Path) -> io::Result<FolderListing> {
             if !hidden {
                 listing.subfolders.push(path);
             }
-        } else if raw_io::has_raw_extension(&path) {
+        } else if raw_io::has_photo_extension(&path) {
             listing.photos.push(path);
         }
     }

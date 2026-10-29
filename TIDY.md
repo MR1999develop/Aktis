@@ -188,8 +188,7 @@
   take it away, or the mask's Invert).
 - Catalogs and import: the Import Images window counts the RAW files of
   the source on the interface thread; a large tree should be read by the
-  worker (the big window with thumbnails comes next and will). JPEG and
-  TIFF, and the RAW+JPEG choice, are not imported yet. Photos imported
+  worker (the big window with thumbnails comes next and will). Photos imported
   before catalog version 4 have no capture time, so they are never taken
   as duplicates. A file without a capture date is filed under its
   modification day in UTC. Photographer and copyright given at import are
@@ -199,3 +198,10 @@
   (`Catalog::remove` exists), locating missing files, catalog backup,
   Import Catalog, export as a catalog, user collections (albums, smart
   albums, projects).
+- JPEG and TIFF: read as sRGB; an embedded colour profile (Adobe RGB,
+  ProPhoto, Display P3) is not applied yet (a note says so): use
+  `moxcms`, already in the lock file. CMYK and float TIFFs, GPS and the
+  rating of XMP are not read. A picture gets no lens correction from the
+  lens database or custom lenses, but the camera defaults of its camera
+  model (tuned for RAW files) still apply to it. The thumbnail decodes
+  the whole picture (no embedded preview used).

@@ -2,7 +2,7 @@
 //! its database, so it can be moved or copied whole, as Capture One's
 //! catalogs. Photos are imported into a catalog by reference (the RAW files
 //! stay where they are); this module finds catalogs, makes new ones, brings
-//! over the single catalog of earlier versions and lists the RAW files an
+//! over the single catalog of earlier versions and lists the photos an
 //! import adds.
 
 use std::io;
@@ -81,7 +81,7 @@ pub fn default_catalog(folder: &Path, legacy: Option<&Path>) -> io::Result<(Path
     Ok((catalog, true))
 }
 
-/// The RAW files an import of `dir` adds: those in it, and in its
+/// The photos (RAW, JPEG, TIFF) an import of `dir` adds: those in it, and in its
 /// sub-folders when `subfolders`, in natural order.
 #[must_use]
 pub fn raw_files(dir: &Path, subfolders: bool) -> Vec<PathBuf> {

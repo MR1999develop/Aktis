@@ -1,4 +1,6 @@
-//! Reads camera RAW and DNG files into [`SensorImage`] and [`CaptureInfo`].
+//! Reads camera RAW and DNG files into [`SensorImage`] and [`CaptureInfo`],
+//! and JPEG and TIFF pictures the same way (already demosaiced, marked as
+//! [`CaptureInfo::rendered`]).
 //!
 //! The decoder (`rawler`) stays behind this crate: nothing else in the
 //! workspace sees its types. Black and white levels are applied here, keeping
@@ -25,12 +27,15 @@ use rawler::imgop::xyz::Illuminant;
 use rawler::rawimage::RawPhotometricInterpretation;
 use rawler::rawsource::RawSource;
 
+mod exif;
 mod info;
 mod opcodes;
+mod raster;
 mod thumbnail;
 mod tiff;
 
 pub use info::PhotoInfo;
+pub use raster::{RASTER_EXTENSIONS, has_jpeg_extension, has_raster_extension};
 pub use thumbnail::{Thumbnail, decode_jpeg, orient_rgb8, read_thumbnail};
 
 /// Largest file accepted, checked before reading (1 GiB; real RAW files are far smaller).
@@ -50,6 +55,13 @@ pub const RAW_EXTENSIONS: &[&str] = &[
 #[must_use]
 pub fn has_raw_extension(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| RAW_EXTENSIONS.iter().any(|r| r.eq_ignore_ascii_case(e)))
+}
+
+/// Whether `path` names a file the editor imports: a RAW file or a JPEG
+/// or TIFF picture.
+#[must_use]
+pub fn has_photo_extension(path: &Path) -> bool {
+    has_raw_extension(path) || has_raster_extension(path)
 }
 
 /// Why a RAW file could not be read.
@@ -133,6 +145,9 @@ pub struct RawFile {
 /// # Errors
 /// [`RawIoError`] when the file cannot be read, is too large, or its content is unsupported.
 pub fn read_raw(path: &Path) -> Result<RawFile, RawIoError> {
+    if has_raster_extension(path) {
+        return raster::read(path);
+    }
     let bytes = std::fs::metadata(path).map_err(RawIoError::Io)?.len();
     if bytes > MAX_FILE_BYTES {
         return Err(RawIoError::TooLarge { bytes });
@@ -164,6 +179,9 @@ pub fn read_raw(path: &Path) -> Result<RawFile, RawIoError> {
 /// # Errors
 /// [`RawIoError`] when the file cannot be read or its format is unknown.
 pub fn read_info(path: &Path) -> Result<PhotoInfo, RawIoError> {
+    if has_raster_extension(path) {
+        return raster::read_info(path);
+    }
     let source = RawSource::new(path).map_err(RawIoError::Io)?;
     let params = RawDecodeParams::default();
     catch_unwind(AssertUnwindSafe(|| {
@@ -307,6 +325,7 @@ fn capture_info(raw: &rawler::RawImage, metadata: Option<&RawMetadata>) -> Captu
         aperture,
         focus_distance,
         color_matrices,
+        rendered: false,
     }
 }
 

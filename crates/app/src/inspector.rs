@@ -299,11 +299,12 @@ fn base_characteristics(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdi
 /// What a base curve does, in one line.
 fn curve_hint(curve: BaseCurve) -> &'static str {
     match curve {
-        BaseCurve::Auto => "The camera's default curve (Film Standard)",
+        BaseCurve::Auto => "The default: Film Standard for RAW files, Linear for JPEG and TIFF",
         BaseCurve::FilmStandard => "Like slide film: deep blacks, bright midtones and highlights",
         BaseCurve::FilmExtraShadow => "Film Standard with more detail in the deep shadows",
         BaseCurve::FilmHighContrast => "More contrast: deeper shadows, brighter highlights",
         BaseCurve::LinearResponse => "Very low contrast, to build the look with Curve and Levels",
+        BaseCurve::Linear => "No curve: the picture as it is, as JPEG and TIFF files look",
     }
 }
 

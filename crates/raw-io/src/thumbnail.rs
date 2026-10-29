@@ -22,13 +22,16 @@ pub struct Thumbnail {
     pub rgb: Vec<u8>,
 }
 
-/// The embedded preview of a RAW file, upright, no larger than `max_side`
+/// The embedded preview of a RAW file (a JPEG or TIFF picture itself), upright, no larger than `max_side`
 /// on its longer side. The smaller embedded image is used when it is big
 /// enough, the large preview otherwise.
 ///
 /// # Errors
 /// [`RawIoError`] when the file cannot be read or has no embedded preview.
 pub fn read_thumbnail(path: &Path, max_side: u32) -> Result<Thumbnail, RawIoError> {
+    if crate::raster::has_raster_extension(path) {
+        return crate::raster::read_thumbnail(path, max_side);
+    }
     let max_side = max_side.max(1);
     let source = RawSource::new(path).map_err(RawIoError::Io)?;
     let params = RawDecodeParams::default();

@@ -13,7 +13,9 @@ pub mod model;
 #[cfg(feature = "sqlite")]
 mod store;
 
-pub use import::{Day, Destination, FolderPattern, ImportMetadata, ImportedPhoto, ShotKey, free_name};
+pub use import::{
+    Day, Destination, FolderPattern, ImportMetadata, ImportedPhoto, ShotKey, free_name, without_jpeg_twins,
+};
 pub use model::{
     Collection, ColorLabel, FIRST_VARIANT, Filter, LabelSet, MAX_RATING, PhotoMeta, RatingSet, StoredVariant, Tag,
     TagSource, VariantInfo, next_variant_number, sort_by_name, tag_counts, variant_name,

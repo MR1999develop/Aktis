@@ -206,7 +206,8 @@ fn export_one(
         &recipe.geometry,
         &options.size,
         options.watermark.as_ref(),
-        recipe.curve,
+        // A JPEG or TIFF has its curve already (Auto is Linear for it).
+        recipe.curve.for_source(raw.as_ref().is_some_and(|r| r.capture.rendered)),
     )
     .map_err(|e| format!("{name}: {e}"))?;
     drop(rendered);

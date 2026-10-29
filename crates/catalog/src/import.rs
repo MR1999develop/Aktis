@@ -206,6 +206,20 @@ pub fn free_name(dir: &Path, name: &str, mut taken: impl FnMut(&Path) -> bool) -
         .unwrap_or(first)
 }
 
+/// `paths` without the JPEG of each RAW+JPEG pair (the same name in the
+/// same folder, case apart), as Capture One's choice to import the RAW
+/// file only. `is_raw` and `is_jpeg` tell the kinds apart.
+#[must_use]
+pub fn without_jpeg_twins(
+    paths: &[PathBuf],
+    is_raw: impl Fn(&Path) -> bool,
+    is_jpeg: impl Fn(&Path) -> bool,
+) -> Vec<PathBuf> {
+    let key = |p: &Path| (p.parent().map(Path::to_path_buf), p.file_stem().map(|s| s.to_string_lossy().to_lowercase()));
+    let raws: std::collections::HashSet<_> = paths.iter().filter(|p| is_raw(p)).map(|p| key(p)).collect();
+    paths.iter().filter(|p| !(is_jpeg(p) && raws.contains(&key(p)))).cloned().collect()
+}
+
 /// What an import gives to each photo it adds, as Capture One's "Metadata"
 /// of the import window.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -297,6 +311,15 @@ mod tests {
         assert_eq!(free_name(dir, "b.NEF", taken), dir.join("b.NEF"));
         assert_eq!(free_name(dir, "a.NEF", taken), dir.join("a (3).NEF"));
         assert_eq!(free_name(dir, "README", |p| p == dir.join("README")), dir.join("README (2)"));
+    }
+
+    #[test]
+    fn the_jpeg_of_a_raw_jpeg_pair_can_be_left_out() {
+        let paths: Vec<PathBuf> =
+            ["d/IMG_1.CR3", "d/img_1.JPG", "d/IMG_2.JPG", "e/IMG_1.jpg"].iter().map(PathBuf::from).collect();
+        let ext = |p: &Path, e: &str| p.extension().is_some_and(|x| x.eq_ignore_ascii_case(e));
+        let kept = without_jpeg_twins(&paths, |p| ext(p, "cr3"), |p| ext(p, "jpg"));
+        assert_eq!(kept, [paths[0].clone(), paths[2].clone(), paths[3].clone()], "only the twin in the same folder");
     }
 
     #[test]

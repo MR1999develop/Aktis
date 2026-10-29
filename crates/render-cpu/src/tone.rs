@@ -70,7 +70,8 @@ impl Shape {
             BaseCurve::LinearResponse => {
                 Self { grey: grey_out(), slope: 0.15, shoulder_from: 2.3, toe_power: Some(4.0), saturation: 1.0 }
             }
-            BaseCurve::Auto | BaseCurve::FilmStandard => film,
+            // Linear has no shape: the functions below pass its values through.
+            BaseCurve::Auto | BaseCurve::FilmStandard | BaseCurve::Linear => film,
         }
     }
 }
@@ -100,6 +101,9 @@ pub fn curve_value(curve: BaseCurve, n: f32) -> f32 {
     }
     if n.is_infinite() {
         return 1.0;
+    }
+    if curve.resolved() == BaseCurve::Linear {
+        return n.min(1.0);
     }
     let shape = Shape::of(curve);
     let e = (n / GREY).log2();
@@ -132,6 +136,9 @@ pub fn shoulder_compression(curve: BaseCurve, n: f32) -> f32 {
     if n.is_infinite() {
         return 1.0;
     }
+    if curve.resolved() == BaseCurve::Linear {
+        return 0.0;
+    }
     let shape = Shape::of(curve);
     let e = (n / GREY).log2();
     if e <= shape.shoulder_from {
@@ -159,6 +166,10 @@ pub fn output_rgb(rgb: [f32; 3], to_srgb: &Matrix3) -> [f32; 3] {
 /// [`output_rgb`] through base curve `curve`.
 #[must_use]
 pub fn output_rgb_with(rgb: [f32; 3], to_srgb: &Matrix3, curve: BaseCurve) -> [f32; 3] {
+    // No curve: the colours as they are, brought inside sRGB.
+    if curve.resolved() == BaseCurve::Linear {
+        return gamut_map(to_srgb.apply(rgb));
+    }
     let n = rgb[0].max(rgb[1]).max(rgb[2]);
     if n.is_nan() || n <= 0.0 || n.is_infinite() {
         return [0.0; 3];
@@ -290,7 +301,8 @@ mod tests {
 
     #[test]
     fn every_base_curve_keeps_grey_rises_steadily_and_stays_below_white() {
-        for curve in BaseCurve::ALL {
+        // Linear is no curve (see the test of its own).
+        for curve in BaseCurve::ALL.into_iter().filter(|c| *c != BaseCurve::Linear) {
             let grey = core_color::srgb_encode(curve_value(curve, GREY));
             assert!((0.45..=0.52).contains(&grey), "{curve:?} shows middle grey at {grey}");
             let mut last = curve_value(curve, 0.004);
@@ -324,6 +336,19 @@ mod tests {
         // Linear Response: the flattest midtones, shadows kept, highlights gentler.
         assert!(at(linear, 1.0) - at(linear, -1.0) < at(std, 1.0) - at(std, -1.0));
         assert!(at(linear, -4.0) > at(std, -4.0) && at(linear, 2.0) < at(std, 2.0));
+    }
+
+    #[test]
+    fn linear_shows_the_pixels_as_they_are() {
+        let rgb = [0.18, 0.5, 0.02];
+        let out = output_rgb_with(rgb, &ID, BaseCurve::Linear);
+        assert!(out.iter().zip(rgb).all(|(a, b)| (a - b).abs() < 1e-6), "{out:?}");
+        assert_eq!(curve_value(BaseCurve::Linear, 0.4), 0.4);
+        assert_eq!(curve_value(BaseCurve::Linear, 3.0), 1.0);
+        assert_eq!(shoulder_compression(BaseCurve::Linear, 3.0), 0.0);
+        assert_eq!(BaseCurve::Auto.for_source(true), BaseCurve::Linear);
+        assert_eq!(BaseCurve::Auto.for_source(false), BaseCurve::FilmStandard);
+        assert_eq!(BaseCurve::FilmHighContrast.for_source(true), BaseCurve::FilmHighContrast);
     }
 
     #[test]

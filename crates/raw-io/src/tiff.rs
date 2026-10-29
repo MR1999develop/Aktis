@@ -1,7 +1,8 @@
 //! A small read-only TIFF reader, just enough to find tags of a DNG file
-//! that the decoder does not use (the opcode lists). It reads the IFD
-//! tables and the values asked for, never the image data, and gives up
-//! quietly (`None`) on anything malformed.
+//! that the decoder does not use (the opcode lists) and the Exif data of
+//! JPEG and TIFF pictures. It reads the IFD tables and the values asked
+//! for, never the image data, and gives up quietly (`None`) on anything
+//! malformed.
 
 use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
@@ -122,6 +123,20 @@ impl<R: Read + Seek> TiffReader<R> {
         Some((Ifd { entries }, next))
     }
 
+    /// The first IFD of the main chain (IFD0: camera, orientation, the
+    /// pointer to the Exif IFD).
+    pub(crate) fn first(&mut self) -> Option<Ifd> {
+        self.ifd_at(self.first_ifd)
+    }
+
+    /// The IFD at `offset` (an Exif or GPS IFD pointer), without its chain.
+    pub(crate) fn ifd_at(&mut self, offset: u32) -> Option<Ifd> {
+        if offset == 0 {
+            return None;
+        }
+        self.read_ifd(offset).map(|(ifd, _)| ifd)
+    }
+
     /// Every IFD of the file: the main chain, each followed by its SubIFDs
     /// (depth first), in file order. Damaged parts are skipped.
     pub(crate) fn ifds(&mut self) -> Vec<Ifd> {
@@ -174,6 +189,46 @@ impl<R: Read + Seek> TiffReader<R> {
         }
     }
 
+    /// The text of an ASCII entry, up to its first NUL, trimmed; `None` when
+    /// empty or of another type.
+    pub(crate) fn ascii(&mut self, ifd: &Ifd, tag: u16) -> Option<String> {
+        let entry = *ifd.get(tag)?;
+        if entry.kind != 2 {
+            return None;
+        }
+        let bytes = self.value_bytes(&entry)?;
+        let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+        let text = String::from_utf8_lossy(&bytes[..end]).trim().to_owned();
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// The first value of a RATIONAL entry as numerator and denominator.
+    pub(crate) fn rational(&mut self, ifd: &Ifd, tag: u16) -> Option<(u32, u32)> {
+        let entry = *ifd.get(tag)?;
+        if entry.kind != 5 {
+            return None;
+        }
+        let b = self.value_bytes(&entry)?;
+        let b = b.get(..8)?;
+        Some((self.u32([b[0], b[1], b[2], b[3]]), self.u32([b[4], b[5], b[6], b[7]])))
+    }
+
+    /// The first value of a RATIONAL or SRATIONAL entry; `None` when the
+    /// denominator is 0.
+    pub(crate) fn real(&mut self, ifd: &Ifd, tag: u16) -> Option<f64> {
+        let entry = *ifd.get(tag)?;
+        let b = self.value_bytes(&entry)?;
+        let b = b.get(..8)?;
+        let (n, d) = (self.u32([b[0], b[1], b[2], b[3]]), self.u32([b[4], b[5], b[6], b[7]]));
+        let (n, d) = match entry.kind {
+            5 => (f64::from(n), f64::from(d)),
+            // The bits of the signed values, as stored.
+            10 => (f64::from(n.cast_signed()), f64::from(d.cast_signed())),
+            _ => return None,
+        };
+        (d != 0.0).then(|| n / d).filter(|v| v.is_finite())
+    }
+
     /// The first value of a BYTE, SHORT, LONG or IFD entry.
     pub(crate) fn first_unsigned(&mut self, ifd: &Ifd, tag: u16) -> Option<u32> {
         let entry = *ifd.get(tag)?;
@@ -193,6 +248,9 @@ pub(crate) mod tests {
         Short(Vec<u16>),
         Long(Vec<u32>),
         Undefined(Vec<u8>),
+        Ascii(String),
+        Rational(Vec<(u32, u32)>),
+        SRational(Vec<(i32, i32)>),
     }
 
     /// One IFD for [`build`]: entries sorted by tag, and the indices (in the
@@ -228,6 +286,23 @@ pub(crate) mod tests {
                     Value::Short(s) => (*t, 3, s.len() as u32, s.iter().flat_map(|x| put16(*x)).collect()),
                     Value::Long(l) => (*t, 4, l.len() as u32, l.iter().flat_map(|x| put32(*x)).collect()),
                     Value::Undefined(b) => (*t, 7, b.len() as u32, b.clone()),
+                    Value::Ascii(text) => {
+                        let mut b = text.as_bytes().to_vec();
+                        b.push(0);
+                        (*t, 2, b.len() as u32, b)
+                    }
+                    Value::Rational(r) => {
+                        (*t, 5, r.len() as u32, r.iter().flat_map(|(n, d)| [put32(*n), put32(*d)]).flatten().collect())
+                    }
+                    Value::SRational(r) => (
+                        *t,
+                        10,
+                        r.len() as u32,
+                        r.iter()
+                            .flat_map(|(n, d)| [put32(n.cast_unsigned()), put32(d.cast_unsigned())])
+                            .flatten()
+                            .collect(),
+                    ),
                 })
                 .collect();
             if !ifd.sub_ifds.is_empty() {

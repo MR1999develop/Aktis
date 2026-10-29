@@ -136,15 +136,23 @@ pub struct CaptureInfo {
     /// The camera's colour matrices, one per calibration illuminant (usually
     /// standard illuminant A and D65).
     pub color_matrices: Vec<CalibratedMatrix>,
+    /// The file is a finished picture (JPEG, TIFF), not sensor data: its
+    /// pixels already have a tone curve and colours, and it is shown
+    /// without another curve ([`crate::BaseCurve::for_source`]).
+    pub rendered: bool,
 }
 
 impl CaptureInfo {
     /// The lens as the file names it, to recognise the same lens on other
     /// photos ("Sony FE 24-70mm F2.8 GM"): maker and model as recorded;
     /// for a camera that names no lens (a fixed-lens compact) the camera.
-    /// `None` when the file names neither.
+    /// `None` when the file names neither, and for a finished picture
+    /// (its lens was corrected when it was made).
     #[must_use]
     pub fn lens_key(&self) -> Option<String> {
+        if self.rendered {
+            return None;
+        }
         let clean = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
         let model = self.lens_model.as_deref().map(clean).filter(|m| !m.is_empty());
         let make = self.lens_make.as_deref().map(clean).filter(|m| !m.is_empty());
@@ -191,6 +199,8 @@ mod tests {
         info.lens_model = Some(" ".into());
         assert_eq!(info.lens_key().as_deref(), Some("Sony RX100 VII (built-in lens)"));
         assert_eq!(CaptureInfo::default().lens_key(), None);
+        let picture = CaptureInfo { clean_make: "Fujifilm".into(), rendered: true, ..CaptureInfo::default() };
+        assert_eq!(picture.lens_key(), None, "a JPEG gets no lens");
         assert!(same_lens("Sony FE 24-70mm  F2.8 GM", "sony fe 24-70mm f2.8 gm"));
         assert!(!same_lens("Sony FE 24-70mm F2.8 GM", "Sony FE 24-70mm F2.8 GM II"));
     }

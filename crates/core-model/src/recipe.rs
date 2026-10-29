@@ -159,7 +159,9 @@ pub struct DevelopSettings {
 /// adjustment.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum BaseCurve {
-    /// The camera's default; for now [`BaseCurve::FilmStandard`] for every camera.
+    /// The default for the file: [`BaseCurve::FilmStandard`] for every
+    /// camera's RAW file, [`BaseCurve::Linear`] for a JPEG or TIFF (a
+    /// finished picture already has its tone curve).
     #[default]
     Auto,
     /// Like slide film: deep blacks, bright midtones and highlights.
@@ -171,12 +173,20 @@ pub enum BaseCurve {
     /// Very low contrast with a gentle roll-off near white, to build the look
     /// with the Curve and Levels nodes.
     LinearResponse,
+    /// No curve: the pixels shown as they are, as a JPEG or TIFF looks.
+    Linear,
 }
 
 impl BaseCurve {
     /// Every curve, in menu order.
-    pub const ALL: [Self; 5] =
-        [Self::Auto, Self::FilmStandard, Self::FilmExtraShadow, Self::FilmHighContrast, Self::LinearResponse];
+    pub const ALL: [Self; 6] = [
+        Self::Auto,
+        Self::FilmStandard,
+        Self::FilmExtraShadow,
+        Self::FilmHighContrast,
+        Self::LinearResponse,
+        Self::Linear,
+    ];
 
     /// Name in menus.
     #[must_use]
@@ -187,6 +197,7 @@ impl BaseCurve {
             Self::FilmExtraShadow => "Film Extra Shadow",
             Self::FilmHighContrast => "Film High Contrast",
             Self::LinearResponse => "Linear Response",
+            Self::Linear => "Linear",
         }
     }
 
@@ -199,6 +210,7 @@ impl BaseCurve {
             Self::FilmExtraShadow => "film_extra_shadow",
             Self::FilmHighContrast => "film_high_contrast",
             Self::LinearResponse => "linear_response",
+            Self::Linear => "linear",
         }
     }
 
@@ -208,13 +220,22 @@ impl BaseCurve {
         Self::ALL.into_iter().find(|c| c.id() == id)
     }
 
-    /// The curve actually applied: [`BaseCurve::Auto`] becomes the camera's
-    /// default (Film Standard until per-camera defaults exist).
+    /// The curve actually applied to a camera's RAW file: [`BaseCurve::Auto`]
+    /// becomes Film Standard (until per-camera defaults exist).
     #[must_use]
     pub fn resolved(self) -> Self {
-        match self {
-            Self::Auto => Self::FilmStandard,
-            other => other,
+        self.for_source(false)
+    }
+
+    /// The curve actually applied to a file that is a finished picture
+    /// (`rendered`: JPEG, TIFF) or not: [`BaseCurve::Auto`] becomes
+    /// [`BaseCurve::Linear`] for the first, Film Standard for a RAW file.
+    #[must_use]
+    pub fn for_source(self, rendered: bool) -> Self {
+        match (self, rendered) {
+            (Self::Auto, true) => Self::Linear,
+            (Self::Auto, false) => Self::FilmStandard,
+            (other, _) => other,
         }
     }
 }

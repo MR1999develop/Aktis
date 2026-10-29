@@ -77,7 +77,7 @@ impl NewCatalog {
     }
 }
 
-/// The Import Images window's fields and the RAW files they select.
+/// The Import Images window's fields and the photos they select.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Import {
     folder: PathBuf,
@@ -106,7 +106,7 @@ impl Import {
         self.subfolders
     }
 
-    /// The RAW files the import adds.
+    /// The photos (RAW, JPEG, TIFF) in the source.
     #[must_use]
     pub fn found(&self) -> &[PathBuf] {
         &self.found
@@ -211,6 +211,7 @@ pub fn import_dialog(
 ) -> Outcome {
     let t = Tokens::of(ctx.theme());
     let mut choice = None;
+    let mut files = options.files(form.found());
     dialog_with_width(ctx, "rne-import", IMPORT_WIDTH, |ui| {
         ui.label(RichText::new("Import Images").size(FONT[4]).strong());
         ui.add_space(SPACE[0]);
@@ -219,12 +220,24 @@ pub fn import_dialog(
         let max = (ui.ctx().content_rect().height() * 0.7).max(240.0);
         egui::ScrollArea::vertical().max_height(max).auto_shrink([false, true]).show(ui, |ui| {
             source_section(ui, &t, form);
+            // The RAW+JPEG choice, when the source has pairs.
+            let raw_only =
+                catalog::without_jpeg_twins(form.found(), raw_io::has_raw_extension, raw_io::has_jpeg_extension);
+            let pairs = form.found().len() - raw_only.len();
+            if pairs > 0 {
+                ui.horizontal(|ui| {
+                    ui.label(format!("RAW + JPEG pairs ({pairs})"));
+                    ui.radio_value(&mut options.jpeg_twins, true, "Import both");
+                    ui.radio_value(&mut options.jpeg_twins, false, "Only the RAW file");
+                });
+            }
+            files = options.files(form.found());
             destination_section(ui, &t, options);
             options_section(ui, &t, options, presets);
         });
         ui.add_space(SPACE[2]);
-        let n = form.found().len();
-        let problem = if n == 0 { Some("No RAW files to import".to_owned()) } else { options.problem() };
+        let n = files.len();
+        let problem = if n == 0 { Some("No photos to import".to_owned()) } else { options.problem() };
         if let Some(why) = &problem {
             ui.label(RichText::new(why).color(t.warning));
             ui.add_space(SPACE[1]);
@@ -236,7 +249,7 @@ pub fn import_dialog(
         choice = dialog_buttons(ui, &t, problem.is_none().then_some(action.as_str()), "Cancel", |_| {});
     });
     match choice {
-        Some(Choice::Action) => Outcome::Import(form.found().to_vec()),
+        Some(Choice::Action) => Outcome::Import(files),
         Some(Choice::Cancel) => Outcome::Cancelled,
         None => Outcome::Open,
     }
@@ -274,9 +287,9 @@ fn source_section(ui: &mut egui::Ui, t: &Tokens, form: &mut Import) {
         form.set_subfolders(subfolders);
     }
     let count = match form.found().len() {
-        0 => "No RAW files here".to_owned(),
-        1 => "1 RAW file".to_owned(),
-        n => format!("{n} RAW files"),
+        0 => "No photos here (RAW, DNG, JPEG, TIFF)".to_owned(),
+        1 => "1 photo".to_owned(),
+        n => format!("{n} photos"),
     };
     ui.label(RichText::new(count).size(FONT[0]).color(t.text_weak));
 }
