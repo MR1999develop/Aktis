@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use catalog::{VariantInfo, next_variant_number, variant_name};
+use catalog::{Collection, VariantInfo, next_variant_number, variant_name};
 use core_model::{DevelopSettings, NodeId, NodeKind, Recipe, ToolId};
 use editor::adjust::Pick;
 use editor::graph_view::GraphView;
@@ -37,6 +37,7 @@ use tool_api::ToolRegistry;
 
 use crate::actions::Command;
 use crate::ai_mask_job::AiMaskJob;
+use crate::catalog_ui::{self, Import, NewCatalog, Outcome};
 use crate::dialog::{Choice, dialog, dialog_buttons};
 use crate::export_ui::{ExportDialog, ExportRequest, NameExample};
 use crate::geometry_ui::{GeoEdit, GeometryUi};
@@ -227,6 +228,10 @@ pub struct EditorApp {
     delete_custom_lens: Option<String>,
     /// Wheel scrolling not yet turned into a zoom step.
     wheel: f32,
+    /// The New Catalog window, while open.
+    new_catalog: Option<NewCatalog>,
+    /// The Import Images window, while open.
+    import: Option<Import>,
 }
 
 impl std::fmt::Debug for EditorApp {
@@ -249,6 +254,7 @@ impl EditorApp {
         ctx.set_theme(theme_preference(settings.theme));
 
         let mut toast = None;
+        let (catalog_dir, catalog_note) = catalog_ui::startup_catalog(&settings);
         let registry = engine::builtin_tools().unwrap_or_else(|e| {
             toast = Some(error_toast(format!("Some tools could not be loaded: {e}")));
             ToolRegistry::new()
@@ -288,7 +294,7 @@ impl EditorApp {
             custom_lenses: editor::custom_lenses::CustomLenses::load(editor::custom_lenses::default_folder()),
             camera_defaults: editor::camera_defaults::AllCameraDefaults::load(editor::camera_defaults::default_folder()),
             title: String::new(),
-            library: Library::new(),
+            library: Library::new(&catalog_dir),
             tabs: Tabs::default(),
             selected_node: None,
             recent_nodes: Vec::new(),
@@ -322,19 +328,28 @@ impl EditorApp {
             restore_node: None,
             delete_custom_lens: None,
             wheel: 0.0,
+            new_catalog: None,
+            import: None,
         };
+        app.settings.catalog_opened(&catalog_dir);
+        if let Some(note) = catalog_note {
+            app.toast = Some(info_toast(note));
+        }
         app.reload_presets();
         if let Some(problem) = app.library.catalog_problem.take() {
             app.toast = Some(error_toast(problem));
         }
-        if let Some(dir) = app.settings.library_dir.clone().filter(|d| d.is_dir()) {
-            app.library.show_folder(dir, app.worker.as_ref());
-        }
+        // The catalog's photos, as Capture One opens on All Images.
+        app.library.show_collection(Collection::All);
         if app.settings.layout.metadata_tab {
             app.tabs.tab = LeftTab::Metadata;
         }
-        // The photo given on the command line, else the one open when the editor was closed.
-        let last = app.settings.recent.first().filter(|p| p.is_file()).cloned();
+        // The photo given on the command line (imported first), else the one
+        // open when the editor was closed.
+        if let Some(path) = &open {
+            app.import_photos(std::slice::from_ref(path));
+        }
+        let last = app.last_photo();
         // The last photo comes back with the node that was selected in it.
         if open.is_none()
             && let (Some(path), Some(node)) = (&last, app.settings.last_node)
@@ -358,7 +373,16 @@ impl EditorApp {
         }
     }
 
+    /// Starts opening a photo of the catalog; one not imported is refused,
+    /// as photos come into the editor only through an import.
     fn open(&mut self, path: PathBuf) {
+        if !self.library.is_imported(&path) {
+            self.toast = Some(info_toast(format!(
+                "{} is not in the catalog: import it first (File \u{25b8} Import Images\u{2026})",
+                file_name(&path)
+            )));
+            return;
+        }
         let Some(worker) = &self.worker else { return };
         self.next_ticket += 1;
         let name = file_name(&path);
@@ -367,17 +391,105 @@ impl EditorApp {
         self.opening = Some(Job { ticket: self.next_ticket, name, started: Instant::now() });
     }
 
-    fn pick_and_open(&mut self) {
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("Open a RAW file")
-            .add_filter("RAW files", raw_io::RAW_EXTENSIONS)
-            .add_filter("All files", &["*"]);
-        if let Some(dir) = &self.settings.open_dir {
+    /// The photo of the catalog opened last, if it is still there.
+    fn last_photo(&self) -> Option<PathBuf> {
+        self.settings.recent.iter().find(|p| p.is_file() && self.library.is_imported(p)).cloned()
+    }
+
+    // ----- catalogs -----
+
+    /// File ▸ Open Catalog…: a catalog folder chosen in the system window.
+    fn pick_catalog(&mut self) {
+        let mut dialog = rfd::FileDialog::new().set_title("Open a catalog (a folder named *.rnecatalog)");
+        if let Some(dir) = self.library.catalog_dir().parent().or(self.settings.catalogs_folder().as_deref()) {
             dialog = dialog.set_directory(dir);
         }
-        if let Some(path) = dialog.pick_file() {
-            self.open(path);
+        if let Some(dir) = dialog.pick_folder() {
+            self.open_catalog(dir);
         }
+    }
+
+    /// Opens the catalog in folder `dir` in place of the open one; the open
+    /// photo is saved and closed first.
+    fn open_catalog(&mut self, dir: PathBuf) {
+        if dir == self.library.catalog_dir() {
+            return;
+        }
+        if !editor::catalogs::is_catalog(&dir) {
+            if !dir.exists() {
+                self.settings.forget_catalog(&dir);
+            }
+            self.toast = Some(error_toast(format!("{} is not a catalog", dir.display())));
+            return;
+        }
+        if !self.save_edit(true) {
+            return; // the reason was told; the photo stays open
+        }
+        match self.library.open_catalog(&dir) {
+            Ok(()) => {
+                self.close_photo();
+                self.settings.catalog_opened(&dir);
+                if let Some(path) = self.last_photo() {
+                    self.open(path);
+                }
+            }
+            Err(e) => self.toast = Some(error_toast(format!("The catalog could not be opened: {e}"))),
+        }
+    }
+
+    /// Adds `photos` to the open catalog and tells how many were new.
+    fn import_photos(&mut self, photos: &[PathBuf]) {
+        match self.library.import(photos) {
+            Ok(added) => self.toast = Some(info_toast(catalog_ui::import_message(photos.len(), added))),
+            Err(e) => self.toast = Some(error_toast(format!("The photos could not be imported: {e}"))),
+        }
+    }
+
+    /// The New Catalog and Import Images windows, while open.
+    fn catalog_dialogs(&mut self, ctx: &egui::Context) {
+        let mut outcome = Outcome::Open;
+        if let Some(form) = &mut self.new_catalog {
+            outcome = catalog_ui::new_catalog_dialog(ctx, form);
+        } else if let Some(form) = &mut self.import {
+            let name = editor::catalogs::name(self.library.catalog_dir());
+            outcome = catalog_ui::import_dialog(ctx, form, &name);
+        }
+        match outcome {
+            Outcome::Open => {}
+            Outcome::Cancelled => {
+                self.new_catalog = None;
+                self.import = None;
+            }
+            Outcome::Catalog(dir) => {
+                self.new_catalog = None;
+                self.open_catalog(dir);
+            }
+            Outcome::Import(photos) => {
+                if let Some(form) = self.import.take() {
+                    self.settings.import_dir = Some(form.folder().to_owned());
+                }
+                self.import_photos(&photos);
+            }
+        }
+    }
+
+    /// Leaves the open photo (it was saved): the viewer shows nothing.
+    fn close_photo(&mut self) {
+        self.doc = None;
+        self.variant = None;
+        self.variants.clear();
+        self.dirty_since = None;
+        self.opening = None;
+        self.opening_path = None;
+        self.developing = None;
+        self.texture = None;
+        self.warning_texture = None;
+        self.shown = None;
+        self.histogram = None;
+        self.selected_node = None;
+        self.tool = None;
+        self.prefetch_step = None;
+        self.plan = RenderPlan::default();
     }
 
     /// The photos File ▸ Export and the Export button act on: the photos
@@ -480,7 +592,24 @@ impl EditorApp {
 
     fn run(&mut self, command: Command, ctx: &egui::Context) {
         match command {
-            Command::Open => self.pick_and_open(),
+            Command::Open => self.pick_catalog(),
+            Command::NewCatalog => {
+                let folder = self.settings.catalogs_folder().unwrap_or_else(|| ai_models::data_dir().join("Catalogs"));
+                self.import = None;
+                self.new_catalog = Some(NewCatalog::new(folder));
+            }
+            Command::Import => {
+                // The folder of the last import, else one chosen now.
+                let folder = self
+                    .settings
+                    .import_dir
+                    .clone()
+                    .or_else(|| self.settings.open_dir.clone())
+                    .filter(|d| d.is_dir())
+                    .or_else(|| rfd::FileDialog::new().set_title("Import images from a folder").pick_folder());
+                self.new_catalog = None;
+                self.import = folder.map(Import::new);
+            }
             Command::Export => self.open_export_dialog(self.export_targets()),
             Command::ExportAgain => self.start_export(self.export_targets(), ctx),
             Command::ExposureWarning => self.settings.layout.exposure_warning = !self.settings.layout.exposure_warning,
@@ -580,11 +709,12 @@ impl EditorApp {
                             // A development in flight is for the photo being left.
                             self.developing = None;
                             self.install(reopened, false, false);
-                            // The filmstrip shows the photo's folder.
-                            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
-                                && self.library.folder() != Some(dir)
+                            // The filmstrip shows the photo: its catalog folder when
+                            // what is shown does not hold it.
+                            if self.library.strip.index_of(&path).is_none()
+                                && let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
                             {
-                                self.library.show_folder(dir.to_owned(), self.worker.as_ref());
+                                self.library.show_collection(Collection::Folder(dir.to_owned()));
                             }
                             self.library.reveal_photo(&path);
                         }
@@ -681,8 +811,22 @@ impl EditorApp {
     }
 
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        // Dropped photos (or folders of photos) are imported, the first one opened.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_owned()).collect());
-        if let Some(first) = dropped.into_iter().next() {
+        if dropped.is_empty() {
+            return;
+        }
+        let photos: Vec<PathBuf> = dropped
+            .iter()
+            .flat_map(|p| if p.is_dir() { editor::catalogs::raw_files(p, true) } else { vec![p.clone()] })
+            .filter(|p| raw_io::has_raw_extension(p))
+            .collect();
+        if photos.is_empty() {
+            self.toast = Some(info_toast("There are no RAW files among the dropped files".to_owned()));
+            return;
+        }
+        self.import_photos(&photos);
+        if let Some(first) = photos.into_iter().next() {
             self.open(first);
         }
     }
@@ -804,6 +948,7 @@ impl EditorApp {
     fn apply_library(&mut self, actions: Vec<LibraryAction>, ctx: &egui::Context) {
         for action in actions {
             match action {
+                LibraryAction::Import(photos) => self.import_photos(&photos),
                 LibraryAction::Open(path) => {
                     let already = self.doc.as_ref().is_some_and(|d| d.path() == path);
                     let pending = self.opening_path.as_ref() == Some(&path);
@@ -1019,8 +1164,12 @@ impl EditorApp {
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
-        let title =
-            self.doc.as_ref().map_or_else(|| APP_NAME.to_owned(), |d| format!("{} \u{2014} {APP_NAME}", d.file_name()));
+        // As Capture One: the photo, then the catalog.
+        let catalog = editor::catalogs::name(self.library.catalog_dir());
+        let title = self.doc.as_ref().map_or_else(
+            || format!("{catalog} \u{2014} {APP_NAME}"),
+            |d| format!("{} \u{2014} {catalog} \u{2014} {APP_NAME}", d.file_name()),
+        );
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
@@ -1328,7 +1477,6 @@ impl EditorApp {
         let mut workspace = None;
         let mut open_models = false;
         let mut open_prefs = false;
-        let mut open_folder = false;
         let mut graph_actions = Vec::new();
         let blocks = self.variant_blocks();
         let variant_list = self.variant_list();
@@ -1345,22 +1493,24 @@ impl EditorApp {
 
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
+                menu_item(ui, Command::NewCatalog, None, None, commands);
                 menu_item(ui, Command::Open, None, None, commands);
-                ui.menu_button("Open recent", |ui| {
-                    if self.settings.recent.is_empty() {
-                        ui.add_enabled(false, Button::new("No recent files"));
+                ui.menu_button("Open Recent Catalog", |ui| {
+                    let open = self.library.catalog_dir();
+                    let others: Vec<&PathBuf> = self.settings.recent_catalogs.iter().filter(|c| *c != open).collect();
+                    if others.is_empty() {
+                        ui.add_enabled(false, Button::new("No other catalogs"));
                     }
-                    for path in &self.settings.recent {
-                        if ui.button(file_name(path)).on_hover_text(path.display().to_string()).clicked() {
-                            open_recent = Some(path.clone());
+                    for catalog in others {
+                        let name = editor::catalogs::name(catalog);
+                        if ui.button(name).on_hover_text(catalog.display().to_string()).clicked() {
+                            open_recent = Some(catalog.clone());
                             ui.close();
                         }
                     }
                 });
-                if ui.button("Show folder\u{2026}").on_hover_text("Show a folder's photos in the filmstrip").clicked() {
-                    open_folder = true;
-                    ui.close();
-                }
+                ui.separator();
+                menu_item(ui, Command::Import, None, None, commands);
                 ui.separator();
                 let why = if export_count == 0 {
                     Some("Open or select a photo first")
@@ -1532,15 +1682,6 @@ impl EditorApp {
         if open_models {
             self.models.open_manager();
         }
-        if open_folder {
-            let mut dialog = rfd::FileDialog::new().set_title("Show a folder");
-            if let Some(dir) = self.library.folder().or(self.settings.open_dir.as_deref()) {
-                dialog = dialog.set_directory(dir);
-            }
-            if let Some(dir) = dialog.pick_folder() {
-                self.library.show_folder(dir, self.worker.as_ref());
-            }
-        }
         self.settings.layout.exposure_warning = exposure_warning;
         match workspace {
             Some(WorkspaceAction::Apply(index)) => {
@@ -1558,8 +1699,8 @@ impl EditorApp {
             self.settings.theme = theme_choice;
             ui.ctx().set_theme(theme_preference(theme_choice));
         }
-        if let Some(path) = open_recent {
-            self.open(path);
+        if let Some(catalog) = open_recent {
+            self.open_catalog(catalog);
         }
         if let Some(number) = switch_to {
             self.switch_variant(number);
@@ -1579,11 +1720,12 @@ impl EditorApp {
                 if selected > 1 {
                     count.push_str(&format!(", {selected} selected"));
                 }
-                ui.label(
-                    RichText::new(format!("{} \u{b7} {count}", editor::library::folder_name(folder)))
-                        .color(t.text_weak),
-                )
-                .on_hover_text(folder.display().to_string());
+                // A collection is named and hovered with its catalog, a disk folder with its path.
+                let (name, hover) = match self.library.collection() {
+                    Some(c) => (c.label(), format!("Catalog {}", editor::catalogs::name(self.library.catalog_dir()))),
+                    None => (editor::library::folder_name(folder), folder.display().to_string()),
+                };
+                ui.label(RichText::new(format!("{name} \u{b7} {count}")).color(t.text_weak)).on_hover_text(hover);
                 ui.separator();
             }
             if let Some(doc) = &self.doc {
@@ -2026,9 +2168,12 @@ impl EditorApp {
         }
     }
 
+    /// The viewer without a photo: what to do next. An empty catalog asks
+    /// for an import; otherwise the photos opened last in it are offered.
     fn empty_state(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>, t: &Tokens) {
         let mut open = None;
-        let shortcut = ui.ctx().format_shortcut(&Command::Open.shortcuts()[0]);
+        let shortcut = ui.ctx().format_shortcut(&Command::Import.shortcuts()[0]);
+        let empty = self.library.photo_count() == 0;
         ui.vertical_centered(|ui| {
             ui.add_space((ui.available_height() * 0.3).max(SPACE[5]));
             if let Some(job) = &self.opening {
@@ -2041,18 +2186,28 @@ impl EditorApp {
                 }
                 return;
             }
-            ui.label(RichText::new("Open a RAW file").size(FONT[4]).strong().color(t.text_strong));
-            ui.add_space(SPACE[0]);
-            ui.label(RichText::new(format!("Drag a file here, or press {shortcut}")).color(t.text_weak));
-            ui.add_space(SPACE[3]);
-            let button = Button::new(RichText::new("Open\u{2026}").color(t.on_accent)).fill(t.accent);
-            if ui.add(button).clicked() {
-                commands.push(Command::Open);
+            if empty {
+                ui.label(RichText::new("Import your photos").size(FONT[4]).strong().color(t.text_strong));
+                ui.add_space(SPACE[0]);
+                ui.label(
+                    RichText::new(format!("Drag RAW files or a folder here, or press {shortcut}")).color(t.text_weak),
+                );
+                ui.add_space(SPACE[3]);
+                let button = Button::new(RichText::new("Import Images\u{2026}").color(t.on_accent)).fill(t.accent);
+                if ui.add(button).clicked() {
+                    commands.push(Command::Import);
+                }
+                return;
             }
-            if !self.settings.recent.is_empty() {
+            ui.label(RichText::new("Select a photo in the filmstrip").size(FONT[4]).strong().color(t.text_strong));
+            ui.add_space(SPACE[0]);
+            ui.label(RichText::new(format!("Or import more photos with {shortcut}")).color(t.text_weak));
+            let recent: Vec<&PathBuf> =
+                self.settings.recent.iter().filter(|p| self.library.is_imported(p)).take(5).collect();
+            if !recent.is_empty() {
                 ui.add_space(SPACE[4]);
                 ui.label(RichText::new("Recent").color(t.text_weak));
-                for path in self.settings.recent.iter().take(5) {
+                for path in recent {
                     if ui.link(file_name(path)).on_hover_text(path.display().to_string()).clicked() {
                         open = Some(path.clone());
                     }
@@ -2927,6 +3082,7 @@ impl eframe::App for EditorApp {
             .show(ui, |ui| self.center(ui, &mut commands, &mut library));
         self.library.rename_dialog(&ctx, &mut library);
         self.workspace_dialog(&ctx);
+        self.catalog_dialogs(&ctx);
         self.custom_lens_dialog(&ctx);
         self.delete_custom_lens_dialog(&ctx);
         let presets_folder = self.settings.presets_folder();
@@ -2973,9 +3129,6 @@ impl eframe::App for EditorApp {
             self.autosave(&ctx);
         }
         self.library.request_thumbnails(self.worker.as_ref());
-        if let Some(dir) = self.library.folder() {
-            self.settings.library_dir = Some(dir.to_owned());
-        }
         self.show_toast(&ctx);
         if self.models.show(&ctx) {
             // A tool got its models: render again, and say it if it still fails.

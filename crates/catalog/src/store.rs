@@ -5,7 +5,9 @@
 //!
 //! Layout versions: 1 had ratings, labels and keywords; 2 adds the edits
 //! (table `variants`, one row per variant of a photo) and the variant shown
-//! (column `photos.variant`). A version-1 file is upgraded on open.
+//! (column `photos.variant`); 3 adds the photos imported into the catalog
+//! (table `imported`), every photo an older file knew about counting as
+//! imported. Older files are upgraded on open.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -13,10 +15,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::model::{ColorLabel, MAX_RATING, PhotoMeta, StoredVariant, Tag, TagSource, VariantInfo};
+use crate::model::{Collection, ColorLabel, MAX_RATING, PhotoMeta, StoredVariant, Tag, TagSource, VariantInfo};
 
 /// Layout version of the database; older files are upgraded on open.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS photos (
@@ -43,6 +45,13 @@ CREATE TABLE IF NOT EXISTS tags (
     PRIMARY KEY (path, name)
 );
 CREATE INDEX IF NOT EXISTS tags_by_name ON tags(name);
+CREATE TABLE IF NOT EXISTS imported (
+    path     TEXT PRIMARY KEY NOT NULL,
+    folder   TEXT NOT NULL,
+    imported INTEGER NOT NULL,
+    batch    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS imported_by_folder ON imported(folder);
 ";
 
 /// Why the catalog could not be read or written.
@@ -142,6 +151,24 @@ impl Catalog {
             tx.query_row("SELECT COUNT(*) FROM pragma_table_info('photos') WHERE name = 'variant'", [], |r| r.get(0))?;
         if has_variant == 0 {
             tx.execute_batch("ALTER TABLE photos ADD COLUMN variant INTEGER NOT NULL DEFAULT 1;")?;
+        }
+        // Before version 3 every photo the catalog knew about was browsed, not
+        // imported: they all count as imported, in one first batch.
+        if version < 3 {
+            let mut known = std::collections::BTreeSet::new();
+            for table in ["photos", "variants", "tags"] {
+                let mut stmt = tx.prepare(&format!("SELECT DISTINCT path FROM {table}"))?;
+                let paths = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                known.extend(paths);
+            }
+            let now = now();
+            for p in known {
+                let folder = Path::new(&p).parent().map(key).unwrap_or_default();
+                tx.execute(
+                    "INSERT OR IGNORE INTO imported (path, folder, imported, batch) VALUES (?1, ?2, ?3, 0)",
+                    params![p, folder, now],
+                )?;
+            }
         }
         tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         tx.commit()?;
@@ -288,6 +315,103 @@ impl Catalog {
         tx.execute("UPDATE photos SET path = ?2 WHERE path = ?1", params![f, t])?;
         tx.execute("UPDATE tags SET path = ?2 WHERE path = ?1", params![f, t])?;
         tx.execute("UPDATE variants SET path = ?2 WHERE path = ?1", params![f, t])?;
+        tx.execute("DELETE FROM imported WHERE path = ?1", params![t])?;
+        tx.execute("UPDATE imported SET path = ?2 WHERE path = ?1", params![f, t])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    // ----- imported photos -----
+
+    /// Adds `paths` to the catalog (those already in it are left as they
+    /// are), as one import; returns how many were new.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn import(&mut self, paths: &[PathBuf]) -> Result<usize, CatalogError> {
+        let tx = self.conn.transaction()?;
+        let batch: i64 = tx.query_row("SELECT COALESCE(MAX(batch), 0) + 1 FROM imported", [], |r| r.get(0))?;
+        let now = now();
+        let mut added = 0;
+        for p in paths {
+            let folder = p.parent().map(key).unwrap_or_default();
+            added += tx.execute(
+                "INSERT OR IGNORE INTO imported (path, folder, imported, batch) VALUES (?1, ?2, ?3, ?4)",
+                params![key(p), folder, now, batch],
+            )?;
+        }
+        tx.commit()?;
+        Ok(added)
+    }
+
+    /// `true` when `path` was imported into the catalog.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn is_imported(&self, path: &Path) -> Result<bool, CatalogError> {
+        let n: i64 =
+            self.conn.query_row("SELECT COUNT(*) FROM imported WHERE path = ?1", params![key(path)], |r| r.get(0))?;
+        Ok(n > 0)
+    }
+
+    /// The photos of `collection`, by path.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn collection(&self, collection: &Collection) -> Result<Vec<PathBuf>, CatalogError> {
+        let rows = |sql: &str, arg: Option<String>| -> Result<Vec<PathBuf>, CatalogError> {
+            let mut stmt = self.conn.prepare(sql)?;
+            let map = |r: &rusqlite::Row<'_>| r.get::<_, String>(0);
+            let paths = match arg {
+                Some(a) => stmt.query_map(params![a], map)?.collect::<Result<Vec<_>, _>>()?,
+                None => stmt.query_map([], map)?.collect::<Result<Vec<_>, _>>()?,
+            };
+            Ok(paths.into_iter().map(PathBuf::from).collect())
+        };
+        let mut paths = match collection {
+            Collection::All => rows("SELECT path FROM imported", None)?,
+            Collection::LastImport => {
+                rows("SELECT path FROM imported WHERE batch = (SELECT MAX(batch) FROM imported)", None)?
+            }
+            Collection::Folder(dir) => rows("SELECT path FROM imported WHERE folder = ?1", Some(key(dir)))?,
+        };
+        crate::model::sort_by_name(&mut paths);
+        Ok(paths)
+    }
+
+    /// The folders with imported photos and how many each has, by path.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn imported_folders(&self) -> Result<Vec<(PathBuf, usize)>, CatalogError> {
+        let mut stmt = self.conn.prepare("SELECT folder, COUNT(*) FROM imported GROUP BY folder ORDER BY folder")?;
+        let rows = stmt
+            .query_map([], |r| Ok((PathBuf::from(r.get::<_, String>(0)?), r.get::<_, i64>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().map(|(p, n)| (p, usize::try_from(n).unwrap_or(0))).collect())
+    }
+
+    /// How many photos `collection` holds.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn count(&self, collection: &Collection) -> Result<usize, CatalogError> {
+        self.collection(collection).map(|p| p.len())
+    }
+
+    /// Removes `paths` from the catalog: their ratings, keywords and edits
+    /// go too; the files are not touched.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn remove(&mut self, paths: &[PathBuf]) -> Result<(), CatalogError> {
+        let tx = self.conn.transaction()?;
+        for p in paths {
+            let k = key(p);
+            for table in ["imported", "photos", "tags", "variants"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE path = ?1"), params![k])?;
+            }
+        }
         tx.commit()?;
         Ok(())
     }
@@ -447,6 +571,43 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn photos_are_imported_in_batches_listed_by_collection_and_removed() {
+        let mut c = Catalog::open_in_memory().unwrap();
+        let (a, b, x) = (p("trip/b.NEF"), p("trip/a.NEF"), p("home/x.NEF"));
+        assert_eq!(c.import(&[a.clone(), b.clone()]).unwrap(), 2);
+        assert_eq!(c.import(&[a.clone(), x.clone()]).unwrap(), 1, "a was already in");
+        assert!(c.is_imported(&a).unwrap() && !c.is_imported(&p("elsewhere.NEF")).unwrap());
+        assert_eq!(c.collection(&Collection::All).unwrap(), vec![b.clone(), a.clone(), x.clone()], "by name");
+        assert_eq!(c.collection(&Collection::LastImport).unwrap(), vec![x.clone()], "only the new one");
+        assert_eq!(c.collection(&Collection::Folder(p("trip"))).unwrap(), vec![b.clone(), a.clone()]);
+        assert_eq!(c.imported_folders().unwrap(), vec![(p("home"), 1), (p("trip"), 2)]);
+        c.set_rating(&[x.clone()], 3).unwrap();
+        c.remove(&[x.clone()]).unwrap();
+        assert!(!c.is_imported(&x).unwrap());
+        assert_eq!(c.meta(&x).unwrap().rating, 0, "its data went with it");
+        c.rename(&a, &p("trip/c.NEF")).unwrap();
+        assert!(c.is_imported(&p("trip/c.NEF")).unwrap() && !c.is_imported(&a).unwrap());
+    }
+
+    #[test]
+    fn an_older_catalog_counts_every_known_photo_as_imported() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE photos (path TEXT PRIMARY KEY NOT NULL, rating INTEGER NOT NULL DEFAULT 0, label TEXT,
+               variant INTEGER NOT NULL DEFAULT 1);
+             CREATE TABLE tags (path TEXT NOT NULL, name TEXT NOT NULL COLLATE NOCASE, source TEXT NOT NULL,
+               confidence REAL, PRIMARY KEY (path, name));
+             INSERT INTO photos (path, rating) VALUES ('d/rated.NEF', 4);
+             INSERT INTO tags (path, name, source) VALUES ('d/tagged.NEF', 'sea', 'user');
+             PRAGMA user_version = 2;",
+        )
+        .unwrap();
+        let c = Catalog::init(conn).unwrap();
+        assert_eq!(c.collection(&Collection::All).unwrap(), vec![p("d/rated.NEF"), p("d/tagged.NEF")]);
+        assert_eq!(c.meta(&p("d/rated.NEF")).unwrap().rating, 4);
     }
 
     #[test]

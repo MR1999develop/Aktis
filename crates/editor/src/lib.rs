@@ -18,6 +18,7 @@
 //! - [`history_order`]: History-tab gestures as step orders;
 //! - [`histogram`]: levels of the displayed image;
 //! - [`custom_lenses`]: lens corrections saved under a name for a lens;
+//! - [`catalogs`]: catalog folders, new catalogs and what an import adds;
 //! - [`camera_defaults`]: tool values saved as the defaults of a camera model;
 //! - [`retouch`]: where the spots of the Heal and Clone tools go;
 //! - [`adjust`] and [`color_wheel`]: what the adjustment panels' handles,
@@ -27,6 +28,7 @@
 
 pub mod adjust;
 pub mod camera_defaults;
+pub mod catalogs;
 pub mod clipping;
 pub mod color_wheel;
 pub mod crop;

@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use catalog::{Catalog, ColorLabel, FIRST_VARIANT, MAX_RATING, PhotoMeta, StoredVariant, VariantInfo};
+use catalog::{Catalog, Collection, ColorLabel, FIRST_VARIANT, MAX_RATING, PhotoMeta, StoredVariant, VariantInfo};
 use editor::variants::Save;
 use editor::{Filmstrip, FolderListing, FolderTree, StripPhoto, ThumbCache, ThumbJob, ThumbState, Worker};
 use eframe::egui::{
@@ -71,6 +71,8 @@ pub enum LibraryAction {
     StopTagging,
     /// Tell the user something went wrong.
     Error(String),
+    /// Import these photos into the catalog.
+    Import(Vec<PathBuf>),
 }
 
 /// Progress of a running "AI-tag this folder", for the Explorer.
@@ -122,6 +124,16 @@ struct RenameDialog {
 /// Folders, filmstrip, catalog and thumbnails.
 pub struct Library {
     tree: FolderTree,
+    /// The open catalog's folder.
+    catalog_dir: PathBuf,
+    /// The catalog collection in the filmstrip; `None` for a folder of the disk.
+    collection: Option<Collection>,
+    /// The folders with imported photos and their counts, and the counts of
+    /// All Images and Last Import, as last read.
+    folders: Vec<(PathBuf, usize)>,
+    counts: (usize, usize),
+    /// The photos of the disk folder shown that are not in the catalog yet.
+    not_imported: Vec<PathBuf>,
     /// The photos of the current folder and the filters.
     pub strip: Filmstrip,
     catalog: Option<Catalog>,
@@ -155,18 +167,13 @@ impl std::fmt::Debug for Library {
     }
 }
 
-impl Default for Library {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Library {
-    /// The Explorer's roots and the catalog file; nothing is listed yet.
+    /// The Explorer's roots and the catalog in folder `catalog_dir`; nothing
+    /// is listed yet.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(catalog_dir: &Path) -> Self {
         let roots = platform::library_roots(platform::Os::current(), |k| std::env::var_os(k), Path::is_dir);
-        let file = ai_models::data_dir().join(catalog::FILE_NAME);
+        let file = editor::catalogs::database(catalog_dir);
         let (catalog, catalog_problem) = match Catalog::open(&file) {
             Ok(c) => (Some(c), None),
             Err(e) => (
@@ -175,8 +182,13 @@ impl Library {
                 Some(format!("Ratings, keywords and edits will not be kept: {e} ({})", file.display())),
             ),
         };
-        Self {
+        let mut library = Self {
             tree: FolderTree::new(roots),
+            catalog_dir: catalog_dir.to_owned(),
+            collection: None,
+            folders: Vec::new(),
+            counts: (0, 0),
+            not_imported: Vec::new(),
             strip: Filmstrip::default(),
             catalog,
             catalog_problem,
@@ -189,7 +201,94 @@ impl Library {
             scroll_to: None,
             shown_rows: 0..0,
             presets: Vec::new(),
+        };
+        library.refresh_collections();
+        library
+    }
+
+    /// The open catalog's folder.
+    #[must_use]
+    pub fn catalog_dir(&self) -> &Path {
+        &self.catalog_dir
+    }
+
+    /// Opens the catalog in folder `dir` (made when it is new) in place of
+    /// the open one; the filmstrip shows its photos.
+    ///
+    /// # Errors
+    /// A message when the catalog cannot be opened; the open one stays.
+    pub fn open_catalog(&mut self, dir: &Path) -> Result<(), String> {
+        let catalog = Catalog::open(&editor::catalogs::database(dir)).map_err(|e| e.to_string())?;
+        self.catalog = Some(catalog);
+        self.catalog_dir = dir.to_owned();
+        self.thumbs.clear();
+        self.previews.clear();
+        self.strip = Filmstrip::default();
+        self.loading = None;
+        self.refresh_collections();
+        self.show_collection(Collection::All);
+        Ok(())
+    }
+
+    /// Adds `paths` to the catalog as one import and shows it; returns how
+    /// many were new.
+    ///
+    /// # Errors
+    /// A message when the catalog refuses them.
+    pub fn import(&mut self, paths: &[PathBuf]) -> Result<usize, String> {
+        let catalog = self.catalog.as_mut().ok_or("there is no catalog")?;
+        let added = catalog.import(paths).map_err(|e| e.to_string())?;
+        self.refresh_collections();
+        if added > 0 {
+            self.show_collection(Collection::LastImport);
         }
+        Ok(added)
+    }
+
+    /// `true` when `path` was imported into the catalog.
+    #[must_use]
+    pub fn is_imported(&self, path: &Path) -> bool {
+        self.catalog.as_ref().is_some_and(|c| c.is_imported(path).unwrap_or(false))
+    }
+
+    /// How many photos the catalog holds.
+    #[must_use]
+    pub fn photo_count(&self) -> usize {
+        self.counts.0
+    }
+
+    /// The catalog collection in the filmstrip, if it shows one.
+    #[must_use]
+    pub fn collection(&self) -> Option<&Collection> {
+        self.collection.as_ref()
+    }
+
+    /// Shows the photos of `collection` in the filmstrip.
+    pub fn show_collection(&mut self, collection: Collection) {
+        let paths = self.catalog.as_ref().and_then(|c| c.collection(&collection).ok()).unwrap_or_default();
+        let metas = self.metas(&paths);
+        if self.collection.as_ref() != Some(&collection) {
+            self.thumbs.clear();
+            self.previews.clear();
+            self.strip.filter.tags.clear();
+        }
+        self.loading = None;
+        // The filmstrip names what it shows after its "folder": the collection's name.
+        self.strip.set_folder(self.catalog_dir.join(collection.label()), paths.into_iter().zip(metas).collect());
+        self.collection = Some(collection);
+    }
+
+    /// Reads again the catalog's folders and counts for the Explorer.
+    /// Also which photos of a disk folder shown are not imported yet.
+    fn refresh_collections(&mut self) {
+        let Some(c) = self.catalog.as_ref() else { return };
+        self.folders = c.imported_folders().unwrap_or_default();
+        self.counts = (c.count(&Collection::All).unwrap_or(0), c.count(&Collection::LastImport).unwrap_or(0));
+        self.not_imported = if self.collection.is_none() {
+            self.strip.photos.iter().map(|p| p.path.clone()).filter(|p| !c.is_imported(p).unwrap_or(false)).collect()
+        } else {
+            Vec::new()
+        };
     }
 
     /// The folder in the filmstrip.
@@ -201,6 +300,7 @@ impl Library {
     /// Shows `dir` in the filmstrip and opens the tree down to it.
     pub fn show_folder(&mut self, dir: PathBuf, worker: Option<&Worker>) {
         let Some(worker) = worker else { return };
+        self.collection = None;
         let mut to_list = self.tree.reveal(&dir);
         if !to_list.contains(&dir) {
             to_list.push(dir.clone());
@@ -244,6 +344,7 @@ impl Library {
                         self.strip.filter.tags.clear();
                     }
                     self.strip.set_folder(dir, listing.photos.into_iter().zip(metas).collect());
+                    self.refresh_collections();
                 }
                 None
             }
@@ -642,23 +743,56 @@ impl Library {
     ) {
         let t = Tokens::of(ui.ctx().theme());
         ui.add_space(SPACE[1]);
+        ui.label(
+            RichText::new(format!("Catalog \u{b7} {}", editor::catalogs::name(&self.catalog_dir)))
+                .size(FONT[3])
+                .strong(),
+        )
+        .on_hover_text(self.catalog_dir.display().to_string());
+        ui.add_space(SPACE[0]);
+        egui::ScrollArea::vertical()
+            .id_salt("explorer-catalog")
+            .max_height((ui.available_height() * 0.3).max(90.0))
+            .auto_shrink([false, true])
+            .show(ui, |ui| self.collections(ui, &t));
+        ui.separator();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Explorer").size(FONT[3]).strong());
+            ui.label(RichText::new("Disk").strong().color(t.text_weak))
+                .on_hover_text("Browse the folders of this computer to import their photos");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if let Some(dir) = self.strip.folder.clone()
+                if self.collection.is_none()
+                    && let Some(dir) = self.strip.folder.clone()
                     && ui.small_button("Refresh").on_hover_text("Read the folder again").clicked()
                 {
                     self.show_folder(dir, worker);
                 }
             });
         });
-        ui.add_space(SPACE[0]);
-        let tree_height = (ui.available_height() * 0.42).max(120.0);
+        let tree_height = (ui.available_height() * 0.35).max(100.0);
         egui::ScrollArea::vertical()
             .id_salt("explorer-folders")
             .max_height(tree_height)
             .auto_shrink([false, true])
             .show(ui, |ui| self.folder_tree(ui, &t, worker));
+        // A folder of the disk: its photos are only seen until imported.
+        if self.collection.is_none() && self.strip.folder.is_some() {
+            let new = self.not_imported.clone();
+            if new.is_empty() {
+                ui.label(
+                    RichText::new("Every photo of this folder is in the catalog").size(FONT[0]).color(t.text_weak),
+                );
+            } else {
+                let label = format!("Import this folder ({})", new.len());
+                let button = Button::new(RichText::new(label).color(t.on_accent)).fill(t.accent);
+                if ui
+                    .add(button)
+                    .on_hover_text("Add its photos to the catalog; the files stay where they are")
+                    .clicked()
+                {
+                    actions.push(LibraryAction::Import(new));
+                }
+            }
+        }
         ui.separator();
         egui::ScrollArea::vertical().id_salt("explorer-filters").auto_shrink([false, false]).show(ui, |ui| {
             self.filters(ui, &t);
@@ -667,10 +801,41 @@ impl Library {
         });
     }
 
+    /// The catalog's collections: All Images, Last Import and the folders
+    /// photos were imported from.
+    fn collections(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let mut chosen = None;
+        let entries = [(Collection::All, self.counts.0), (Collection::LastImport, self.counts.1)];
+        for (c, n) in entries {
+            let on = self.collection.as_ref() == Some(&c);
+            if choice(ui, on, format!("{}  {n}", c.label())).clicked() {
+                chosen = Some(c);
+            }
+        }
+        if self.folders.is_empty() {
+            ui.label(
+                RichText::new("No photos yet: File \u{25b8} Import Images\u{2026}").size(FONT[0]).color(t.text_weak),
+            );
+        } else {
+            ui.label(RichText::new("Folders").size(FONT[0]).color(t.text_weak));
+        }
+        for (dir, n) in &self.folders {
+            let c = Collection::Folder(dir.clone());
+            let on = self.collection.as_ref() == Some(&c);
+            let r = choice(ui, on, format!("{}  {n}", c.label())).on_hover_text(dir.display().to_string());
+            if r.clicked() {
+                chosen = Some(c);
+            }
+        }
+        if let Some(c) = chosen {
+            self.show_collection(c);
+        }
+    }
+
     fn folder_tree(&mut self, ui: &mut egui::Ui, t: &Tokens, worker: Option<&Worker>) {
         let mut toggle = None;
         let mut select = None;
-        let current = self.strip.folder.clone();
+        let current = if self.collection.is_none() { self.strip.folder.clone() } else { None };
         if self.tree.roots.is_empty() {
             ui.weak("No folders found");
         }
@@ -1103,6 +1268,15 @@ impl Library {
 /// Runs a program of the system (file manager, default app).
 pub(crate) fn launch(l: &platform::Launch) -> std::io::Result<()> {
     std::process::Command::new(l.program).args(&l.args).spawn().map(drop)
+}
+
+/// A selectable row whose text is cut short with "…" rather than widening the panel.
+fn choice(ui: &mut egui::Ui, on: bool, text: String) -> egui::Response {
+    ui.scope(|ui| {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        ui.add(Button::selectable(on, text))
+    })
+    .inner
 }
 
 /// The colour of a label.

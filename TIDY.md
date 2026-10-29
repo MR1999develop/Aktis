@@ -186,3 +186,12 @@
   gradient cannot be rotated; only the last gradient of a mask shows
   handles, and a gradient cannot be inverted on its own (use Alt to
   take it away, or the mask's Invert).
+- Catalogs: Import Images reads the folder (and its sub-folders) on the
+  interface thread to count the RAW files; a large tree should be read by
+  the worker. Capture One's import options (copy or move the files into a
+  folder, rename, apply a preset or metadata, skip duplicates, backup) are
+  not offered: files are always referenced where they are. Removing photos
+  from the catalog (`Catalog::remove`) has no menu yet; missing files cannot
+  be located again (relink); there is no catalog backup on quit nor
+  "Import Catalog" to merge one into another. User collections (albums,
+  smart albums, projects) are not done.

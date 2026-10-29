@@ -173,8 +173,6 @@ pub struct Settings {
     pub export: ExportSettings,
     /// Recently opened files, newest first.
     pub recent: Vec<PathBuf>,
-    /// Folder shown in the filmstrip, opened again at start-up.
-    pub library_dir: Option<PathBuf>,
     /// Its thresholds and whether it shows the shadows too (Preferences ▸ Exposure).
     pub warning: WarningSettings,
     /// Sizes of the panels and the left tab shown, as the window was left.
@@ -191,6 +189,15 @@ pub struct Settings {
     /// The node selected in the photo open when the editor was closed (the
     /// first of `recent`), selected again when it reopens.
     pub last_node: Option<u32>,
+    /// The catalog folder (`*.rnecatalog`) open when the editor was closed.
+    pub catalog: Option<PathBuf>,
+    /// Folder where new catalogs are made (Preferences ▸ Catalog); `None`:
+    /// `Catalogs` in the editor's data folder.
+    pub catalogs_dir: Option<PathBuf>,
+    /// The folder of the last import (File ▸ Import Images…).
+    pub import_dir: Option<PathBuf>,
+    /// Recently opened catalogs, newest first.
+    pub recent_catalogs: Vec<PathBuf>,
 }
 
 impl Settings {
@@ -208,6 +215,26 @@ impl Settings {
     /// Removes a file from the recent list (it could not be opened).
     pub fn forget(&mut self, path: &Path) {
         self.recent.retain(|p| p != path);
+    }
+
+    /// Records an opened catalog: the one to open at start-up and first in
+    /// the recent catalogs.
+    pub fn catalog_opened(&mut self, catalog: &Path) {
+        self.recent_catalogs.retain(|p| p != catalog);
+        self.recent_catalogs.insert(0, catalog.to_owned());
+        self.recent_catalogs.truncate(MAX_RECENT);
+        self.catalog = Some(catalog.to_owned());
+    }
+
+    /// Removes a catalog from the recent list (it could not be opened).
+    pub fn forget_catalog(&mut self, catalog: &Path) {
+        self.recent_catalogs.retain(|p| p != catalog);
+    }
+
+    /// The folder where new catalogs are made.
+    #[must_use]
+    pub fn catalogs_folder(&self) -> Option<PathBuf> {
+        self.catalogs_dir.clone().or_else(editor::catalogs::default_folder)
     }
 
     /// The folder of the presets and style brushes.
@@ -428,6 +455,18 @@ impl ExportSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_catalogs_are_newest_first_unique_and_the_last_is_reopened() {
+        let mut s = Settings::default();
+        s.catalog_opened(Path::new("a.rnecatalog"));
+        s.catalog_opened(Path::new("b.rnecatalog"));
+        s.catalog_opened(Path::new("a.rnecatalog"));
+        assert_eq!(s.recent_catalogs, [PathBuf::from("a.rnecatalog"), PathBuf::from("b.rnecatalog")]);
+        assert_eq!(s.catalog.as_deref(), Some(Path::new("a.rnecatalog")));
+        s.forget_catalog(Path::new("b.rnecatalog"));
+        assert_eq!(s.recent_catalogs.len(), 1);
+    }
 
     #[test]
     fn recent_files_are_newest_first_unique_and_limited() {

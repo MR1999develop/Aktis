@@ -13,11 +13,15 @@ pub mod model;
 mod store;
 
 pub use model::{
-    ColorLabel, FIRST_VARIANT, Filter, LabelSet, MAX_RATING, PhotoMeta, RatingSet, StoredVariant, Tag, TagSource,
-    VariantInfo, next_variant_number, tag_counts, variant_name,
+    Collection, ColorLabel, FIRST_VARIANT, Filter, LabelSet, MAX_RATING, PhotoMeta, RatingSet, StoredVariant, Tag,
+    TagSource, VariantInfo, next_variant_number, sort_by_name, tag_counts, variant_name,
 };
 #[cfg(feature = "sqlite")]
 pub use store::{Catalog, CatalogError};
 
-/// File name of the catalog in the editor's data folder.
+/// File name of the database, inside a catalog's folder (and, before
+/// catalogs, in the editor's data folder).
 pub const FILE_NAME: &str = "catalog.sqlite";
+
+/// Extension of a catalog's folder ("Travel.rnecatalog").
+pub const CATALOG_EXTENSION: &str = "rnecatalog";

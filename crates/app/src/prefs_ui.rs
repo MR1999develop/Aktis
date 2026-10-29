@@ -84,6 +84,33 @@ impl Preferences {
             }
             ui.add_space(SPACE[2]);
 
+            section(ui, &t, "Catalogs");
+            ui.horizontal(|ui| {
+                ui.label("Folder");
+                let shown = draft.catalogs_folder().map_or_else(|| "None".to_owned(), |d| d.display().to_string());
+                ui.add(egui::Label::new(RichText::new(shown).color(t.text_weak)).truncate());
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Choose\u{2026}").clicked() {
+                    let mut pick = rfd::FileDialog::new().set_title("Catalogs folder");
+                    if let Some(dir) = draft.catalogs_folder().filter(|d| d.is_dir()) {
+                        pick = pick.set_directory(dir);
+                    }
+                    if let Some(dir) = pick.pick_folder() {
+                        draft.catalogs_dir = Some(dir);
+                    }
+                }
+                if ui.add_enabled(draft.catalogs_dir.is_some(), egui::Button::new("Default")).clicked() {
+                    draft.catalogs_dir = None;
+                }
+            });
+            ui.label(
+                RichText::new("New catalogs are made in this folder; the open catalog stays where it is.")
+                    .size(FONT[0])
+                    .color(t.text_weak),
+            );
+            ui.add_space(SPACE[2]);
+
             section(ui, &t, "Presets");
             ui.horizontal(|ui| {
                 ui.label("Folder");
@@ -121,6 +148,7 @@ impl Preferences {
                     settings.theme = d.theme;
                     settings.viewer_background = d.viewer_background;
                     settings.presets_dir = d.presets_dir;
+                    settings.catalogs_dir = d.catalogs_dir;
                     settings.warning = d.warning;
                 }
                 true

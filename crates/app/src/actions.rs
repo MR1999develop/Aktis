@@ -8,8 +8,12 @@ use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 /// A command the user can give from a menu or the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
-    /// File ▸ Open…
+    /// File ▸ Open Catalog…
     Open,
+    /// File ▸ New Catalog…
+    NewCatalog,
+    /// File ▸ Import Images…: photos are imported into the catalog, never opened from the disk.
+    Import,
     /// File ▸ Export…: the export window.
     Export,
     /// File ▸ Export with previous settings: no window.
@@ -47,6 +51,9 @@ const fn k(modifiers: Modifiers, key: Key) -> KeyboardShortcut {
 }
 
 const OPEN: &[KeyboardShortcut] = &[k(CMD, Key::O)];
+const NEW_CATALOG: &[KeyboardShortcut] = &[k(CMD, Key::N)];
+// Ctrl+Shift+I as Capture One's Import Images.
+const IMPORT: &[KeyboardShortcut] = &[k(CMD_SHIFT, Key::I)];
 // Ctrl+D as Capture One's Process; Ctrl+E is the exposure warning there and here.
 const EXPORT: &[KeyboardShortcut] = &[k(CMD, Key::D)];
 const EXPORT_AGAIN: &[KeyboardShortcut] = &[k(CMD_SHIFT, Key::D)];
@@ -68,7 +75,9 @@ impl Command {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::Open => "Open\u{2026}",
+            Self::Open => "Open Catalog\u{2026}",
+            Self::NewCatalog => "New Catalog\u{2026}",
+            Self::Import => "Import Images\u{2026}",
             Self::Export => "Export\u{2026}",
             Self::ExportAgain => "Export with previous settings",
             Self::Quit => "Quit",
@@ -90,6 +99,8 @@ impl Command {
     pub fn shortcuts(self) -> &'static [KeyboardShortcut] {
         match self {
             Self::Open => OPEN,
+            Self::NewCatalog => NEW_CATALOG,
+            Self::Import => IMPORT,
             Self::Export => EXPORT,
             Self::ExportAgain => EXPORT_AGAIN,
             Self::Quit => QUIT,
@@ -115,8 +126,10 @@ impl Command {
     }
 
     /// Every command.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::Open,
+        Self::NewCatalog,
+        Self::Import,
         Self::Export,
         Self::ExportAgain,
         Self::Quit,

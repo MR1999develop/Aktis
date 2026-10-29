@@ -4,6 +4,39 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::{Path, PathBuf};
+
+/// A group of the catalog's photos, as the Explorer lists them (Capture
+/// One's catalog collections).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Collection {
+    /// Every photo of the catalog.
+    All,
+    /// The photos of the last import.
+    LastImport,
+    /// The photos imported from one folder (not its sub-folders).
+    Folder(PathBuf),
+}
+
+impl Collection {
+    /// Name shown in the Explorer.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::All => "All Images".to_owned(),
+            Self::LastImport => "Last Import".to_owned(),
+            Self::Folder(dir) => {
+                dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned())
+            }
+        }
+    }
+}
+
+/// Sorts `paths` by file name (case apart), then by folder.
+pub fn sort_by_name(paths: &mut [PathBuf]) {
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    paths.sort_by(|a, b| name(a).cmp(&name(b)).then_with(|| a.cmp(b)));
+}
 
 /// Highest rating.
 pub const MAX_RATING: u8 = 5;
@@ -301,6 +334,15 @@ pub fn tag_counts<'a>(metas: impl IntoIterator<Item = &'a PhotoMeta>) -> Vec<(St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collections_have_names_and_paths_sort_by_file_name() {
+        assert_eq!(Collection::All.label(), "All Images");
+        assert_eq!(Collection::Folder(PathBuf::from("D:/Photos/Trip")).label(), "Trip");
+        let mut paths = vec![PathBuf::from("b/A2.NEF"), PathBuf::from("a/a1.NEF"), PathBuf::from("a/A2.NEF")];
+        sort_by_name(&mut paths);
+        assert_eq!(paths, vec![PathBuf::from("a/a1.NEF"), PathBuf::from("a/A2.NEF"), PathBuf::from("b/A2.NEF")]);
+    }
 
     #[test]
     fn a_new_variant_gets_the_number_above_the_highest() {

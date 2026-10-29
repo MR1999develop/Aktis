@@ -17,6 +17,7 @@ mod actions;
 mod adjust_ui;
 mod ai_mask_job;
 mod app;
+mod catalog_ui;
 mod color_ui;
 mod dialog;
 mod export_ui;
