@@ -92,6 +92,53 @@ impl Style {
     }
 }
 
+/// Values saved as the defaults of some tools for one camera model, as
+/// Capture One's Save as Defaults: a photo of that camera never edited
+/// starts with these nodes, a node of one of these tools added to such a
+/// photo starts with these values, and resetting goes back to them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CameraDefaults {
+    /// The camera ("Sony ILCE-7M3"), as the editor names the photo's camera.
+    pub camera: String,
+    /// One node per tool, in the order they were first saved.
+    pub nodes: Vec<StyleNode>,
+}
+
+impl CameraDefaults {
+    /// No defaults yet for `camera`.
+    #[must_use]
+    pub fn new(camera: impl Into<String>) -> Self {
+        Self { camera: camera.into(), nodes: Vec::new() }
+    }
+
+    /// The saved values of `tool`, if any.
+    #[must_use]
+    pub fn params(&self, tool: &ToolId) -> Option<&Params> {
+        self.nodes.iter().find(|n| n.tool == *tool).map(|n| &n.params)
+    }
+
+    /// Saves `params` as the defaults of `tool`, replacing earlier ones in place.
+    pub fn set(&mut self, tool: ToolId, params: Params) {
+        match self.nodes.iter_mut().find(|n| n.tool == tool) {
+            Some(n) => n.params = params,
+            None => self.nodes.push(StyleNode { tool, params }),
+        }
+    }
+
+    /// Forgets the defaults of `tool`; `true` when there were some.
+    pub fn remove(&mut self, tool: &ToolId) -> bool {
+        let before = self.nodes.len();
+        self.nodes.retain(|n| n.tool != *tool);
+        self.nodes.len() != before
+    }
+
+    /// `true` when nothing is saved.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+}
+
 /// The tool nodes of `graph` in the order they act (evaluation order), or in
 /// id order when the graph cannot be ordered.
 #[must_use]
@@ -112,6 +159,22 @@ mod tests {
 
     fn tool(name: &str) -> ToolId {
         ToolId::new(name).unwrap()
+    }
+
+    #[test]
+    fn camera_defaults_keep_one_node_per_tool() {
+        let mut d = CameraDefaults::new("Sony ILCE-7M3");
+        let mut p = Params::new();
+        p.set(ParamId::new("exposure").unwrap(), ParamValue::Float(0.3));
+        d.set(tool("exposure"), p.clone());
+        d.set(tool("hdr"), Params::new());
+        p.set(ParamId::new("exposure").unwrap(), ParamValue::Float(0.7));
+        d.set(tool("exposure"), p.clone());
+        assert_eq!(d.nodes.len(), 2);
+        assert_eq!(d.nodes[0].tool, tool("exposure"), "replaced in place");
+        assert_eq!(d.params(&tool("exposure")), Some(&p));
+        assert!(d.remove(&tool("hdr")) && !d.remove(&tool("hdr")));
+        assert!(!d.is_empty());
     }
 
     #[test]

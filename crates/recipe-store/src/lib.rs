@@ -10,6 +10,7 @@
 //!
 //! Pure: no I/O, every type round-trips exactly (floats included).
 
+mod camera_defaults;
 mod codec;
 mod custom_lens;
 mod json;
@@ -17,6 +18,9 @@ mod preset;
 
 use std::fmt;
 
+pub use camera_defaults::{
+    CAMERA_DEFAULTS_EXTENSION, CAMERA_DEFAULTS_FORMAT, decode_camera_defaults, encode_camera_defaults,
+};
 pub use custom_lens::{CUSTOM_LENS_EXTENSION, CUSTOM_LENS_FORMAT, decode_custom_lens, encode_custom_lens};
 pub use preset::{
     BRUSH_EXTENSION, BrushSettings, PRESET_EXTENSION, PRESET_FORMAT, Preset, decode_preset, encode_preset,

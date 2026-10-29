@@ -5,8 +5,8 @@
 //!   aperture: every tone moves by the same number of stops (−4 to +4, as
 //!   in Capture One).
 //! - **Contrast** is an S curve in stops around middle grey (0.18): near
-//!   grey the tones spread by `k = 1 + contrast/200` (+100: one stop above
-//!   grey becomes about 1.5), the extra push levelling off over
+//!   grey the tones spread by `k` ([`contrast_slope`]: +100 doubles them,
+//!   one stop above grey becomes about two; −100 halves them), the extra push levelling off over
 //!   [`CONTRAST_SPAN`] stops so the far highlights and shadows move by a
 //!   bounded amount. As in Capture One it also makes colours more (or
 //!   less) saturated: the channels' ratios to luminance are raised to
@@ -77,6 +77,13 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     ],
 });
 
+/// How much contrast spreads the tones around middle grey: 2 at +100, 1 at
+/// 0, 0.5 at −100 (the same number of stops either way).
+#[must_use]
+pub fn contrast_slope(contrast: f32) -> f32 {
+    (contrast / 100.0).exp2()
+}
+
 /// One pixel: what the CPU reference and the WGSL kernel both compute.
 fn pixel(rgb: [f32; 3], stops: f32, contrast: f32, brightness: f32, saturation: f32) -> [f32; 3] {
     let gain = stops.exp2();
@@ -85,7 +92,7 @@ fn pixel(rgb: [f32; 3], stops: f32, contrast: f32, brightness: f32, saturation: 
     if contrast != 0.0 || brightness != 0.0 {
         let y = luma(rgb);
         if y > 1e-6 {
-            let k = 1.0 + contrast / 200.0;
+            let k = contrast_slope(contrast);
             let d = (y / 0.18).log2();
             let d2 = d + (k - 1.0) * CONTRAST_SPAN * (d / CONTRAST_SPAN).tanh();
             let mut y2 = 0.18 * d2.exp2();
@@ -116,7 +123,7 @@ const WGSL: &str = "
     if (contrast != 0.0 || bright != 0.0) {
         let y = dot(rgb, w);
         if (y > 1e-6) {
-            let k = 1.0 + contrast / 200.0;
+            let k = exp2(contrast / 100.0);
             let d = log2(y / 0.18);
             let d2 = d + (k - 1.0) * 3.0 * tanh(d / 3.0);
             var y2 = 0.18 * exp2(d2);
@@ -209,12 +216,12 @@ mod tests {
         let grey = |y: f32| [y, y, y, 1.0];
         let stops = |c: f32, y: f32| (luma(run_all(&[(CONTRAST, c)], grey(y))) / 0.18).log2();
         assert!(stops(100.0, 0.18).abs() < 1e-4, "middle grey stays");
-        // +100: one stop above grey becomes about 1.5, one below about −1.5.
-        assert!((1.45..1.5).contains(&stops(100.0, 0.36)), "{}", stops(100.0, 0.36));
-        assert!((-1.5..-1.45).contains(&stops(100.0, 0.09)), "{}", stops(100.0, 0.09));
-        // Far from grey the push levels off: 6 stops up gain at most 1.5.
+        // +100: one stop above grey becomes about two, one below about −2.
+        assert!((1.9..2.0).contains(&stops(100.0, 0.36)), "{}", stops(100.0, 0.36));
+        assert!((-2.0..-1.9).contains(&stops(100.0, 0.09)), "{}", stops(100.0, 0.09));
+        // Far from grey the push levels off: 6 stops up gain at most 3.
         let far = stops(100.0, 0.18 * 64.0);
-        assert!(far > 7.0 && far < 7.5, "{far}");
+        assert!(far > 8.5 && far < 9.0, "{far}");
         // Less contrast pulls the tones in.
         assert!((0.5..0.55).contains(&stops(-100.0, 0.36)), "{}", stops(-100.0, 0.36));
         // Always in order.

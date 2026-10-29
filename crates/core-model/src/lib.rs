@@ -36,4 +36,4 @@ pub use recipe::{
     BaseCurve, CustomLens, DevelopSettings, LensAmounts, LensSettings, ManualLens, ProfileChoice, Recipe, WhiteBalance,
 };
 pub use sensor::{BayerPattern, CfaPattern, SensorError, SensorImage};
-pub use style::{Style, StyleNode, StyleSelection, tool_nodes};
+pub use style::{CameraDefaults, Style, StyleNode, StyleSelection, tool_nodes};
