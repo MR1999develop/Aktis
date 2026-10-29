@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn listing_a_folder_finds_raw_files_and_visible_subfolders() {
+    fn listing_a_folder_finds_photos_and_visible_subfolders() {
         let dir = std::env::temp_dir().join(format!("rne-library-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("Sub 2")).unwrap();
@@ -605,7 +605,7 @@ mod tests {
         let l = list_folder(&dir).unwrap();
         let names = |v: &[PathBuf]| v.iter().map(|p| folder_name(p)).collect::<Vec<_>>();
         assert_eq!(names(&l.subfolders), vec!["Sub 2", "sub 10"]);
-        assert_eq!(names(&l.photos), vec!["A.arw", "b.NEF"]);
+        assert_eq!(names(&l.photos), vec!["A.arw", "b.NEF", "c.jpg"], "RAW files and pictures, not other files");
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(list_folder(&dir).is_err());
     }

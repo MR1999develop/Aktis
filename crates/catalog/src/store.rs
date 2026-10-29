@@ -935,16 +935,16 @@ mod tests {
         c.import(&[a.clone(), b.clone()]).unwrap();
         c.set_rating(std::slice::from_ref(&a), 5).unwrap();
         c.trash(std::slice::from_ref(&a)).unwrap();
-        assert_eq!(c.collection(&Collection::All).unwrap(), [b.clone()]);
-        assert_eq!(c.collection(&Collection::Folder(p("d"))).unwrap(), [b.clone()]);
-        assert_eq!(c.collection(&Collection::Trash).unwrap(), [a.clone()]);
+        assert_eq!(c.collection(&Collection::All).unwrap(), std::slice::from_ref(&b));
+        assert_eq!(c.collection(&Collection::Folder(p("d"))).unwrap(), std::slice::from_ref(&b));
+        assert_eq!(c.collection(&Collection::Trash).unwrap(), std::slice::from_ref(&a));
         assert_eq!(c.imported_folders().unwrap(), [(p("d"), 1)]);
         assert!(c.is_imported(&a).unwrap(), "still in the catalog");
         c.restore(std::slice::from_ref(&a)).unwrap();
         assert_eq!(c.count(&Collection::All).unwrap(), 2);
         assert_eq!(c.meta(&a).unwrap().rating, 5, "nothing lost on the way");
         c.trash(std::slice::from_ref(&a)).unwrap();
-        assert_eq!(c.empty_trash().unwrap(), [a.clone()]);
+        assert_eq!(c.empty_trash().unwrap(), std::slice::from_ref(&a));
         assert!(!c.is_imported(&a).unwrap() && c.collection(&Collection::Trash).unwrap().is_empty());
     }
 
