@@ -1371,7 +1371,7 @@ impl EditorApp {
     fn start_recipe(&self, opened: &editor::Opened) -> Recipe {
         let lens = self.custom_lenses.start_settings(opened.lens_key.as_deref());
         let nodes = self.camera_defaults.start_nodes(&opened.camera);
-        editor::camera_defaults::start_recipe(&self.registry, lens, &nodes)
+        editor::camera_defaults::start_recipe(&self.registry, &opened.camera, lens, &nodes)
     }
 
     fn install(&mut self, reopened: Reopened, same_photo: bool, keep_shown: bool) {

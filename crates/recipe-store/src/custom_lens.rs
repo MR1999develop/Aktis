@@ -67,6 +67,7 @@ mod tests {
                 zoom: Some(1.02),
                 amount: LensAmounts { distortion: 0.75, tca: 1.0, vignetting: 1.5 },
                 manual: ManualLens { distortion: -0.2, vignetting: 0.3 },
+                purple_fringing: 0.6,
                 custom: Some("My 24-70".to_owned()),
                 ..LensSettings::default()
             },

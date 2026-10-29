@@ -4,7 +4,8 @@
 //! raw mosaic, demosaic, clipped highlights made neutral
 //! ([`neutralise_clipped`]), lens corrections in camera RGB (vignetting, then
 //! distortion and lateral chromatic aberration, which move each colour
-//! channel differently), camera profile into the working space. Bayer
+//! channel differently), camera profile into the working space, purple
+//! fringing ([`fringe`], in the working space). Bayer
 //! sensors are demosaiced with RCD and a median against false colours
 //! ([`rcd`]), X-Trans sensors with Markesteijn's three-pass algorithm
 //! ([`markesteijn`]; [`xtrans`] for images too small for it) and the same
@@ -15,6 +16,7 @@
 //! its shooting data; [`develop_with`] applies them.
 
 mod chroma;
+mod fringe;
 mod lens;
 mod markesteijn;
 pub mod prepare;
@@ -173,6 +175,10 @@ pub fn develop_with(
                 *px = [rgb[0], rgb[1], rgb[2], 1.0];
             }
         }
+    }
+    // Purple fringing, in the working space where hues mean the same for every camera.
+    if settings.lens.enabled && settings.lens.purple_fringing > 0.0 {
+        fringe::defringe(&mut pixels, w, h, space, settings.lens.purple_fringing);
     }
     ImageF32::from_pixels(sensor.width(), sensor.height(), space, pixels).map_err(DevelopError::Image)
 }

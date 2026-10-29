@@ -48,6 +48,9 @@ pub struct LensSettings {
     pub amount: LensAmounts,
     /// Corrections set by hand, on top of the database's or without it.
     pub manual: ManualLens,
+    /// Purple fringing removed along high-contrast edges, from 0 (none) to
+    /// 1; works without lens data.
+    pub purple_fringing: f32,
     /// The custom lens these settings came from, by name; `None` when they
     /// were set on this photo only.
     pub custom: Option<String>,
@@ -64,6 +67,7 @@ impl Default for LensSettings {
             zoom: None,
             amount: LensAmounts::default(),
             manual: ManualLens::default(),
+            purple_fringing: 0.0,
             custom: None,
         }
     }
@@ -93,6 +97,8 @@ impl LensSettings {
     pub fn sanitized(mut self) -> Self {
         self.amount = self.amount.clamped();
         self.manual = self.manual.clamped();
+        self.purple_fringing =
+            if self.purple_fringing.is_finite() { self.purple_fringing.clamp(0.0, 1.0) } else { 0.0 };
         self
     }
 }

@@ -16,6 +16,11 @@
   fixed; a control would let the user choose.
 - Camera Match is fitted when the photo opens (about 0.1 s); the export of
   a photo not open fits it again from the full development.
+- Purple fringing (`develop::fringe`): global only; Capture One also offers
+  it in local adjustment layers (a mask). Green fringing (behind the focus
+  plane) is not touched. The thresholds (edge 0.25–0.75 stops, chroma,
+  hue window) were set on synthetic images: tune them on real Fujifilm and
+  fast-lens photos.
 - Neural X-Trans demosaic: candidates found (vkdt `jddcnn`, DemosaicNet's
   X-Trans model); weights licences and input contracts to confirm first.
 - Below 100 % each zoom step re-renders the node graph to get the photo at

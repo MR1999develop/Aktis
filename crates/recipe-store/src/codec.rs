@@ -130,6 +130,7 @@ fn lens(l: &LensSettings) -> Value {
         ("zoom", opt(l.zoom.map(Value::f32))),
         ("amount", f32s(&[l.amount.distortion, l.amount.tca, l.amount.vignetting])),
         ("manual", f32s(&[l.manual.distortion, l.manual.vignetting])),
+        ("purple_fringing", Value::f32(l.purple_fringing)),
         ("custom", opt(l.custom.as_deref().map(Value::text))),
     ])
 }
@@ -159,6 +160,11 @@ fn read_lens(v: &Value) -> Result<LensSettings, String> {
             }
             None => ManualLens::default(),
         },
+        // Came later still: missing means none.
+        purple_fringing: optional(f, "purple_fringing")
+            .map(|v| v.as_f32("purple_fringing"))
+            .transpose()?
+            .unwrap_or(0.0),
         custom: optional(f, "custom").map(|v| v.as_str("custom").map(str::to_owned)).transpose()?,
     })
 }

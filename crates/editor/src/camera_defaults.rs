@@ -20,14 +20,33 @@ pub fn default_folder() -> Option<PathBuf> {
     platform::editor_data_dir().map(|d| d.join(FOLDER_NAME))
 }
 
-/// The recipe a photo never edited starts with: the default one, with the
-/// settings of its custom lens (`lens`) and the nodes of its camera's
-/// defaults (`nodes`, those this build has), in their order after the Source.
+/// Purple fringing removed from the start for Fujifilm cameras, whose
+/// photos often show it strongly along bright edges.
+pub const FUJIFILM_PURPLE_FRINGING: f32 = 0.5;
+
+/// The purple fringing a photo of `camera` ("Maker Model") starts with
+/// when it has no custom lens.
 #[must_use]
-pub fn start_recipe(registry: &ToolRegistry, lens: Option<LensSettings>, nodes: &[StyleNode]) -> Recipe {
+pub fn start_purple_fringing(camera: &str) -> f32 {
+    let maker = camera.split_whitespace().next().unwrap_or_default();
+    if maker.eq_ignore_ascii_case("fujifilm") || maker.eq_ignore_ascii_case("fuji") {
+        FUJIFILM_PURPLE_FRINGING
+    } else {
+        0.0
+    }
+}
+
+/// The recipe a photo of `camera` ("Maker Model") never edited starts with:
+/// the default one, with the settings of its custom lens (`lens`; without
+/// one, the camera's purple fringing, [`start_purple_fringing`]) and the
+/// nodes of its camera's defaults (`nodes`, those this build has), in their
+/// order after the Source.
+#[must_use]
+pub fn start_recipe(registry: &ToolRegistry, camera: &str, lens: Option<LensSettings>, nodes: &[StyleNode]) -> Recipe {
     let mut recipe = Recipe::default();
-    if let Some(lens) = lens {
-        recipe.develop.lens = lens;
+    match lens {
+        Some(lens) => recipe.develop.lens = lens,
+        None => recipe.develop.lens.purple_fringing = start_purple_fringing(camera),
     }
     let style = Style { nodes: nodes.to_vec(), ..Style::default() };
     let (style, _) = crate::presets::usable(&style, registry);
@@ -168,7 +187,7 @@ fn free_path(folder: &Path, camera: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::float_cmp)] // exact constants
 mod tests {
     use super::*;
 
@@ -186,12 +205,22 @@ mod tests {
             StyleNode { tool: tool("no_such_tool"), params: Params::new() },
         ];
         let lens = LensSettings { vignetting: false, ..LensSettings::default() };
-        let r = start_recipe(&reg, Some(lens.clone()), &nodes);
+        let r = start_recipe(&reg, "FUJIFILM X-T5", Some(lens.clone()), &nodes);
         assert_eq!(r.develop.lens, lens);
         let tools: Vec<_> = core_model::tool_nodes(&r.graph).into_iter().filter_map(|id| r.graph.node(id)).collect();
         assert_eq!(tools.len(), 1, "unknown tools are left out");
         assert_eq!(tools[0].params.get(&ParamId::new("exposure").unwrap()), Some(ParamValue::Float(0.5)));
-        assert_eq!(start_recipe(&reg, None, &[]), Recipe::default());
+        assert_eq!(start_recipe(&reg, "NIKON CORPORATION NIKON D3S", None, &[]), Recipe::default());
+    }
+
+    #[test]
+    fn fujifilm_photos_start_with_purple_fringing_removed() {
+        let reg = engine::builtin_tools().unwrap();
+        let fuji = start_recipe(&reg, "FUJIFILM GFX100S", None, &[]);
+        assert_eq!(fuji.develop.lens.purple_fringing, FUJIFILM_PURPLE_FRINGING);
+        assert_eq!(start_purple_fringing("Fujifilm X100V"), FUJIFILM_PURPLE_FRINGING);
+        assert_eq!(start_purple_fringing("Canon EOS R5"), 0.0);
+        assert_eq!(start_purple_fringing(""), 0.0);
     }
 
     #[test]

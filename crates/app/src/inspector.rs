@@ -366,8 +366,9 @@ fn lens_section(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
     let current = doc.recipe().develop.lens.clone();
     let mut next = current.clone();
     ui.horizontal(|ui| {
-        ui.checkbox(&mut next.enabled, RichText::new("Lens corrections").size(FONT[2]).strong())
-            .on_hover_text("Correct distortion, chromatic aberration and vignetting from the lens database");
+        ui.checkbox(&mut next.enabled, RichText::new("Lens corrections").size(FONT[2]).strong()).on_hover_text(
+            "Correct distortion, chromatic aberration and vignetting from the lens database, and purple fringing",
+        );
         if cx.developing {
             ui.spinner();
         }
@@ -407,12 +408,22 @@ fn lens_section(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
         amount_row(ui, id.with("d"), &mut next.distortion, &mut next.amount.distortion, "Distortion");
         amount_row(ui, id.with("t"), &mut next.tca, &mut next.amount.tca, "Chromatic aberration");
         amount_row(ui, id.with("v"), &mut next.vignetting, &mut next.amount.vignetting, "Vignetting");
+        manual_row(
+            ui,
+            id.with("pf"),
+            &mut next.purple_fringing,
+            0.0..=100.0,
+            "Purple fringing",
+            "Removes the violet halo along bright edges, giving it the colour around it; also for lenses the \
+             database does not know",
+        );
         ui.add_space(SPACE[0]);
         ui.label(RichText::new("Manual").size(FONT[1]).strong().color(t.text_weak));
         manual_row(
             ui,
             id.with("md"),
             &mut next.manual.distortion,
+            -100.0..=100.0,
             "Distortion",
             "Above 0 straightens lines bowed outwards (barrel), below 0 lines bowed inwards (pincushion); \
              also for lenses the database does not know",
@@ -421,6 +432,7 @@ fn lens_section(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
             ui,
             id.with("mv"),
             &mut next.manual.vignetting,
+            -100.0..=100.0,
             "Light falloff",
             "Above 0 brightens the corners (up to one stop), below 0 darkens them",
         );
@@ -494,12 +506,20 @@ fn amount_row(ui: &mut egui::Ui, id: egui::Id, on: &mut bool, amount: &mut f32, 
     });
 }
 
-/// A manual correction from −100 to 100, applied when the slider is let go.
-fn manual_row(ui: &mut egui::Ui, id: egui::Id, value: &mut f32, label: &str, hint: &str) {
+/// A correction over `range` (shown as −100 to 100 or 0 to 100 for a
+/// stored −1 to 1 or 0 to 1), 0 by default, applied when the slider is let go.
+fn manual_row(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    label: &str,
+    hint: &str,
+) {
     ui.horizontal(|ui| {
         ui.label(label).on_hover_text(hint);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if let Some(v) = released(ui, id, *value * 100.0, true, -100.0..=100.0, "") {
+            if let Some(v) = released(ui, id, *value * 100.0, true, range, "") {
                 *value = v / 100.0;
             }
         });

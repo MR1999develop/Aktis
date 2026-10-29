@@ -496,3 +496,18 @@ Details in `docs/catalog.md`.
   pixels or fail, so the editor uses the CPU engine; `RNE_SOFTWARE_GPU=1`
   accepts them for debugging. `scripts\setup-windows.bat` installs Git, the
   C++ build tools, rustup and the pinned toolchain on a new PC.
+
+## 29 October, night: block D, purple fringing
+
+- Lens corrections ▸ Purple fringing (0–100, saved in the recipe and in
+  custom lenses as `purple_fringing`, older files read as 0): near a strong
+  luminance edge (in stops), pixels whose hue lies between magenta and
+  blue-violet and that are clearly coloured take the chromaticity of the
+  nearby pixels that are not fringe (the white of a highlight, the green of
+  leaves), keeping their luminance; with nothing around, they turn
+  neutral. Sky blues and reds are left alone. Edges, colours around and
+  weights are computed on a grid of cells 2–12 pixels wide (5 for 26 MP),
+  so it costs a few passes over the pixels and little memory
+  (`develop::fringe`).
+- Fujifilm photos never edited start with purple fringing at 50
+  (`editor::camera_defaults::start_purple_fringing`).

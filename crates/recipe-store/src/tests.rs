@@ -112,6 +112,7 @@ fn every_recipe() -> Recipe {
                 zoom: Some(1.05),
                 amount: core_model::LensAmounts { distortion: 0.5, tca: 1.25, vignetting: 2.0 },
                 manual: core_model::ManualLens { distortion: 0.1, vignetting: -0.35 },
+                purple_fringing: 0.4,
                 custom: Some("My zoom".to_owned()),
             },
             demosaic: core_model::Demosaic::XTransFast,

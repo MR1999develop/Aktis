@@ -125,6 +125,13 @@ offered. DNG opcodes other than GainMap are not applied anywhere.
   XML files dropped in the editor's `lensfun` folder override the built-in
   data. `rne info` shows what would be corrected; `rne lenses <words>` searches
   the database.
+- **Purple fringing.** Lens corrections ▸ Purple fringing (0–100) removes
+  the violet halo along bright, high-contrast edges, also for lenses the
+  database does not know: near a strong edge, magenta to blue-violet
+  pixels take the colour of the pixels around them that are not fringe,
+  keeping their brightness (`develop::fringe`, in the working space after
+  the profile). Fujifilm photos start at 50, other cameras at 0; a custom
+  lens keeps its own value.
 
 ## Adding a tool
 
