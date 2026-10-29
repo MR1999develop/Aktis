@@ -152,6 +152,8 @@ pub struct EditorApp {
     models: ModelsUi,
     /// Lens corrections saved under a name for a lens.
     custom_lenses: editor::custom_lenses::CustomLenses,
+    /// Tool values saved as the defaults of a camera model.
+    camera_defaults: editor::camera_defaults::AllCameraDefaults,
     title: String,
     /// Explorer, filmstrip and catalog.
     library: Library,
@@ -284,6 +286,7 @@ impl EditorApp {
             node_problem: None,
             models: ModelsUi::new(),
             custom_lenses: editor::custom_lenses::CustomLenses::load(editor::custom_lenses::default_folder()),
+            camera_defaults: editor::camera_defaults::AllCameraDefaults::load(editor::camera_defaults::default_folder()),
             title: String::new(),
             library: Library::new(),
             tabs: Tabs::default(),
@@ -466,6 +469,7 @@ impl EditorApp {
             options: self.settings.export_options(),
             software: format!("{APP_NAME} {VERSION}"),
             custom_lenses: self.custom_lenses.clone(),
+            camera_defaults: self.camera_defaults.clone(),
         };
         let total = job.photos.len();
         let current = photos.first().map(|p| file_name(p.as_path())).unwrap_or_default();
@@ -542,7 +546,7 @@ impl EditorApp {
                             self.last_open = Some(timing);
                             self.prefetch_step = Some(step);
                             let first = self.doc.as_ref().map_or(1, |d| d.generation() + 1);
-                            let start = self.custom_lenses.start_settings(opened.lens_key.as_deref());
+                            let start = self.start_recipe(&opened);
                             let reopened = match self.library.shown_variant(&path) {
                                 Ok((number, stored)) => {
                                     // An edit changed from the filmstrip (a preset) has no preview yet.
@@ -561,7 +565,7 @@ impl EditorApp {
                                         &self.registry,
                                         catalog::FIRST_VARIANT,
                                         None,
-                                        None,
+                                        Recipe::default(),
                                     );
                                     let why =
                                         format!("Read-only: the saved edit of this photo could not be read ({e}).");
@@ -708,7 +712,48 @@ impl EditorApp {
                         self.drag.as_ref().filter(|d| in_drag && d.node == node && d.param == param).map(|d| d.gesture);
                     doc.set_param(&self.registry, node, param, value, gesture)
                 }
-                UiEdit::Reset { node, param } => doc.reset_param(&self.registry, node, param),
+                UiEdit::Reset { node, param } => {
+                    // Back to the camera's default when one is saved, else the tool's.
+                    let tool = match doc.recipe().graph.node(node).map(|n| &n.kind) {
+                        Some(NodeKind::Tool(t)) => Some(t.clone()),
+                        _ => None,
+                    };
+                    let saved = tool.and_then(|t| self.camera_defaults.value(doc.camera(), &t, &param));
+                    match saved {
+                        Some(value) => doc.set_param(&self.registry, node, param, value, None),
+                        None => doc.reset_param(&self.registry, node, param),
+                    }
+                }
+                UiEdit::SaveDefaults(node) => {
+                    let saved = match doc.recipe().graph.node(node) {
+                        Some(n) => match &n.kind {
+                            NodeKind::Tool(t) => Some((t.clone(), n.params.clone())),
+                            _ => None,
+                        },
+                        None => None,
+                    };
+                    if let Some((tool, params)) = saved {
+                        let camera = doc.camera().to_owned();
+                        let name = self.registry.get(&tool).map_or(tool.as_str(), |t| t.descriptor().name).to_owned();
+                        self.toast = Some(match self.camera_defaults.save(&camera, tool, params) {
+                            Ok(()) => info_toast(format!(
+                                "{name}: these values are now the defaults for the {camera}; new photos of it start with them"
+                            )),
+                            Err(e) => error_toast(format!("The defaults could not be saved: {e}")),
+                        });
+                    }
+                    Ok(())
+                }
+                UiEdit::ForgetDefaults(node) => {
+                    if let Some(NodeKind::Tool(tool)) = doc.recipe().graph.node(node).map(|n| n.kind.clone()) {
+                        let camera = doc.camera().to_owned();
+                        self.toast = Some(match self.camera_defaults.remove(&camera, &tool) {
+                            Ok(()) => info_toast(format!("Defaults for the {camera} reset to the editor's")),
+                            Err(e) => error_toast(format!("The defaults could not be reset: {e}")),
+                        });
+                    }
+                    Ok(())
+                }
                 UiEdit::Enabled { node, on } => {
                     let result = doc.set_enabled(&self.registry, node, on);
                     // Turning on a tool that needs AI models offers to download them.
@@ -987,6 +1032,14 @@ impl EditorApp {
     /// Shows a document: another photo (`same_photo` false), or another
     /// variant of the open one. `keep_shown`: the image on screen shows the
     /// new document too (a clone), so it can make its preview.
+    /// The recipe a photo never edited starts with: its custom lens and its
+    /// camera's defaults.
+    fn start_recipe(&self, opened: &editor::Opened) -> Recipe {
+        let lens = self.custom_lenses.start_settings(opened.lens_key.as_deref());
+        let nodes = self.camera_defaults.start_nodes(&opened.camera);
+        editor::camera_defaults::start_recipe(&self.registry, lens, &nodes)
+    }
+
     fn install(&mut self, reopened: Reopened, same_photo: bool, keep_shown: bool) {
         let Reopened { doc, view, state, notice } = reopened;
         self.plan.reset(doc.generation());
@@ -1151,7 +1204,7 @@ impl EditorApp {
             let copy = Document::restored(doc.opened().clone(), first, &self.registry, doc.recipe().clone(), history);
             (copy.0, self.graph.view().clone())
         } else {
-            let start = self.custom_lenses.start_settings(doc.opened().lens_key.as_deref());
+            let start = self.start_recipe(doc.opened());
             (variants::fresh(doc.opened().clone(), first, &self.registry, start), GraphView::default())
         };
         let state = VariantState::unsaved(number, variant_name(number));
@@ -1185,7 +1238,7 @@ impl EditorApp {
                 return;
             }
         };
-        let start = self.custom_lenses.start_settings(opened.lens_key.as_deref());
+        let start = self.start_recipe(&opened);
         let reopened = variants::reopen(opened, first, &self.registry, number, stored, start);
         self.install(reopened, true, false);
         if let Err(e) = self.library.set_current_variant(&path, number) {
@@ -1223,7 +1276,7 @@ impl EditorApp {
         }
         let Some(doc) = &self.doc else { return };
         let (opened, first) = (doc.opened().clone(), doc.generation() + 1);
-        let start = self.custom_lenses.start_settings(opened.lens_key.as_deref());
+        let start = self.start_recipe(&opened);
         let reopened = variants::reopen(opened, first, &self.registry, next, stored, start);
         self.install(reopened, true, false);
         if let Err(e) = self.library.set_current_variant(&path, next) {
@@ -2123,6 +2176,7 @@ impl EditorApp {
                         pick: self.pick,
                         probe: self.probe,
                         custom_lenses: &self.custom_lenses,
+                        camera_defaults: &self.camera_defaults,
                     };
                     // The selected node first, then the ones used just before it.
                     let shown: Vec<NodeId> = if self.recent_nodes.is_empty() {
@@ -2723,7 +2777,11 @@ impl EditorApp {
                 GraphAction::Add { after, tool } => {
                     let Some(doc) = &mut self.doc else { continue };
                     let feature = ai_models::feature_for_tool(tool.as_str());
-                    let first = editor::adjust::initial_params(doc, tool.as_str());
+                    // The camera's saved defaults, else the tool's own first values.
+                    let first = match self.camera_defaults.params(doc.camera(), &tool) {
+                        Some(saved) => saved.clone(),
+                        None => editor::adjust::initial_params(doc, tool.as_str()),
+                    };
                     match doc.add_node_with(&self.registry, after, tool, first) {
                         Ok(id) => {
                             self.selected_node = Some(id);

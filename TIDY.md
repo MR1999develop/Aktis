@@ -176,3 +176,8 @@
   `Worker::open` the starting settings. Applying a custom lens to several
   selected photos from the filmstrip, Capture One's Sharpness Falloff and
   Purple Fringing, and a manual chromatic aberration are not offered.
+- Camera defaults (Save as Defaults): kept per camera model for tool nodes
+  only; Capture One also keeps base curve and ICC profile per camera, and
+  an "Apply Defaults" to existing photos is not offered. Saving the same
+  tool twice keeps one node per tool; a photo whose defaults hold two
+  nodes of one tool cannot be expressed.

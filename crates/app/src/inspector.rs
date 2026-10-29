@@ -69,6 +69,10 @@ pub enum UiEdit {
     Lens(LensSettings),
     /// Save the lens corrections as a custom lens (opens the window).
     SaveCustomLens,
+    /// Save this node's values as its tool's defaults for the photo's camera.
+    SaveDefaults(NodeId),
+    /// Forget the saved defaults of this node's tool for the photo's camera.
+    ForgetDefaults(NodeId),
     /// Delete the custom lens with this name (asks first).
     DeleteCustomLens(String),
     /// Another base curve (Base Characteristics).
@@ -115,6 +119,8 @@ pub struct Context<'a> {
     pub probe: Option<[f32; 3]>,
     /// The custom lenses saved on this computer.
     pub custom_lenses: &'a CustomLenses,
+    /// The tool defaults saved per camera.
+    pub camera_defaults: &'a editor::camera_defaults::AllCameraDefaults,
 }
 
 /// The settings of the selected node.
@@ -155,6 +161,15 @@ pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
             ui.horizontal(|ui| {
                 ui.label(RichText::new(node_title(node, cx.registry)).size(FONT[3]).strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if let NodeKind::Tool(tool) = &node.kind {
+                        defaults_menu(
+                            ui,
+                            doc.camera(),
+                            cx.camera_defaults.params(doc.camera(), tool).is_some(),
+                            row.node,
+                            edits,
+                        );
+                    }
                     let mut on = row.enabled;
                     if ui.checkbox(&mut on, "Enabled").on_hover_text("Turn this node on or off").changed() {
                         edits.push(UiEdit::Enabled { node: row.node, on });
@@ -193,7 +208,7 @@ pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
                 ui.add_space(SPACE[1]);
                 if ui
                     .small_button("Reset all")
-                    .on_hover_text("Every setting of this node back to its default")
+                    .on_hover_text("Every setting of this node back to its default (the camera's, when saved)")
                     .clicked()
                 {
                     for p in &row.params {
@@ -221,6 +236,31 @@ pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
             ui.label(RichText::new("Adds the effects of its branches.").color(t.text_weak));
         }
     }
+}
+
+/// The tool's action menu (…), as in Capture One: Save as Defaults for the
+/// photo's camera, and Reset Defaults when some are saved.
+fn defaults_menu(ui: &mut egui::Ui, camera: &str, saved: bool, node: NodeId, edits: &mut Vec<UiEdit>) {
+    ui.menu_button("\u{2026}", |ui| {
+        let save = ui.button(format!("Save as defaults for {camera}")).on_hover_text(
+            "New photos of this camera start with this node and these values; nodes of this tool added later start \
+             with them, and resetting goes back to them",
+        );
+        if save.clicked() {
+            edits.push(UiEdit::SaveDefaults(node));
+            ui.close();
+        }
+        let reset = ui
+            .add_enabled(saved, egui::Button::new(format!("Reset defaults for {camera}")))
+            .on_hover_text("Back to the editor's own defaults for this tool; photos keep their values")
+            .on_disabled_hover_text("No defaults are saved for this tool and camera");
+        if reset.clicked() {
+            edits.push(UiEdit::ForgetDefaults(node));
+            ui.close();
+        }
+    })
+    .response
+    .on_hover_text("Defaults for this camera");
 }
 
 /// Lens corrections (lensfun data built into the editor): on/off, what to

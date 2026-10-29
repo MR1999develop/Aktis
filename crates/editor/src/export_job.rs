@@ -57,6 +57,8 @@ pub struct ExportJob {
     pub software: String,
     /// The custom lenses: a photo never edited is exported with the one of its lens.
     pub custom_lenses: crate::custom_lenses::CustomLenses,
+    /// The tool defaults per camera: a photo never edited is exported with its camera's.
+    pub camera_defaults: crate::camera_defaults::AllCameraDefaults,
 }
 
 /// How an export ended.
@@ -176,11 +178,12 @@ fn export_one(
         None => {
             let file = raw_io::read_raw(&photo.path).map_err(|e| format!("{name}: {e}"))?;
             let raw = Arc::new(RawData { sensor: file.sensor, capture: file.capture, file_notes: file.notes });
-            // Never edited: as it would open, with the custom lens of its lens.
-            if photo.recipe.is_none()
-                && let Some(lens) = job.custom_lenses.start_settings(raw.capture.lens_key().as_deref())
-            {
-                recipe.develop.lens = lens;
+            // Never edited: as it would open, with its custom lens and its camera's defaults.
+            if photo.recipe.is_none() {
+                let camera = format!("{} {}", file.make, file.model).trim().to_owned();
+                let lens = job.custom_lenses.start_settings(raw.capture.lens_key().as_deref());
+                let nodes = job.camera_defaults.start_nodes(&camera);
+                recipe = crate::camera_defaults::start_recipe(engine.registry(), lens, &nodes);
             }
             let image = Arc::new(develop_full(&raw, &recipe, &name)?);
             (Some(raw), image, file.orientation, file.info)
@@ -307,6 +310,7 @@ mod tests {
             },
             software: "test".into(),
             custom_lenses: Default::default(),
+            camera_defaults: Default::default(),
         };
         let mut seen = Vec::new();
         let summary = run(&engine(), &job, &AtomicBool::new(false), &mut |i, n| seen.push((i, n)));
@@ -338,6 +342,7 @@ mod tests {
             options: ExportOptions::default(),
             software: String::new(),
             custom_lenses: Default::default(),
+            camera_defaults: Default::default(),
         };
         let summary = run(&engine(), &job, &AtomicBool::new(false), &mut |_, _| {});
         assert_eq!(summary.written, vec![dir.join("ok.jpg")]);
@@ -356,6 +361,7 @@ mod tests {
             options: ExportOptions::default(),
             software: String::new(),
             custom_lenses: Default::default(),
+            camera_defaults: Default::default(),
         };
         let summary = run(&engine(), &job, &AtomicBool::new(true), &mut |_, _| {});
         assert!(summary.cancelled && summary.written.is_empty());
@@ -399,6 +405,7 @@ mod tests {
             options,
             software: String::new(),
             custom_lenses: Default::default(),
+            camera_defaults: Default::default(),
         };
         let summary = run(&engine(), &job, &AtomicBool::new(false), &mut |_, _| {});
         let tiff = std::fs::read(&summary.written[0]).unwrap();
