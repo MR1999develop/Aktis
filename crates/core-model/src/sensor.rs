@@ -53,6 +53,16 @@ impl CfaPattern {
             Self::LinearRgb => 3,
         }
     }
+
+    /// The kind of filter, for choosing a demosaic method.
+    #[must_use]
+    pub fn kind(&self) -> crate::SensorKind {
+        match self {
+            Self::Bayer(_) => crate::SensorKind::Bayer,
+            Self::XTrans(_) => crate::SensorKind::XTrans,
+            Self::LinearRgb => crate::SensorKind::Rgb,
+        }
+    }
 }
 
 /// Why sensor data could not be accepted.

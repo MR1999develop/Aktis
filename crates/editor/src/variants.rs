@@ -389,6 +389,7 @@ mod tests {
             lens_choices: Vec::new(),
             lens_key: None,
             info: raw_io::PhotoInfo::default(),
+            camera_curve: None,
             image: DevelopedImage {
                 settings: DevelopSettings::default(),
                 developed: Arc::clone(&img),

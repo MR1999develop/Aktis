@@ -73,6 +73,9 @@ pub struct Opened {
     pub info: raw_io::PhotoInfo,
     /// The developed image.
     pub image: DevelopedImage,
+    /// The base curve that reproduces the camera's own picture of the photo
+    /// (what Auto shows), when the file has one.
+    pub camera_curve: Option<core_model::CurveFit>,
 }
 
 /// One parameter of a node, ready to draw.
@@ -511,11 +514,12 @@ impl Document {
     }
 
     /// The base curve the picture is shown with: the recipe's, with Auto
-    /// resolved for the file (Linear for a JPEG or TIFF).
+    /// resolved for the file (the camera's look for a RAW file, Linear for a
+    /// JPEG or TIFF).
     #[must_use]
     pub fn output_curve(&self) -> core_model::BaseCurve {
         let rendered = self.opened.raw.as_ref().is_some_and(|r| r.capture.rendered);
-        self.recipe().curve.for_source(rendered)
+        self.recipe().curve.with_camera_fit(rendered, self.opened.camera_curve)
     }
 
     /// Increases with every change to the recipe.
@@ -638,6 +642,27 @@ impl Document {
         self.session.apply(registry, Edit::SetBaseCurve(curve))?;
         self.generation += 1;
         Ok(())
+    }
+
+    /// Chooses how the sensor's mosaic is demosaiced (an undoable edit; the
+    /// photo is developed again).
+    ///
+    /// # Errors
+    /// [`EditError`] when the document is read-only.
+    pub fn set_demosaic(&mut self, registry: &ToolRegistry, method: core_model::Demosaic) -> Result<(), EditError> {
+        self.writable()?;
+        if self.recipe().develop.demosaic == method {
+            return Ok(());
+        }
+        self.session.apply(registry, Edit::SetDemosaic(method))?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// The kind of colour filter of the photo's sensor (`None` without RAW data).
+    #[must_use]
+    pub fn sensor_kind(&self) -> Option<core_model::SensorKind> {
+        self.opened.raw.as_ref().map(|r| r.sensor.cfa().kind())
     }
 
     /// The mask node feeding the key input of tool node `node`, with its definition.
@@ -879,6 +904,7 @@ mod tests {
             lens_choices: Vec::new(),
             lens_key: None,
             info: raw_io::PhotoInfo::default(),
+            camera_curve: None,
             image: DevelopedImage {
                 settings: DevelopSettings::default(),
                 developed: Arc::clone(&img),

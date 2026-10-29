@@ -137,6 +137,8 @@ pub enum Event {
         generation: u64,
         /// Which source it used.
         quality: Quality,
+        /// The longest side asked ([`RenderRequest::max_side`]).
+        max_side: u32,
         /// Upright 8-bit pixels.
         image: Rgb8Image,
         /// Where it ran.
@@ -630,6 +632,7 @@ fn render_for_screen(engine: &Engine, req: &RenderRequest) -> Event {
         Ok(image) => Event::Rendered {
             generation: req.generation,
             quality: req.quality,
+            max_side: req.max_side,
             histogram: Box::new(Histogram::of_image(&image.pixels, image.width as usize)),
             timing: RenderTiming { render: rendered_at - started, display: rendered_at.elapsed() },
             image,
@@ -672,6 +675,9 @@ fn open_file(path: &std::path::Path, timing: &mut OpenTiming) -> Result<Opened, 
     let detected_lens = develop::prepare::find_lens(&db, camera, &raw.capture, None).map(lens_db::Lens::full_name);
     let lens_choices = crate::lenses::lens_choices(&db, camera);
     let lens_key = raw.capture.lens_key();
+    let started = Instant::now();
+    let camera_curve = if raw.capture.rendered { None } else { crate::camera_look::camera_curve(path, &image.preview) };
+    timing.develop += started.elapsed();
 
     Ok(Opened {
         path: path.to_owned(),
@@ -684,6 +690,7 @@ fn open_file(path: &std::path::Path, timing: &mut OpenTiming) -> Result<Opened, 
         lens_key,
         info: file.info,
         image,
+        camera_curve,
     })
 }
 
@@ -745,13 +752,17 @@ pub struct RenderPlan {
     requested: Option<(u64, Quality)>,
     shown: Option<(u64, Quality)>,
     floor: u64,
+    /// Longest side asked of the last request and of the render on screen
+    /// (the size the viewer shows the photo at, or the full size).
+    requested_side: u32,
+    shown_side: u32,
 }
 
 impl RenderPlan {
     /// Starts over for another document whose generations begin at
     /// `first_generation`; late results of earlier documents are refused.
     pub fn reset(&mut self, first_generation: u64) {
-        *self = Self { requested: None, shown: None, floor: first_generation };
+        *self = Self { floor: first_generation, ..Self::default() };
     }
 
     /// What to request now for a document at `generation`, or `None`.
@@ -778,6 +789,38 @@ impl RenderPlan {
     /// Records a request that was sent.
     pub fn requested(&mut self, generation: u64, quality: Quality) {
         self.requested = Some((generation, quality));
+    }
+
+    /// Records a request that was sent for a picture of longest side `side`.
+    pub fn requested_at(&mut self, generation: u64, quality: Quality, side: u32) {
+        self.requested(generation, quality);
+        self.requested_side = side;
+    }
+
+    /// Whether the render on screen is of the current recipe but for
+    /// another size than `side` (the viewer zoomed or was resized), with
+    /// nothing in flight: then the same image is asked again at that size.
+    #[must_use]
+    pub fn resize_needed(&self, generation: u64, side: u32) -> bool {
+        let differs = |a: u32, b: u32| f64::from(a.max(b)) > f64::from(a.min(b)) * 1.02;
+        self.requested == self.shown
+            && self.shown.is_some_and(|(g, _)| g == generation)
+            && differs(self.shown_side, side)
+    }
+
+    /// [`Self::accepts`], also taking the answer to the last request when
+    /// it re-renders what is on screen at another size.
+    #[must_use]
+    pub fn accepts_at(&self, generation: u64, quality: Quality, side: u32) -> bool {
+        let last_request = self.requested == Some((generation, quality)) && side == self.requested_side;
+        let new_size = self.shown.is_none_or(|(g, _)| generation >= g) && side != self.shown_side;
+        self.accepts(generation, quality) || (generation >= self.floor && last_request && new_size)
+    }
+
+    /// [`Self::shown`] for a picture of longest side `side`.
+    pub fn shown_at(&mut self, generation: u64, quality: Quality, side: u32) {
+        self.shown(generation, quality);
+        self.shown_side = side;
     }
 
     /// Whether a render result should replace what is on screen: never an
@@ -810,6 +853,24 @@ impl RenderPlan {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_zoom_or_resize_asks_the_image_again_at_the_new_size() {
+        let mut plan = RenderPlan::default();
+        plan.requested_at(1, Quality::Full, 3000);
+        assert!(!plan.resize_needed(1, 2000), "the render is still on its way");
+        plan.shown_at(1, Quality::Full, 3000);
+        assert!(!plan.resize_needed(1, 3030), "within 2 %");
+        assert!(plan.resize_needed(1, 2000));
+        assert!(!plan.resize_needed(2, 2000), "an edit renders anyway");
+        // Back to fit: the preview at the new size replaces the full render.
+        plan.requested_at(1, Quality::Preview, 1500);
+        assert!(!plan.accepts_at(1, Quality::Preview, 3000), "an older answer");
+        assert!(plan.accepts_at(1, Quality::Preview, 1500));
+        plan.shown_at(1, Quality::Preview, 1500);
+        assert!(!plan.accepts_at(1, Quality::Preview, 1500), "already on screen");
+        assert!(!plan.resize_needed(1, 1500));
+    }
 
     #[test]
     fn a_new_document_gets_a_preview_then_one_full_render_when_idle() {
@@ -969,6 +1030,7 @@ mod tests {
                 developed: Some(Arc::new(img)),
                 orientation: Orientation::Normal,
                 info: raw_io::PhotoInfo::default(),
+                camera_curve: None,
             }),
             rating: None,
             keywords: Vec::new(),

@@ -28,6 +28,7 @@
 
 pub mod adjust;
 pub mod camera_defaults;
+pub mod camera_look;
 pub mod catalogs;
 pub mod clipping;
 pub mod color_wheel;
@@ -40,6 +41,7 @@ pub mod graph_view;
 pub mod histogram;
 pub mod history_order;
 pub mod import_job;
+pub mod import_scan;
 pub mod inspect;
 pub mod lenses;
 pub mod library;

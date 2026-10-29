@@ -7,7 +7,7 @@
 use super::CardAction;
 use super::{
     Album, Button, Choice, Collection, FONT, FolderNode, Library, LibraryAction, Path, PathBuf, Rect, RichText, SPACE,
-    Sense, Stroke, StrokeKind, TREE_INDENT, TextEdit, Tokens, choice, dialog, dialog_buttons, egui, icons, vec2,
+    Sense, Stroke, StrokeKind, TREE_INDENT, TextEdit, Tokens, dialog, dialog_buttons, egui, icons, vec2,
 };
 
 /// What a filmstrip card carries while it is dragged: the photo (the
@@ -20,16 +20,65 @@ pub(super) struct DraggedPhoto(pub(super) PathBuf);
 pub(super) struct AlbumDialog {
     /// The album renamed; `None` for a new one.
     id: Option<i64>,
+    /// The album a new one goes in (a sub-album).
+    parent: Option<i64>,
     name: String,
     /// Photos the new album starts with.
     photos: Vec<PathBuf>,
     focused: bool,
 }
 
+/// Height of a row of the Library.
+const ROW_HEIGHT: f32 = 20.0;
+
+/// A Library row: `name` on the left, `count` on the right in a weaker
+/// colour, highlighted when `on`; the name is cut short rather than
+/// pushing the count away.
+fn count_row(ui: &mut egui::Ui, t: &Tokens, on: bool, name: &str, count: usize) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
+    let painter = ui.painter_at(rect);
+    if on {
+        painter.rect_filled(rect, egui::CornerRadius::same(4), ui.visuals().selection.bg_fill);
+    } else if response.hovered() {
+        painter.rect_filled(rect, egui::CornerRadius::same(4), ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let font = egui::FontId::proportional(FONT[1]);
+    let number = painter.layout_no_wrap(count.to_string(), font.clone(), t.text_weak);
+    let right = rect.right() - 6.0 - number.size().x;
+    painter.galley(egui::pos2(right, rect.center().y - number.size().y / 2.0), number, t.text_weak);
+    let room = (right - rect.left() - 12.0).max(10.0);
+    let text_color = if on { t.text_strong } else { ui.visuals().text_color() };
+    let mut job = egui::text::LayoutJob::single_section(name.to_owned(), egui::TextFormat::simple(font, text_color));
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+    let galley = painter.layout_job(job);
+    painter.galley(egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0), galley, text_color);
+    response
+}
+
 impl Library {
-    /// The catalog's collections, albums and folders.
+    /// The catalog's search field, collections, albums and folders.
     pub(super) fn collections(&mut self, ui: &mut egui::Ui, t: &Tokens, actions: &mut Vec<LibraryAction>) {
         let mut chosen = None;
+        // Search by name in the whole catalog, as typed.
+        let field = ui.add(
+            TextEdit::singleline(&mut self.search)
+                .hint_text("\u{1f50d} Search the catalog by name")
+                .desired_width(f32::INFINITY),
+        );
+        let mut searched = false;
+        if field.changed() {
+            searched = true;
+            chosen = Some(if self.search.trim().is_empty() {
+                Collection::All
+            } else {
+                Collection::Search(self.search.trim().to_owned())
+            });
+        }
+        if field.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.search.clear();
+            searched = true;
+            chosen = Some(Collection::All);
+        }
         let shown = self.collection.clone();
         let on = |c: &Collection| shown.as_ref() == Some(c);
         let heading = |ui: &mut egui::Ui, text: &str| {
@@ -38,32 +87,28 @@ impl Library {
         };
 
         heading(ui, "Catalog Collections");
-        if choice(ui, on(&Collection::All), format!("All Images  {}", self.counts.all)).clicked() {
+        if count_row(ui, t, on(&Collection::All), "All Images", self.counts.all).clicked() {
             chosen = Some(Collection::All);
         }
-        egui::CollapsingHeader::new(format!("Recent Imports  {}", self.imports.len()))
-            .id_salt("rne-recent-imports")
-            .default_open(true)
-            .show(ui, |ui| {
-                if self.imports.is_empty() {
-                    ui.label(RichText::new("No imports yet").size(FONT[0]).color(t.text_weak));
+        egui::CollapsingHeader::new("Recent Imports").id_salt("rne-recent-imports").default_open(true).show(ui, |ui| {
+            if self.imports.is_empty() {
+                ui.label(RichText::new("No imports yet").size(FONT[0]).color(t.text_weak));
+            }
+            for batch in &self.imports {
+                let c = Collection::Import(batch.number);
+                let r = count_row(ui, t, on(&c), &batch.day_text(), batch.count)
+                    .on_hover_text(format!("Import {}", batch.number));
+                if r.clicked() {
+                    chosen = Some(c);
                 }
-                for batch in &self.imports {
-                    let c = Collection::Import(batch.number);
-                    let r = choice(ui, on(&c), format!("{}  {}", batch.day_text(), batch.count))
-                        .on_hover_text(format!("Import {}", batch.number));
-                    if r.clicked() {
-                        chosen = Some(c);
-                    }
-                }
-            });
-        let edits = format!("Recent Edits  {}", self.counts.edits);
-        let r = choice(ui, on(&Collection::RecentEdits), edits)
+            }
+        });
+        let r = count_row(ui, t, on(&Collection::RecentEdits), "Recent Edits", self.counts.edits)
             .on_hover_text(format!("Photos edited in the last {} days", catalog::RECENT_EDIT_DAYS));
         if r.clicked() {
             chosen = Some(Collection::RecentEdits);
         }
-        let trash = choice(ui, on(&Collection::Trash), format!("Trash  {}", self.counts.trash))
+        let trash = count_row(ui, t, on(&Collection::Trash), "Trash", self.counts.trash)
             .on_hover_text("Photos moved to the Trash stay in the catalog until it is emptied");
         if trash.clicked() {
             chosen = Some(Collection::Trash);
@@ -82,9 +127,9 @@ impl Library {
             let new = ui.small_button("+").on_hover_text("New album (or drop photos here)");
             if let Some(dragged) = new.dnd_release_payload::<DraggedPhoto>() {
                 let photos = self.strip.targets(&dragged.0);
-                self.begin_new_album(photos);
+                self.begin_new_album(photos, None);
             } else if new.clicked() {
-                self.begin_new_album(Vec::new());
+                self.begin_new_album(Vec::new(), None);
             }
             drop_highlight(ui, &new, t);
         });
@@ -92,40 +137,75 @@ impl Library {
             ui.label(RichText::new("No albums yet").size(FONT[0]).color(t.text_weak));
         }
         let mut drop = None;
-        let mut rename = None;
-        let mut delete = None;
-        for album in &self.albums {
+        let mut menu = None;
+        let mut toggle = None;
+        let tree = catalog::album_tree(&self.albums);
+        // Rows of closed albums' sub-albums are skipped.
+        let mut hidden_below: Option<usize> = None;
+        for (i, (depth, album)) in tree.iter().enumerate() {
+            if hidden_below.is_some_and(|d| *depth > d) {
+                continue;
+            }
+            hidden_below = None;
+            let has_children = tree.get(i + 1).is_some_and(|(d, _)| d > depth);
+            let open = !self.albums_closed.contains(&album.id);
+            if has_children && !open {
+                hidden_below = Some(*depth);
+            }
             let c = Collection::Album(album.id);
-            let r = choice(ui, on(&c), format!("{}  {}", album.name, album.count))
-                .on_hover_text("Drop photos here to add them");
-            if r.clicked() {
-                chosen = Some(c);
-            }
-            if let Some(dragged) = r.dnd_release_payload::<DraggedPhoto>() {
-                drop = Some((album.id, dragged.0.clone()));
-            }
-            drop_highlight(ui, &r, t);
-            r.context_menu(|ui| {
-                if ui.button("Rename Album\u{2026}").clicked() {
-                    rename = Some(album.clone());
-                    ui.close();
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.add_space(*depth as f32 * TREE_INDENT);
+                let (rect, arrow) = ui.allocate_exact_size(vec2(16.0, ROW_HEIGHT), Sense::click());
+                if has_children {
+                    let color = if arrow.hovered() { t.text_strong } else { t.text_weak };
+                    icons::disclosure(ui.painter(), rect, open, color);
+                    if arrow.clicked() {
+                        toggle = Some(album.id);
+                    }
                 }
-                if ui.button("Delete Album\u{2026}").clicked() {
-                    delete = Some(album.clone());
-                    ui.close();
+                let r =
+                    count_row(ui, t, on(&c), &album.name, album.count).on_hover_text("Drop photos here to add them");
+                if r.clicked() {
+                    chosen = Some(c.clone());
                 }
+                if let Some(dragged) = r.dnd_release_payload::<DraggedPhoto>() {
+                    drop = Some((album.id, dragged.0.clone()));
+                }
+                drop_highlight(ui, &r, t);
+                r.context_menu(|ui| {
+                    if let Some(m) = album_menu(ui, album, &self.albums) {
+                        menu = Some(m);
+                    }
+                });
             });
+        }
+        if let Some(id) = toggle
+            && !self.albums_closed.remove(&id)
+        {
+            self.albums_closed.insert(id);
         }
         if let Some((id, photo)) = drop {
             let photos = self.strip.targets(&photo);
             self.add_to_album(id, &photos, actions);
         }
-        if let Some(album) = rename {
-            self.album_dialog =
-                Some(AlbumDialog { id: Some(album.id), name: album.name, photos: Vec::new(), focused: false });
-        }
-        if delete.is_some() {
-            self.delete_album = delete;
+        match menu {
+            Some(AlbumMenu::SubAlbum(parent)) => {
+                self.albums_closed.remove(&parent);
+                self.begin_new_album(Vec::new(), Some(parent));
+            }
+            Some(AlbumMenu::Rename(album)) => {
+                self.album_dialog = Some(AlbumDialog {
+                    id: Some(album.id),
+                    parent: None,
+                    name: album.name,
+                    photos: Vec::new(),
+                    focused: false,
+                });
+            }
+            Some(AlbumMenu::Merge { from, into }) => self.merge_albums(from, into, actions),
+            Some(AlbumMenu::Delete(album)) => self.delete_album = Some(album),
+            None => {}
         }
 
         ui.add_space(SPACE[1]);
@@ -147,6 +227,10 @@ impl Library {
             self.folders_closed.insert(path);
         }
         if let Some(c) = chosen {
+            // Another collection chosen: the search is over.
+            if !searched {
+                self.search.clear();
+            }
             self.show_collection(c);
         }
     }
@@ -167,7 +251,7 @@ impl Library {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add_space(depth as f32 * TREE_INDENT);
-            let (rect, arrow) = ui.allocate_exact_size(vec2(16.0, 18.0), Sense::click());
+            let (rect, arrow) = ui.allocate_exact_size(vec2(16.0, ROW_HEIGHT), Sense::click());
             if !node.children.is_empty() {
                 let color = if arrow.hovered() { t.text_strong } else { t.text_weak };
                 icons::disclosure(ui.painter(), rect, open, color);
@@ -176,9 +260,12 @@ impl Library {
                 }
             }
             let c = Collection::Folder(node.path.clone());
-            let r = choice(ui, shown.as_ref() == Some(&c), format!("{}  {}", node.name, node.total)).on_hover_text(
-                format!("{}\n{} photos here, {} with the sub-folders", node.path.display(), node.own, node.total),
-            );
+            let r = count_row(ui, t, shown.as_ref() == Some(&c), &node.name, node.total).on_hover_text(format!(
+                "{}\n{} photos here, {} with the sub-folders",
+                node.path.display(),
+                node.own,
+                node.total
+            ));
             if r.clicked() {
                 *chosen = Some(c);
             }
@@ -219,19 +306,51 @@ impl Library {
         }
     }
 
-    /// Moves `paths` to the Trash.
-    pub(super) fn trash(&mut self, paths: &[PathBuf], actions: &mut Vec<LibraryAction>) {
+    /// Moves `paths` to the Trash; with `current` (the open photo) among
+    /// them, the window is told which photo to show instead.
+    pub(super) fn trash(&mut self, paths: &[PathBuf], current: Option<&Path>, actions: &mut Vec<LibraryAction>) {
         let Some(c) = self.catalog.as_mut() else { return };
         if paths.is_empty() {
             return;
         }
+        let next = current.and_then(|cur| self.strip.after_removing(paths, cur));
         match c.trash(paths) {
             Ok(()) => {
                 self.reshow();
-                actions.push(LibraryAction::Trashed { photos: paths.to_vec(), emptied: false });
+                if let Some(n) = &next {
+                    self.strip.select_only(n);
+                    self.scroll_to = Some(n.clone());
+                }
+                actions.push(LibraryAction::Trashed { photos: paths.to_vec(), emptied: false, next });
             }
             Err(e) => actions.push(LibraryAction::Error(format!("The photos could not be moved to the Trash: {e}"))),
         }
+    }
+
+    /// Merges album `from` into album `into`; the window offers to undo it.
+    fn merge_albums(&mut self, from: i64, into: i64, actions: &mut Vec<LibraryAction>) {
+        let Some(c) = self.catalog.as_mut() else { return };
+        let names = |id: i64| self.albums.iter().find(|a| a.id == id).map(|a| a.name.clone()).unwrap_or_default();
+        let (from_name, into_name) = (names(from), names(into));
+        match c.merge_albums(from, into) {
+            Ok(undo) => {
+                if self.collection == Some(Collection::Album(from)) {
+                    self.collection = Some(Collection::Album(into));
+                }
+                self.reshow();
+                let text = format!("\u{201c}{from_name}\u{201d} merged into \u{201c}{into_name}\u{201d}");
+                actions.push(LibraryAction::Merged { text, undo });
+            }
+            Err(e) => actions.push(LibraryAction::Error(format!("The albums could not be merged: {e}"))),
+        }
+    }
+
+    /// Undoes a merge of albums.
+    pub fn undo_merge(&mut self, undo: &catalog::MergeUndo) -> Result<(), String> {
+        let c = self.catalog.as_mut().ok_or("there is no catalog")?;
+        c.undo_merge(undo).map_err(|e| e.to_string())?;
+        self.reshow();
+        Ok(())
     }
 
     /// Takes `paths` out of the Trash.
@@ -261,10 +380,11 @@ impl Library {
         }
     }
 
-    /// Opens the New Album window; the album starts with `photos`.
-    pub(super) fn begin_new_album(&mut self, photos: Vec<PathBuf>) {
+    /// Opens the New Album window; the album starts with `photos`, inside
+    /// album `parent` when given.
+    pub(super) fn begin_new_album(&mut self, photos: Vec<PathBuf>, parent: Option<i64>) {
         let name = format!("Album {}", self.albums.len() + 1);
-        self.album_dialog = Some(AlbumDialog { id: None, name, photos, focused: false });
+        self.album_dialog = Some(AlbumDialog { id: None, parent, name, photos, focused: false });
     }
 
     /// The New/Rename Album window and the confirmations of deleting an
@@ -273,7 +393,11 @@ impl Library {
         let t = Tokens::of(ctx.theme());
         if let Some(d) = &mut self.album_dialog {
             let mut choice = None;
-            let title = if d.id.is_some() { "Rename Album" } else { "New Album" };
+            let title = match (d.id, d.parent) {
+                (Some(_), _) => "Rename Album",
+                (None, Some(_)) => "New Sub-album",
+                (None, None) => "New Album",
+            };
             dialog(ctx, "rne-album", |ui| {
                 ui.label(RichText::new(title).size(FONT[4]).strong());
                 ui.add_space(SPACE[1]);
@@ -300,7 +424,9 @@ impl Library {
                     {
                         let done = match d.id {
                             Some(id) => c.rename_album(id, &d.name),
-                            None => c.create_album(&d.name).and_then(|id| c.add_to_album(id, &d.photos).map(|_| ())),
+                            None => c
+                                .create_album(&d.name, d.parent)
+                                .and_then(|id| c.add_to_album(id, &d.photos).map(|_| ())),
                         };
                         match done {
                             Ok(()) => self.reshow(),
@@ -364,7 +490,7 @@ impl Library {
                                     self.forget_thumbnail(p);
                                 }
                                 self.reshow();
-                                actions.push(LibraryAction::Trashed { photos: gone, emptied: true });
+                                actions.push(LibraryAction::Trashed { photos: gone, emptied: true, next: None });
                             }
                             Err(e) => {
                                 actions.push(LibraryAction::Error(format!("The Trash could not be emptied: {e}")))
@@ -377,6 +503,50 @@ impl Library {
             }
         }
     }
+}
+
+/// What the right-click menu of an album asked for.
+enum AlbumMenu {
+    SubAlbum(i64),
+    Rename(Album),
+    Merge { from: i64, into: i64 },
+    Delete(Album),
+}
+
+/// The right-click menu of `album`: New Sub-album, Rename, Merge Into
+/// (any album but itself and its sub-albums), Delete.
+fn album_menu(ui: &mut egui::Ui, album: &Album, albums: &[Album]) -> Option<AlbumMenu> {
+    let mut out = None;
+    if ui.button("New Sub-album\u{2026}").clicked() {
+        out = Some(AlbumMenu::SubAlbum(album.id));
+        ui.close();
+    }
+    if ui.button("Rename Album\u{2026}").clicked() {
+        out = Some(AlbumMenu::Rename(album.clone()));
+        ui.close();
+    }
+    let inside = catalog::album_descendants(albums, album.id);
+    let targets: Vec<&Album> = albums.iter().filter(|a| a.id != album.id && !inside.contains(&a.id)).collect();
+    ui.add_enabled_ui(!targets.is_empty(), |ui| {
+        ui.menu_button("Merge Into", |ui| {
+            for target in targets {
+                if ui
+                    .button(target.name.as_str())
+                    .on_hover_text("Its photos and sub-albums go there; it can be undone")
+                    .clicked()
+                {
+                    out = Some(AlbumMenu::Merge { from: album.id, into: target.id });
+                    ui.close();
+                }
+            }
+        });
+    });
+    ui.separator();
+    if ui.button("Delete Album\u{2026}").clicked() {
+        out = Some(AlbumMenu::Delete(album.clone()));
+        ui.close();
+    }
+    out
 }
 
 /// An accent outline on `target` while photos dragged from the filmstrip

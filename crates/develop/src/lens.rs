@@ -9,21 +9,27 @@ const BAND: usize = 32;
 
 /// Runs `f(first_row, rows)` over bands of `rows` (each `width` long) on all cores.
 pub(crate) fn parallel_rows<T: Send>(rows: &mut [T], width: usize, f: impl Fn(usize, &mut [T]) + Sync) {
+    parallel_bands(rows, width, BAND, f);
+}
+
+/// [`parallel_rows`] with bands of `band` rows (the last one may be shorter).
+pub(crate) fn parallel_bands<T: Send>(rows: &mut [T], width: usize, band: usize, f: impl Fn(usize, &mut [T]) + Sync) {
     if width == 0 || rows.is_empty() {
         return;
     }
+    let band = band.max(1);
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get).max(1);
     let total_rows = rows.len() / width;
-    if threads == 1 || total_rows <= BAND {
+    if threads == 1 || total_rows <= band {
         f(0, rows);
         return;
     }
     let bands: Vec<(usize, &mut [T])> =
-        rows.chunks_mut(width * BAND).enumerate().map(|(i, chunk)| (i * BAND, chunk)).collect();
+        rows.chunks_mut(width * band).enumerate().map(|(i, chunk)| (i * band, chunk)).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let bands = std::sync::Mutex::new(bands.into_iter().map(Some).collect::<Vec<_>>());
     std::thread::scope(|s| {
-        for _ in 0..threads.min(total_rows.div_ceil(BAND)) {
+        for _ in 0..threads.min(total_rows.div_ceil(band)) {
             s.spawn(|| {
                 loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

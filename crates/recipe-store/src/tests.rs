@@ -114,6 +114,7 @@ fn every_recipe() -> Recipe {
                 manual: core_model::ManualLens { distortion: 0.1, vignetting: -0.35 },
                 custom: Some("My zoom".to_owned()),
             },
+            demosaic: core_model::Demosaic::XTransFast,
         },
         graph: g,
         geometry: core_model::Geometry {
@@ -160,6 +161,7 @@ fn every_edit() -> Vec<Edit> {
         Edit::SetLensCorrection(LensSettings::default()),
         Edit::SetGeometry(core_model::Geometry { angle: 2.0, ..core_model::Geometry::default() }),
         Edit::SetBaseCurve(core_model::BaseCurve::LinearResponse),
+        Edit::SetDemosaic(core_model::Demosaic::Bilinear),
         Edit::AddMask { to: n, def: every_mask() },
         Edit::SetMask { node: NodeId::from_raw(5), def: MaskDef::default() },
         Edit::ApplyStyle {
@@ -223,6 +225,14 @@ fn each_edit_round_trips_on_its_own() {
 fn a_variant_without_history_or_layout_round_trips() {
     let v = Variant { name: String::new(), recipe: Recipe::default(), history: None, layout: None };
     assert_eq!(decode(&encode(&v)), Ok(v));
+}
+
+#[test]
+fn a_recipe_from_before_the_demosaic_choice_develops_with_the_best_method() {
+    let text = encode(&every_variant()).replacen(",\"demosaic\":\"xtrans_fast\"", "", 1);
+    assert_ne!(text, encode(&every_variant()), "the field was there to remove");
+    let v = decode(&text).unwrap();
+    assert_eq!(v.recipe.develop.demosaic, core_model::Demosaic::Auto);
 }
 
 #[test]

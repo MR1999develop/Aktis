@@ -5,22 +5,28 @@
 //! ([`neutralise_clipped`]), lens corrections in camera RGB (vignetting, then
 //! distortion and lateral chromatic aberration, which move each colour
 //! channel differently), camera profile into the working space. Bayer
-//! sensors are demosaiced bilinearly, X-Trans sensors with an edge-aware
-//! green and colour differences ([`xtrans`]). This is the reference
-//! implementation; quality demosaicing moves to the GPU engine in phase 3,
-//! tested against this one.
+//! sensors are demosaiced with RCD and a median against false colours
+//! ([`rcd`]), X-Trans sensors with Markesteijn's three-pass algorithm
+//! ([`markesteijn`]; [`xtrans`] for images too small for it) and the same
+//! median ([`chroma`]). This is the reference implementation; the GPU
+//! engine is tested against it.
 //!
 //! [`prepare`] chooses the profile and the lens correction for an image from
 //! its shooting data; [`develop_with`] applies them.
 
+mod chroma;
 mod lens;
+mod markesteijn;
 pub mod prepare;
+mod rcd;
 mod xtrans;
 
 use std::fmt;
 
 use core_color::{ColorProfile, ProfileError};
-use core_model::{CfaPattern, DevelopSettings, ImageError, ImageF32, Rgba, SensorImage, WhiteBalance, WorkingSpace};
+use core_model::{
+    CfaPattern, Demosaic, DevelopSettings, ImageError, ImageF32, Rgba, SensorImage, WhiteBalance, WorkingSpace,
+};
 use lens_db::LensCorrection;
 
 /// Why the development stage could not run.
@@ -105,26 +111,30 @@ pub fn develop_with(
 
     // Camera RGB, white-balanced.
     let data = sensor.data();
+    let method = settings.demosaic.for_sensor(sensor.cfa().kind());
     let mut camera: Vec<[f32; 3]> = match sensor.cfa() {
         CfaPattern::Bayer(pattern) => {
             // White balance on the mosaic, before interpolation mixes the channels.
             let balanced: Vec<f32> =
                 data.iter().enumerate().map(|(i, v)| v * wb[pattern.channel_at(i % w, i / w)]).collect();
-            let mut out = vec![[0.0_f32; 3]; w * h];
-            lens::parallel_rows(&mut out, w, |first, rows| {
-                for (i, px) in rows.iter_mut().enumerate() {
-                    let (x, y) = (i % w, first + i / w);
-                    *px = demosaic_bilinear_at(&balanced, w, h, x, y, |xx, yy| pattern.channel_at(xx, yy));
-                }
-            });
-            out
+            if w >= 2 && h >= 2 && method == Demosaic::Rcd {
+                rcd::demosaic(&balanced, w, h, *pattern)
+            } else {
+                // Chosen, or a single row or column (no Bayer structure to follow).
+                (0..w * h)
+                    .map(|i| demosaic_bilinear_at(&balanced, w, h, i % w, i / w, |x, y| pattern.channel_at(x, y)))
+                    .collect()
+            }
         }
         CfaPattern::LinearRgb => data.chunks_exact(3).map(|c| [c[0] * wb[0], c[1] * wb[1], c[2] * wb[2]]).collect(),
         CfaPattern::XTrans(pattern) => {
             // White balance on the mosaic here too; the 6×6 tile starts at the image's corner.
             let channel = |x: usize, y: usize| usize::from(pattern[y % 6][x % 6]);
             let balanced: Vec<f32> = data.iter().enumerate().map(|(i, v)| v * wb[channel(i % w, i / w)]).collect();
-            xtrans::demosaic(&balanced, w, h, pattern)
+            let quality = (method == Demosaic::Markesteijn).then(|| markesteijn::demosaic(&balanced, w, h, pattern));
+            let mut rgb = quality.flatten().unwrap_or_else(|| xtrans::demosaic(&balanced, w, h, pattern));
+            chroma::suppress_false_colours(&mut rgb, w, h);
+            rgb
         }
     };
 
@@ -212,7 +222,8 @@ fn reflect(i: isize, n: usize) -> usize {
     usize::try_from(r.clamp(0, n - 1)).unwrap_or(0)
 }
 
-/// Bilinear demosaic of one pixel: each missing channel is the mean of the
+/// Bilinear demosaic of one pixel (for mosaics too thin for [`rcd`], and
+/// the yardstick of its tests): each missing channel is the mean of the
 /// same-channel photosites in the 3×3 neighbourhood. Borders are mirrored,
 /// which keeps the Bayer phase intact.
 fn demosaic_bilinear_at(

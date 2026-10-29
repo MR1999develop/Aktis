@@ -25,6 +25,9 @@ pub enum Collection {
     Folder(PathBuf),
     /// The photos of an album, by its number.
     Album(i64),
+    /// Photos of the catalog whose file name holds this text (case apart),
+    /// the Trash apart.
+    Search(String),
 }
 
 /// How far back Recent Edits goes.
@@ -48,6 +51,7 @@ impl Collection {
                 dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned())
             }
             Self::Album(n) => format!("Album {n}"),
+            Self::Search(text) => format!("Search \u{201c}{text}\u{201d}"),
         }
     }
 
@@ -88,8 +92,67 @@ pub struct Album {
     pub id: i64,
     /// Name shown.
     pub name: String,
-    /// Photos in it (the Trash apart).
+    /// Photos in it (the Trash apart), its sub-albums apart.
     pub count: usize,
+    /// The album it is a sub-album of, if any.
+    pub parent: Option<i64>,
+}
+
+/// What [`Album`]s look like as a tree: each album with its depth, parents
+/// before their sub-albums, by name at every level. An album whose parent
+/// is missing is shown at the top.
+#[must_use]
+pub fn album_tree(albums: &[Album]) -> Vec<(usize, &Album)> {
+    fn add<'a>(albums: &'a [Album], parent: Option<i64>, depth: usize, out: &mut Vec<(usize, &'a Album)>) {
+        // Depth is bounded by the number of albums (a loop in the data stops here).
+        if depth > albums.len() {
+            return;
+        }
+        for a in albums.iter().filter(|a| a.parent == parent) {
+            out.push((depth, a));
+            add(albums, Some(a.id), depth + 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    add(albums, None, 0, &mut out);
+    // Orphans (their parent was deleted outside the editor) at the top.
+    let ids: std::collections::HashSet<i64> = albums.iter().map(|a| a.id).collect();
+    for a in albums.iter().filter(|a| a.parent.is_some_and(|p| !ids.contains(&p))) {
+        out.push((0, a));
+        add(albums, Some(a.id), 1, &mut out);
+    }
+    out
+}
+
+/// The albums inside album `id` (its sub-albums, theirs, …), `id` apart.
+#[must_use]
+pub fn album_descendants(albums: &[Album], id: i64) -> Vec<i64> {
+    let mut out = Vec::new();
+    let mut todo = vec![id];
+    while let Some(p) = todo.pop() {
+        for a in albums.iter().filter(|a| a.parent == Some(p)) {
+            if !out.contains(&a.id) && a.id != id {
+                out.push(a.id);
+                todo.push(a.id);
+            }
+        }
+    }
+    out
+}
+
+/// What merging an album into another changed, to undo it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeUndo {
+    /// The album merged (gone after the merge).
+    pub album: Album,
+    /// Its photos.
+    pub photos: Vec<PathBuf>,
+    /// The album it went into.
+    pub into: i64,
+    /// Its photos the other album did not have before.
+    pub added: Vec<PathBuf>,
+    /// Its sub-albums, moved into the other album.
+    pub children: Vec<i64>,
 }
 
 /// One folder of the catalog's folder tree, as the Library shows it.
@@ -467,6 +530,22 @@ pub fn tag_counts<'a>(metas: impl IntoIterator<Item = &'a PhotoMeta>) -> Vec<(St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn albums_make_a_tree_by_name_with_their_depths() {
+        let al = |id: i64, name: &str, parent: Option<i64>| Album { id, name: name.into(), count: 0, parent };
+        let albums = [
+            al(1, "Trips", None),
+            al(2, "Italy", Some(1)),
+            al(3, "Best", None),
+            al(4, "Como", Some(2)),
+            al(5, "Lost", Some(99)),
+        ];
+        let tree: Vec<(usize, i64)> = album_tree(&albums).into_iter().map(|(d, a)| (d, a.id)).collect();
+        assert_eq!(tree, [(0, 1), (1, 2), (2, 4), (0, 3), (0, 5)], "parents first, the orphan at the top level");
+        assert_eq!(album_descendants(&albums, 1), [2, 4]);
+        assert!(album_descendants(&albums, 3).is_empty());
+    }
 
     #[test]
     fn the_folder_tree_sums_its_sub_folders_and_skips_empty_steps() {

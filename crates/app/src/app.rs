@@ -38,16 +38,18 @@ use tool_api::ToolRegistry;
 
 use crate::actions::Command;
 use crate::ai_mask_job::AiMaskJob;
-use crate::catalog_ui::{self, Import, NewCatalog, Outcome};
+use crate::catalog_ui::{self, NewCatalog, Outcome};
 use crate::dialog::{Choice, dialog, dialog_buttons};
 use crate::export_ui::{ExportDialog, ExportRequest, NameExample};
 use crate::geometry_ui::{GeoEdit, GeometryUi};
 use crate::graph_ui::{GraphAction, GraphUi};
 use crate::history_ui::{LeftTab, TabAction, Tabs};
+use crate::import_window::ImportWindow;
 use crate::inspector::{self, Drag, UiEdit};
 use crate::library_ui::{Library, LibraryAction, TaggingProgress, VariantBlocks};
 use crate::mask_ui::{MaskEdit, MaskUi};
 use crate::models_ui::ModelsUi;
+use crate::photo_texture::PhotoTexture;
 use crate::prefs_ui::Preferences;
 use crate::presets_ui::{PresetAction, PresetsUi};
 use crate::scopes::{ScopeKind, Scopes};
@@ -64,8 +66,9 @@ use crate::{APP_NAME, VERSION};
 /// Wheel scrolling, in points, that makes one zoom step in the viewer.
 const WHEEL_NOTCH: f32 = 50.0;
 
-/// Largest texture side requested, even if the GPU allows more.
-const MAX_TEXTURE_SIDE: u32 = 16_384;
+/// Largest side of the photo rendered for the screen (drawn in tiles where
+/// the GPU takes smaller textures).
+const MAX_PHOTO_SIDE: u32 = 32_768;
 
 /// A background job the user is waiting for.
 #[derive(Debug, Clone)]
@@ -113,12 +116,15 @@ enum ToastKind {
 #[derive(Debug, Clone)]
 enum ToastAction {
     ShowInFolder(PathBuf),
+    /// Takes back a merge of albums.
+    UndoMerge(Box<catalog::MergeUndo>),
 }
 
 impl ToastAction {
     fn label(&self) -> &'static str {
         match self {
             Self::ShowInFolder(_) => "Show in folder",
+            Self::UndoMerge(_) => "Undo",
         }
     }
 }
@@ -157,10 +163,10 @@ pub struct EditorApp {
     export_dialog: Option<ExportDialog>,
     /// A development in flight (lens corrections changed): ticket and settings.
     developing: Option<(u64, DevelopSettings)>,
-    texture: Option<egui::TextureHandle>,
+    texture: Option<PhotoTexture>,
     /// The exposure warning over `texture`, made from `shown` when first
     /// needed after each render.
-    warning_texture: Option<egui::TextureHandle>,
+    warning_texture: Option<PhotoTexture>,
     plan: RenderPlan,
     view: ViewState,
     viewport: Option<Viewport>,
@@ -252,7 +258,7 @@ pub struct EditorApp {
     /// The New Catalog window, while open.
     new_catalog: Option<NewCatalog>,
     /// The Import Images window, while open.
-    import: Option<Import>,
+    import: Option<ImportWindow>,
     /// The import running, if any.
     importing: Option<ImportRun>,
 }
@@ -554,6 +560,13 @@ impl EditorApp {
         }
     }
 
+    /// Opens the Import Images window on `folder` (none chosen: nothing).
+    fn open_import(&mut self, folder: Option<PathBuf>, ctx: &egui::Context) {
+        let Some(folder) = folder else { return };
+        let (known, imported) = self.library.import_context();
+        self.import = Some(ImportWindow::new(ctx, folder, true, known, imported));
+    }
+
     /// The New Catalog and Import Images windows, while open.
     fn catalog_dialogs(&mut self, ctx: &egui::Context) {
         let mut outcome = Outcome::Open;
@@ -562,7 +575,7 @@ impl EditorApp {
         } else if let Some(form) = &mut self.import {
             let name = editor::catalogs::name(self.library.catalog_dir());
             let presets = self.presets.preset_names();
-            outcome = catalog_ui::import_dialog(ctx, form, &mut self.settings.import, &presets, &name);
+            outcome = form.show(ctx, &mut self.settings.import, &presets, &name);
         }
         match outcome {
             Outcome::Open => {}
@@ -666,6 +679,7 @@ impl EditorApp {
             developed: (!d.needs_develop()).then(|| Arc::clone(d.developed())),
             orientation: d.orientation(),
             info: d.info().clone(),
+            camera_curve: d.opened().camera_curve,
         });
         let meta = self.library.catalog_meta(path);
         ExportPhoto {
@@ -719,7 +733,7 @@ impl EditorApp {
                     .filter(|d| d.is_dir())
                     .or_else(|| rfd::FileDialog::new().set_title("Import images from a folder").pick_folder());
                 self.new_catalog = None;
-                self.import = folder.map(Import::new);
+                self.open_import(folder, ctx);
             }
             Command::Export => self.open_export_dialog(self.export_targets()),
             Command::ExportAgain => self.start_export(self.export_targets(), ctx),
@@ -843,6 +857,7 @@ impl EditorApp {
                 Event::Rendered {
                     generation,
                     quality,
+                    max_side,
                     image,
                     backend,
                     gpu_failure,
@@ -850,7 +865,7 @@ impl EditorApp {
                     histogram,
                     timing,
                 } => {
-                    if !self.plan.accepts(generation, quality) {
+                    if !self.plan.accepts_at(generation, quality, max_side) {
                         continue;
                     }
                     self.last_render = Some((timing, quality, [image.width, image.height]));
@@ -859,14 +874,16 @@ impl EditorApp {
                     self.scopes.changed();
                     let size = [image.width as usize, image.height as usize];
                     let color = egui::ColorImage::from_rgb(size, &image.pixels);
-                    let options = TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
-                    match &mut self.texture {
-                        Some(t) => t.set(color, options),
-                        None => self.texture = Some(ctx.load_texture("photo", color, options)),
-                    }
+                    // Above 100 % the pixels show as they are, as in Capture One;
+                    // smaller, they are averaged.
+                    let options = TextureOptions {
+                        magnification: egui::TextureFilter::Nearest,
+                        ..crate::photo_texture::smooth()
+                    };
+                    self.texture = Some(PhotoTexture::new(ctx, "photo", &color, max_texture_side(ctx), options));
                     self.shown = Some(image);
                     self.warning_texture = None;
-                    self.plan.shown(generation, quality);
+                    self.plan.shown_at(generation, quality, max_side);
                     if let Some(why) = gpu_failure {
                         self.toast = Some(error_toast(format!("The GPU failed, the CPU took over: {why}")));
                     }
@@ -1040,6 +1057,7 @@ impl EditorApp {
                     Ok(())
                 }
                 UiEdit::Curve(curve) => doc.set_base_curve(&self.registry, curve),
+                UiEdit::Demosaic(method) => doc.set_demosaic(&self.registry, method),
                 UiEdit::SetMany { node, key, values, in_drag } => {
                     let gesture =
                         self.drag.as_ref().filter(|d| in_drag && d.node == node && d.param == key).map(|d| d.gesture);
@@ -1066,11 +1084,14 @@ impl EditorApp {
     fn apply_library(&mut self, actions: Vec<LibraryAction>, ctx: &egui::Context) {
         for action in actions {
             match action {
-                LibraryAction::Import(photos) => self.start_import(photos, &ImportSettings::default(), false, ctx),
-                LibraryAction::Trashed { photos, emptied } => {
-                    // The open photo leaves the collections with them: saved, then closed.
+                LibraryAction::Trashed { photos, emptied, next } => {
+                    // The open photo leaves the collections with them: saved,
+                    // then the next photo (else the one before) shows instead.
                     if self.doc.as_ref().is_some_and(|d| photos.iter().any(|p| p == d.path())) && self.save_edit(true) {
-                        self.close_photo();
+                        match next {
+                            Some(path) => self.open(path),
+                            None => self.close_photo(),
+                        }
                     }
                     let n = photos.len();
                     let text = if n == 1 { "1 photo".to_owned() } else { format!("{n} photos") };
@@ -1079,6 +1100,31 @@ impl EditorApp {
                     } else {
                         format!("{text} moved to the Trash (Catalog Collections)")
                     }));
+                }
+                LibraryAction::ImportFolder(folder) => {
+                    self.new_catalog = None;
+                    self.open_import(Some(folder), ctx);
+                }
+                LibraryAction::FolderMoved { from, to } => {
+                    // The open photo moved with its folder: same document, new path.
+                    if let Some(doc) = &mut self.doc
+                        && let Ok(rest) = doc.path().strip_prefix(&from)
+                    {
+                        let moved = to.join(rest);
+                        doc.file_renamed(moved.clone());
+                        self.variants = self.library.variants(&moved);
+                    }
+                    follow_folder(&mut self.settings.recent, &from, &to);
+                    if let Some(dir) = &mut self.settings.import_dir
+                        && let Ok(rest) = dir.strip_prefix(&from)
+                    {
+                        *dir = to.join(rest);
+                    }
+                }
+                LibraryAction::Merged { text, undo } => {
+                    let mut toast = info_toast(text);
+                    toast.action = Some(ToastAction::UndoMerge(Box::new(undo)));
+                    self.toast = Some(toast);
                 }
                 LibraryAction::Open(path) => {
                     let already = self.doc.as_ref().is_some_and(|d| d.path() == path);
@@ -1256,7 +1302,7 @@ impl EditorApp {
         self.developing = Some((self.next_ticket, wanted.clone()));
     }
 
-    fn request_render(&mut self, ctx: &egui::Context) {
+    fn request_render(&mut self) {
         let (Some(doc), Some(worker)) = (&self.doc, &self.worker) else { return };
         // The full-size render only when the zoom shows more than the preview has.
         let (w, h) = doc.shown_size(self.tool != Some(ViewerTool::Crop));
@@ -1270,15 +1316,23 @@ impl EditorApp {
             && screen_scale.is_some_and(|s| !editor::needs_full_resolution(s, doc.draft_scale()));
         let gpu = matches!(self.backend, Some(Backend::Gpu(_)));
         let busy = self.drag.is_some() && !(gpu && full_adds_detail);
-        let Some(quality) = self.plan.next(doc.generation(), busy, draft_helps, full_adds_detail) else {
-            return;
+        // Below 100 % the photo is rendered exactly as large as it is shown
+        // (averaged on the CPU, sharper than the GPU shrinking it); from
+        // 100 % up at full size, drawn in tiles where the GPU needs them.
+        let max_side = screen_side(w.max(h), screen_scale);
+        let quality = if !busy && self.plan.resize_needed(doc.generation(), max_side) {
+            if full_adds_detail { Quality::Full } else { Quality::Preview }
+        } else {
+            let Some(quality) = self.plan.next(doc.generation(), busy, draft_helps, full_adds_detail) else {
+                return;
+            };
+            quality
         };
         let source = match quality {
             Quality::Draft => doc.draft(),
             Quality::Preview => doc.preview(),
             Quality::Full => doc.developed(),
         };
-        let max_side = u32::try_from(ctx.input(|i| i.max_texture_side)).unwrap_or(u32::MAX).min(MAX_TEXTURE_SIDE);
         worker.render(RenderRequest {
             generation: doc.generation(),
             quality,
@@ -1291,7 +1345,7 @@ impl EditorApp {
             crop: self.tool != Some(ViewerTool::Crop),
             curve: doc.output_curve(),
         });
-        self.plan.requested(doc.generation(), quality);
+        self.plan.requested_at(doc.generation(), quality, max_side);
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
@@ -2030,11 +2084,10 @@ impl EditorApp {
         }
 
         // Made before the photo is borrowed for drawing.
-        let warning = if self.settings.layout.exposure_warning {
-            self.exposure_warning_texture(ui.ctx()).map(egui::TextureHandle::id)
-        } else {
-            None
-        };
+        if self.settings.layout.exposure_warning {
+            self.make_exposure_warning(ui.ctx());
+        }
+        let warning = self.warning_texture.as_ref().filter(|_| self.settings.layout.exposure_warning);
         let mut picked = None;
         let mut geo_edits = Vec::new();
         let mut mask_edits = Vec::new();
@@ -2101,10 +2154,9 @@ impl EditorApp {
             let painter = ui.painter_at(rect);
             if let Some(texture) = &self.texture {
                 let r = self.view.image_rect(image, &vp);
-                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                painter.image(texture.id(), to_egui_rect(r), uv, Color32::WHITE);
+                texture.paint(&painter, to_egui_rect(r));
                 if let Some(warning) = warning {
-                    painter.image(warning, to_egui_rect(r), uv, Color32::WHITE);
+                    warning.paint(&painter, to_egui_rect(r));
                 }
                 // The right button is the brush's in the Masks tool (its settings, as in Capture One).
                 let brush_tool = self.tool == Some(ViewerTool::Masks);
@@ -2407,11 +2459,18 @@ impl EditorApp {
         } else {
             ctx.request_repaint_after(toast.deadline - now);
         }
-        if let Some(ToastAction::ShowInFolder(path)) = action {
-            let launch = platform::reveal_in_file_manager(platform::Os::current(), &path);
-            if let Err(e) = std::process::Command::new(launch.program).args(&launch.args).spawn() {
-                self.toast = Some(error_toast(format!("Cannot open the folder: {e}")));
+        match action {
+            Some(ToastAction::ShowInFolder(path)) => {
+                let launch = platform::reveal_in_file_manager(platform::Os::current(), &path);
+                if let Err(e) = std::process::Command::new(launch.program).args(&launch.args).spawn() {
+                    self.toast = Some(error_toast(format!("Cannot open the folder: {e}")));
+                }
             }
+            Some(ToastAction::UndoMerge(undo)) => match self.library.undo_merge(&undo) {
+                Ok(()) => self.toast = Some(info_toast("Merge undone".to_owned())),
+                Err(e) => self.toast = Some(error_toast(format!("The merge could not be undone: {e}"))),
+            },
+            None => {}
         }
     }
 }
@@ -3043,10 +3102,10 @@ impl EditorApp {
         }
     }
 
-    /// The exposure warning for the image on screen, made once per render.
-    fn exposure_warning_texture(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
+    /// Makes the exposure warning for the image on screen, once per render.
+    fn make_exposure_warning(&mut self, ctx: &egui::Context) {
         if self.warning_texture.is_none() {
-            let shown = self.shown.as_ref()?;
+            let Some(shown) = self.shown.as_ref() else { return };
             let rgba = editor::clipping::overlay(
                 &shown.pixels,
                 self.settings.warning.thresholds(),
@@ -3055,9 +3114,14 @@ impl EditorApp {
             );
             let size = [shown.width as usize, shown.height as usize];
             let image = egui::ColorImage::from_rgba_premultiplied(size, &rgba);
-            self.warning_texture = Some(ctx.load_texture("exposure-warning", image, TextureOptions::NEAREST));
+            self.warning_texture = Some(PhotoTexture::new(
+                ctx,
+                "exposure-warning",
+                &image,
+                max_texture_side(ctx),
+                TextureOptions::NEAREST,
+            ));
         }
-        self.warning_texture.as_ref()
     }
 
     /// Once the open photo is on screen, opens the next one in the
@@ -3289,7 +3353,7 @@ impl eframe::App for EditorApp {
             self.node_problem = None;
         }
         self.request_develop();
-        self.request_render(&ctx);
+        self.request_render();
         self.update_title(&ctx);
     }
 
@@ -3415,6 +3479,15 @@ fn follow_rename(paths: &mut [PathBuf], from: &Path, to: &Path) {
     }
 }
 
+/// `paths` inside folder `from` follow it to `to`.
+fn follow_folder(paths: &mut [PathBuf], from: &Path, to: &Path) {
+    for p in paths.iter_mut() {
+        if let Ok(rest) = p.strip_prefix(from) {
+            *p = to.join(rest);
+        }
+    }
+}
+
 fn theme_preference(choice: ThemeChoice) -> egui::ThemePreference {
     match choice {
         ThemeChoice::System => egui::ThemePreference::System,
@@ -3529,6 +3602,22 @@ fn loupe(
     );
 }
 
+/// The longest side to render the photo at for the screen: as shown below
+/// 100 % (`scale` screen pixels per image pixel, for a photo of longest side
+/// `long`), the full size otherwise or before the viewer is laid out.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // pixel sizes
+fn screen_side(long: u32, scale: Option<f32>) -> u32 {
+    match scale {
+        Some(s) if s < 1.0 && s > 0.0 => ((long as f32 * s).ceil() as u32).clamp(1, MAX_PHOTO_SIDE),
+        _ => MAX_PHOTO_SIDE,
+    }
+}
+
+/// The largest texture side the GPU takes.
+fn max_texture_side(ctx: &egui::Context) -> usize {
+    ctx.input(|i| i.max_texture_side).max(1)
+}
+
 fn to_view_rect(r: egui::Rect) -> editor::Rect {
     editor::Rect { x: r.min.x, y: r.min.y, w: r.width(), h: r.height() }
 }
@@ -3540,6 +3629,14 @@ fn to_egui_rect(r: editor::Rect) -> egui::Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn below_100_percent_the_photo_is_rendered_as_large_as_it_is_shown() {
+        assert_eq!(screen_side(8256, Some(0.2)), 1652);
+        assert_eq!(screen_side(8256, Some(1.0)), MAX_PHOTO_SIDE);
+        assert_eq!(screen_side(8256, Some(4.0)), MAX_PHOTO_SIDE);
+        assert_eq!(screen_side(8256, None), MAX_PHOTO_SIDE);
+    }
 
     #[test]
     fn the_right_panel_keeps_the_last_three_nodes_newest_first() {

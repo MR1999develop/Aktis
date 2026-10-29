@@ -103,6 +103,56 @@ pub fn reveal_in_file_manager(os: Os, file: &Path) -> Launch {
     }
 }
 
+/// How to move `path` (a folder when `is_dir`, else a file) to the
+/// system's wastebasket, from where the user can restore it: the Recycle
+/// Bin on Windows (through PowerShell and .NET's `FileSystem`, the path
+/// handed over in Base64 so no character of it is read as a command), the
+/// freedesktop Trash on Linux (`gio trash`), the Trash on macOS (Finder).
+/// The program exits with a failure status when the move failed.
+#[must_use]
+pub fn move_to_trash(os: Os, path: &Path, is_dir: bool) -> Launch {
+    match os {
+        Os::Windows => {
+            let utf16: Vec<u8> = path.as_os_str().to_string_lossy().encode_utf16().flat_map(u16::to_le_bytes).collect();
+            let call = if is_dir { "DeleteDirectory" } else { "DeleteFile" };
+            let script = format!(
+                "$ErrorActionPreference='Stop'; Add-Type -AssemblyName Microsoft.VisualBasic; \
+                 $p=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{}')); \
+                 [Microsoft.VisualBasic.FileIO.FileSystem]::{call}($p,'OnlyErrorDialogs','SendToRecycleBin')",
+                base64(&utf16)
+            );
+            Launch {
+                program: "powershell",
+                args: ["-NoProfile", "-NonInteractive", "-Command", script.as_str()].map(OsString::from).to_vec(),
+            }
+        }
+        Os::Linux => Launch { program: "gio", args: vec![OsString::from("trash"), path.as_os_str().to_owned()] },
+        Os::MacOs => {
+            let text = path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+            let script = format!("tell application \"Finder\" to delete (POSIX file \"{text}\")");
+            Launch { program: "osascript", args: vec![OsString::from("-e"), OsString::from(script)] }
+        }
+    }
+}
+
+/// Standard Base64 (with padding) of `bytes`.
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], chunk.get(1).copied().unwrap_or(0), chunk.get(2).copied().unwrap_or(0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(TABLE[((n >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 /// How to open `file` with the application the system associates with it
 /// (Explorer on Windows hands it to the default app).
 #[must_use]
@@ -307,6 +357,28 @@ mod tests {
         assert_eq!(config_dir(Os::Windows, "rne", env(&[])), None);
         assert_eq!(config_dir(Os::Linux, "rne", env(&[])), None);
         assert_eq!(config_dir(Os::MacOs, "rne", env(&[])), None);
+    }
+
+    #[test]
+    fn base64_matches_the_standard() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn the_trash_never_reads_the_path_as_a_command() {
+        let odd = Path::new("C:\\Photos\\it's \"x\"; rm");
+        let w = move_to_trash(Os::Windows, odd, true);
+        assert_eq!(w.program, "powershell");
+        let script = w.args.last().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
+        assert!(script.contains("DeleteDirectory") && !script.contains("rm"), "{script}");
+        let l = move_to_trash(Os::Linux, Path::new("/home/a b"), false);
+        assert_eq!(l.args, [OsString::from("trash"), OsString::from("/home/a b")]);
+        let m = move_to_trash(Os::MacOs, Path::new("/x/\"q\""), true);
+        assert!(m.args[1].to_string_lossy().contains("\\\"q\\\""));
     }
 
     #[test]

@@ -299,6 +299,21 @@ impl Filmstrip {
         visible.get(next).map(|&i| self.photos[i].path.as_path())
     }
 
+    /// The photo to show once `gone` leave the filmstrip while `current` is
+    /// open: the next visible photo after `current` that stays, else the
+    /// one before it; `None` when `current` stays (or nothing is left).
+    #[must_use]
+    pub fn after_removing(&self, gone: &[PathBuf], current: &Path) -> Option<PathBuf> {
+        if !gone.iter().any(|g| g == current) {
+            return None;
+        }
+        let visible: Vec<&Path> = self.visible().into_iter().map(|i| self.photos[i].path.as_path()).collect();
+        let at = visible.iter().position(|p| *p == current)?;
+        let stays = |p: &Path| !gone.iter().any(|g| g == p);
+        let after = visible[at + 1..].iter().copied().find(|p| stays(p));
+        after.or_else(|| visible[..at].iter().rev().copied().find(|p| stays(p))).map(Path::to_path_buf)
+    }
+
     /// Updates the catalog data of `path` after a change.
     pub fn set_meta(&mut self, path: &Path, meta: PhotoMeta) {
         if let Some(p) = self.photos.iter_mut().find(|p| p.path == path) {
@@ -590,6 +605,21 @@ mod tests {
         s.rename(Path::new("/f/b.NEF"), "/f/z.NEF".into());
         assert_eq!(s.photos[1].name, "z.NEF");
         assert_eq!(s.index_of(Path::new("/f/z.NEF")), Some(1));
+    }
+
+    #[test]
+    fn after_a_removal_the_next_photo_shows_else_the_previous() {
+        let mut s = Filmstrip::default();
+        let photos: Vec<(PathBuf, PhotoMeta)> = ["/f/a.NEF", "/f/b.NEF", "/f/c.NEF", "/f/d.NEF"]
+            .iter()
+            .map(|p| (PathBuf::from(p), PhotoMeta::default()))
+            .collect();
+        s.set_folder(PathBuf::from("/f"), photos);
+        let p = |n: &str| PathBuf::from(format!("/f/{n}.NEF"));
+        assert_eq!(s.after_removing(&[p("b"), p("c")], &p("b")), Some(p("d")));
+        assert_eq!(s.after_removing(&[p("d")], &p("d")), Some(p("c")), "the last one: the previous");
+        assert_eq!(s.after_removing(&[p("a")], &p("b")), None, "the open photo stays");
+        assert_eq!(s.after_removing(&[p("a"), p("b"), p("c"), p("d")], &p("a")), None);
     }
 
     #[test]

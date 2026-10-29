@@ -2,9 +2,30 @@
 
 - `render-cpu::render` clones each node's image; fine for the reference
   renderer, but with the GPU unavailable it is the CPU fallback's main cost.
-- `develop` bilinear (Bayer) and gradient-weighted (X-Trans) demosaics are
-  preview quality; replace with quality algorithms on the GPU (phase 3,
-  Markesteijn or similar for X-Trans) and keep these as the test reference.
+- `develop`: Bayer with RCD, X-Trans with Markesteijn (3 passes), both on
+  the CPU; move them to the GPU (phase 3) keeping these as the test
+  reference. The simple X-Trans demosaic (`develop::xtrans`) stays for
+  images smaller than 12 pixels.
+- Markesteijn on a 26 MP X-Trans file is about 4× the simple demosaic
+  (CIELab of eight candidates per photosite); SIMD or the GPU if opening
+  Fujifilm files feels slow.
+- RCD on a 50 MP file takes about 1.3× the old bilinear demosaic; SIMD or
+  the GPU if opening large files feels slow.
+- Camera Match: the fit compares luminance only; the camera's saturation
+  (Fujifilm film simulations) is not matched yet. The softening (8 %) is
+  fixed; a control would let the user choose.
+- Camera Match is fitted when the photo opens (about 0.1 s); the export of
+  a photo not open fits it again from the full development.
+- Neural X-Trans demosaic: candidates found (vkdt `jddcnn`, DemosaicNet's
+  X-Trans model); weights licences and input contracts to confirm first.
+- Below 100 % each zoom step re-renders the node graph to get the photo at
+  the new size; keep the last full-size render in the worker and only
+  shrink it again when only the size changed.
+- Area averaging is a little soft next to Capture One's screen rendering;
+  try a sharper filter (Lanczos, or a light sharpening after shrinking).
+- Viewer tiles: with linear filtering each tile is smoothed on its own, so
+  a faint line could show at tile borders when a very large photo is zoomed
+  out; overlap tiles by a pixel if it is ever seen.
 - DNG opcodes other than GainMap (WarpRectilinear, FixBadPixels, MapTable …)
   are only reported; GainMap is applied on the CPU in `raw-io` at open time.
   When rawler gains opcode support (after 0.8.0), compare and drop ours.
@@ -212,3 +233,9 @@
   from the overview tiles); album photos are listed by name, not in the
   order they were added; smart albums, projects and groups were left out
   by choice.
+- Disk folders: Cut/Paste moves on the same drive only (another drive needs
+  a copy and a delete); Delete uses PowerShell on Windows (`platform::
+  move_to_trash`), slow to start. Album merges are undone from the message's
+  Undo button only (not Ctrl+Z); the import window keeps no thumbnails
+  between openings; folders can be deleted only from the Disk tree, not
+  from the catalog's Folders.

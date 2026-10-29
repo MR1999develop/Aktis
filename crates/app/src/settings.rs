@@ -187,6 +187,8 @@ pub struct ImportSettings {
     pub keywords: String,
     /// Rating given to every photo (0: none).
     pub rating: u8,
+    /// The window shows one photo large over a strip, instead of a grid.
+    pub large_preview: bool,
 }
 
 impl Default for ImportSettings {
@@ -204,6 +206,7 @@ impl Default for ImportSettings {
             copyright: String::new(),
             keywords: String::new(),
             rating: 0,
+            large_preview: false,
         }
     }
 }

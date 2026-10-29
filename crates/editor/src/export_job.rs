@@ -28,6 +28,8 @@ pub struct OpenPhoto {
     pub orientation: Orientation,
     /// Shooting data.
     pub info: raw_io::PhotoInfo,
+    /// The curve fitted to the camera's picture, as the editor shows it.
+    pub camera_curve: Option<core_model::CurveFit>,
 }
 
 /// One photo to export.
@@ -166,14 +168,14 @@ fn export_one(
 ) -> Result<Option<PathBuf>, String> {
     let name = display_name(&photo.path);
     let mut recipe = photo.recipe.clone().unwrap_or_default();
-    let (raw, image, orientation, info) = match &photo.open {
+    let (raw, image, orientation, info, camera_curve) = match &photo.open {
         Some(open) => {
             let image = match (&open.developed, &open.raw) {
                 (Some(image), _) => Arc::clone(image),
                 (None, Some(raw)) => Arc::new(develop_full(raw, &recipe, &name)?),
                 (None, None) => return Err(format!("{name}: the photo cannot be developed again")),
             };
-            (open.raw.clone(), image, open.orientation, open.info.clone())
+            (open.raw.clone(), image, open.orientation, open.info.clone(), open.camera_curve)
         }
         None => {
             let file = raw_io::read_raw(&photo.path).map_err(|e| format!("{name}: {e}"))?;
@@ -186,7 +188,11 @@ fn export_one(
                 recipe = crate::camera_defaults::start_recipe(engine.registry(), lens, &nodes);
             }
             let image = Arc::new(develop_full(&raw, &recipe, &name)?);
-            (Some(raw), image, file.orientation, file.info)
+            // Auto's curve for a RAW file: the camera's look, as the editor shows it.
+            let fitted = (recipe.curve == core_model::BaseCurve::Auto && !raw.capture.rendered)
+                .then(|| crate::camera_look::camera_curve(&photo.path, &image))
+                .flatten();
+            (Some(raw), image, file.orientation, file.info, fitted)
         }
     };
     if cancel.load(Ordering::Relaxed) {
@@ -207,7 +213,7 @@ fn export_one(
         &options.size,
         options.watermark.as_ref(),
         // A JPEG or TIFF has its curve already (Auto is Linear for it).
-        recipe.curve.for_source(raw.as_ref().is_some_and(|r| r.capture.rendered)),
+        recipe.curve.with_camera_fit(raw.as_ref().is_some_and(|r| r.capture.rendered), camera_curve),
     )
     .map_err(|e| format!("{name}: {e}"))?;
     drop(rendered);
@@ -281,6 +287,7 @@ mod tests {
                 developed: Some(Arc::new(img)),
                 orientation: Orientation::Rotate90,
                 info: raw_io::PhotoInfo { captured: Some("2026:08:14 18:42:07".into()), ..Default::default() },
+                camera_curve: None,
             }),
             rating: Some(3),
             keywords: vec!["lake".into()],

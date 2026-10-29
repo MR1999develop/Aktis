@@ -22,8 +22,8 @@
 Done:
 
 - `core-color`: sRGB curve, Rec.2020/sRGB matrices, camera → working matrix.
-- `develop`: white balance on the mosaic, bilinear Bayer demosaic with
-  mirrored borders, camera matrix; linear RGB files (Linear DNG, Apple
+- `develop`: white balance on the mosaic, Bayer demosaic (RCD since
+  29 October, bilinear before) with mirrored borders, camera matrix; linear RGB files (Linear DNG, Apple
   ProRAW) skip demosaicing; X-Trans demosaic (see "RAW formats" below).
 - `core-model`: EXIF orientation applied exactly (pixels moved, not resampled).
 - `tools/exposure`: CPU reference and WGSL per-pixel kernel.
@@ -423,3 +423,71 @@ the GPU and CPU renders look the same.
   the toolbar tick); Export… moved to Ctrl+D (Capture One's Process) and
   Export with previous settings to Ctrl+Shift+D.
 - Straighten is R.
+
+## 29 October: panels, masks, catalogs, import, Library
+
+- Right panel no longer widens past its edge; double-click resets every
+  slider; Dehaze gentler and on luminance only.
+- Masks: linear (L) and radial (T) gradients as in Capture One, with
+  handles for the last one, Alt takes away.
+- Film Standard brighter and livelier; the crop box shows its size in
+  pixels; the viewer background is the interface's colour or white.
+- Catalogs (`*.rnecatalog` folders): New, Open, recent catalogs; the old
+  single catalog becomes "Default"; photos come in only by import.
+- Import engine: background import with Stop; copy into dated sub-folders
+  or add in place; backup folder; duplicates by name and capture time;
+  preset, rating, keywords, photographer and copyright at import.
+- JPEG and TIFF imported and edited (linear sRGB, Exif read), new Linear
+  base curve (Auto for pictures); RAW+JPEG pairs whole or RAW only.
+- Library: Catalog Collections (All Images, Recent Imports, Recent Edits,
+  Trash), albums with drag and drop, the catalog's folders as a tree;
+  Delete to the Trash, Restore, Empty Trash.
+- Lens corrections: choosing a database lens after a custom lens no longer
+  keeps showing the custom lens (its values are left with it).
+
+Details in `docs/catalog.md`.
+
+## 29 October, afternoon: import window, Library, Disk
+
+- Import Images window as in Capture One: source on the left (sub-folders,
+  Exclude duplicates, name filter), photos as a grid or a large preview with
+  a strip, a tick per photo, options on the right; stars for the rating.
+- Library: search by name, counts on the right of every row, sub-albums,
+  Merge Into with Undo, the next photo opens after Move to Trash.
+- Disk: right-click Import…, Cut/Paste, Rename, Delete (Recycle Bin) with
+  warnings, the catalog following moved folders; "Import this folder" gone.
+- Viewer: above 100 % the pixels show as they are (no smoothing).
+
+## 29 October, evening: block D begins (demosaic, viewer, orientation)
+
+- Bayer demosaic with RCD (ratio corrected demosaicing, the default of
+  RawTherapee and darktable) in tiles on all cores, followed by a 3×3
+  median of red − green and blue − green against false colours; X-Trans
+  gets the same median after its demosaic. Tests compare RCD with the old
+  bilinear demosaic on a slanted edge and on a zone plate.
+- Viewer: photos larger than one GPU texture (GFX 50 and 100) are drawn
+  in tiles at full size instead of being halved, so 100 % shows every
+  pixel; thumbnails and previews use mipmaps (smooth when shown smaller).
+- Orientation: when the decoder does not know how a RAW file is turned,
+  the Exif Orientation tag decides, as for the filmstrip's previews
+  (vertical photos showed horizontal in the viewer only).
+- Viewer quality below 100 %: the photo is rendered exactly as large as it
+  is shown, shrunk on the CPU by area averaging (`render_cpu::resize`, any
+  size, not only whole fractions); a zoom or a window resize asks the same
+  image again at the new size. The preview and draft copies are now exactly
+  1920 and 1280 pixels (a GFX file gave 1651 before).
+- X-Trans demosaic with Markesteijn's three-pass algorithm (dcraw's
+  `xtrans_interpolate` in floating point, in tiles on all cores, borders
+  mirrored keeping the 6×6 pattern), followed by the chroma median. On a
+  zone plate its mean error is about a tenth of the simple demosaic's.
+- Base curve Auto for RAW files is now "Camera Match": the film curve
+  fitted to the JPEG the camera embedded in the file (as RawTherapee's
+  Auto-Matched Curve): the percentiles of our development's luminance are
+  paired with the picture's, and the film curve's grey, slope, shoulder and
+  toe are fitted to them (`render_cpu::tone::fit_camera_curve`,
+  `editor::camera_look`), then made 8 % gentler. Film Standard when the file
+  has no picture or no film curve fits. Export uses the same curve.
+- Base characteristics ▸ Demosaic: Auto (RCD for Bayer, Markesteijn for
+  X-Trans), RCD, Bilinear, Markesteijn 3-pass, X-Trans fast; saved with the
+  recipe (`DevelopSettings::demosaic`, optional field, older recipes read as
+  Auto), undoable, the photo is developed again.

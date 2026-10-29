@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use core_model::{
-    BaseCurve, Geometry, GraphError, LensSettings, Link, MaskDef, NodeGraph, NodeId, NodeKind, ParamId, ParamValue,
-    Params, PortKind, ProfileChoice, Recipe, Style, ToolId, WhiteBalance,
+    BaseCurve, Demosaic, Geometry, GraphError, LensSettings, Link, MaskDef, NodeGraph, NodeId, NodeKind, ParamId,
+    ParamValue, Params, PortKind, ProfileChoice, Recipe, Style, ToolId, WhiteBalance,
 };
 use tool_api::ToolRegistry;
 
@@ -87,6 +87,8 @@ pub enum Edit {
     SetGeometry(Geometry),
     /// Chooses the tone curve of the output render (Base Characteristics).
     SetBaseCurve(BaseCurve),
+    /// Chooses how the sensor's mosaic is demosaiced.
+    SetDemosaic(Demosaic),
     /// Adds a mask node and connects it to the key input of a tool node, so
     /// the tool acts only inside the mask. A mask already on that input is
     /// disconnected (its node stays in the graph).
@@ -174,6 +176,7 @@ impl Edit {
             Self::SetLensCorrection(_) => "Change lens corrections".to_owned(),
             Self::SetGeometry(_) => "Change crop and straightening".to_owned(),
             Self::SetBaseCurve(_) => "Change base curve".to_owned(),
+            Self::SetDemosaic(_) => "Change demosaic".to_owned(),
             Self::AddMask { .. } => "Add mask".to_owned(),
             Self::SetMask { .. } => "Change mask".to_owned(),
             Self::ApplyStyle { name, .. } => format!("Apply preset \u{201c}{name}\u{201d}"),
@@ -201,6 +204,7 @@ impl Edit {
             Self::SetCameraProfile(ProfileChoice::Named(name)) => name.clone(),
             Self::SetLensCorrection(lens) => on_off(lens.enabled).to_owned(),
             Self::SetBaseCurve(c) => c.label().to_owned(),
+            Self::SetDemosaic(d) => d.label().to_owned(),
             Self::SetGeometry(g) => {
                 let mut parts = Vec::new();
                 if g.angle != 0.0 {
@@ -227,7 +231,8 @@ impl Edit {
             | Self::SetCameraProfile(_)
             | Self::SetLensCorrection(_)
             | Self::SetGeometry(_)
-            | Self::SetBaseCurve(_) => EditKind::Develop,
+            | Self::SetBaseCurve(_)
+            | Self::SetDemosaic(_) => EditKind::Develop,
             Self::AddMask { .. } | Self::SetMask { .. } | Self::AddStyleBrush { .. } => EditKind::Mask,
             Self::ApplyStyle { .. } => EditKind::Develop,
             Self::InsertSerial { .. }
@@ -261,6 +266,7 @@ impl Edit {
             | Self::SetLensCorrection(_)
             | Self::SetGeometry(_)
             | Self::SetBaseCurve(_)
+            | Self::SetDemosaic(_)
             | Self::ApplyStyle { .. }
             | Self::AddStyleBrush { .. } => self.clone(),
         })
@@ -399,6 +405,7 @@ enum Undo {
     Lens(LensSettings),
     Geometry(Geometry),
     Curve(BaseCurve),
+    Demosaic(Demosaic),
     Mask {
         node: NodeId,
         previous: MaskDef,
@@ -916,6 +923,7 @@ fn validate(recipe: &Recipe, registry: &ToolRegistry, edit: Edit) -> Result<Edit
         }
         Edit::SetGeometry(g) => Ok(Edit::SetGeometry(g.sanitized())),
         Edit::SetBaseCurve(c) => Ok(Edit::SetBaseCurve(c)),
+        Edit::SetDemosaic(d) => Ok(Edit::SetDemosaic(d)),
         Edit::AddMask { to, def } => {
             let node = recipe.graph.node(to).ok_or(GraphError::UnknownNode(to))?;
             if !node.kind.inputs().contains(&PortKind::Mask) {
@@ -1101,6 +1109,7 @@ fn perform(recipe: &mut Recipe, edit: &Edit) -> Result<(Undo, Vec<NodeId>), Edit
         Edit::SetLensCorrection(l) => Undo::Lens(std::mem::replace(&mut recipe.develop.lens, l.clone())),
         Edit::SetGeometry(g) => Undo::Geometry(std::mem::replace(&mut recipe.geometry, *g)),
         Edit::SetBaseCurve(c) => Undo::Curve(std::mem::replace(&mut recipe.curve, *c)),
+        Edit::SetDemosaic(d) => Undo::Demosaic(std::mem::replace(&mut recipe.develop.demosaic, *d)),
         Edit::SetMask { node, def } => {
             let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
             let slot = n.mask().ok_or(EditError::NotAMaskNode(*node))?;
@@ -1199,6 +1208,7 @@ fn revert(recipe: &mut Recipe, undo: &Undo) {
         Undo::Lens(l) => recipe.develop.lens = l.clone(),
         Undo::Geometry(g) => recipe.geometry = *g,
         Undo::Curve(c) => recipe.curve = *c,
+        Undo::Demosaic(d) => recipe.develop.demosaic = *d,
         Undo::Mask { node, previous } => {
             if let Some(mut n) = recipe.graph.node_mut(*node)
                 && let Some(def) = n.mask()

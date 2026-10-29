@@ -17,9 +17,9 @@ pub use import::{
     Day, Destination, FolderPattern, ImportMetadata, ImportedPhoto, ShotKey, free_name, without_jpeg_twins,
 };
 pub use model::{
-    Album, Collection, ColorLabel, FIRST_VARIANT, Filter, FolderNode, ImportBatch, LabelSet, MAX_RATING, PhotoMeta,
-    RECENT_EDIT_DAYS, RECENT_IMPORTS, RatingSet, StoredVariant, Tag, TagSource, VariantInfo, folder_tree,
-    next_variant_number, sort_by_name, tag_counts, variant_name,
+    Album, Collection, ColorLabel, FIRST_VARIANT, Filter, FolderNode, ImportBatch, LabelSet, MAX_RATING, MergeUndo,
+    PhotoMeta, RECENT_EDIT_DAYS, RECENT_IMPORTS, RatingSet, StoredVariant, Tag, TagSource, VariantInfo,
+    album_descendants, album_tree, folder_tree, next_variant_number, sort_by_name, tag_counts, variant_name,
 };
 #[cfg(feature = "sqlite")]
 pub use store::{Catalog, CatalogError};

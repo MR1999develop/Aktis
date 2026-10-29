@@ -17,6 +17,7 @@ engine.workspace = true
 lens-db.workspace = true
 catalog.workspace = true
 core-color.workspace = true
+render-cpu.workspace = true
 tool-adjust.workspace = true
 masks.workspace = true
 platform.workspace = true

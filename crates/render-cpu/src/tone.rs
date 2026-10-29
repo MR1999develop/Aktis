@@ -13,7 +13,7 @@
 //! moving them towards the grey of the same luminance, never by clipping
 //! one channel.
 
-use core_model::{BaseCurve, Matrix3};
+use core_model::{BaseCurve, CurveFit, Matrix3};
 
 /// Middle grey of the scene (linear).
 pub const GREY: f32 = 0.18;
@@ -70,6 +70,13 @@ impl Shape {
             BaseCurve::LinearResponse => {
                 Self { grey: grey_out(), slope: 0.15, shoulder_from: 2.3, toe_power: Some(4.0), saturation: 1.0 }
             }
+            BaseCurve::CameraMatch(fit) => Self {
+                grey: fit.grey(),
+                slope: fit.slope(),
+                shoulder_from: fit.shoulder_from(),
+                toe_power: fit.toe_power(),
+                ..film
+            },
             // Linear has no shape: the functions below pass its values through.
             BaseCurve::Auto | BaseCurve::FilmStandard | BaseCurve::Linear => film,
         }
@@ -105,8 +112,12 @@ pub fn curve_value(curve: BaseCurve, n: f32) -> f32 {
     if curve.resolved() == BaseCurve::Linear {
         return n.min(1.0);
     }
-    let shape = Shape::of(curve);
     let e = (n / GREY).log2();
+    core_color::srgb_decode(encoded(&Shape::of(curve), e))
+}
+
+/// The displayed (sRGB-encoded) value of `shape` at `e` stops from middle grey.
+fn encoded(shape: &Shape, e: f32) -> f32 {
     let g = shape.grey;
     let s = shape.slope;
     let y = if e <= 0.0 {
@@ -120,10 +131,102 @@ pub fn curve_value(curve: BaseCurve, n: f32) -> f32 {
     } else {
         // Shoulder: the same slope at its start, approaching 1.
         let y1 = g + s * shape.shoulder_from;
-        let room = 1.0 - y1;
+        let room = (1.0 - y1).max(1e-3);
         y1 + room * (1.0 - (-(e - shape.shoulder_from) * s / room).exp())
     };
-    core_color::srgb_decode(y.clamp(0.0, 1.0))
+    y.clamp(0.0, 1.0)
+}
+
+/// How much gentler than the camera's own picture the fitted curve is made:
+/// its midtone slope is this fraction of the camera's (compared with
+/// RawTherapee's matched curve, a little less contrast looks better).
+pub const CAMERA_MATCH_SOFTEN: f32 = 0.92;
+
+/// Toes tried by the fit: Film Standard's, then power laws from steep to gentle.
+const FIT_TOES: [Option<f32>; 5] = [None, Some(1.5), Some(2.5), Some(4.0), Some(6.0)];
+
+/// The film curve that reproduces the camera's own picture of a photo,
+/// made a little gentler ([`CAMERA_MATCH_SOFTEN`]): `scene` is the
+/// luminance of the photo as developed (linear), `picture` the luminance of
+/// the camera's JPEG (sRGB-encoded, 0–1), in any order and size (the two
+/// may be framed differently: only their distributions are compared). The
+/// value at each percentile of the scene is matched to the same percentile
+/// of the picture, and the curve's shape is fitted to those pairs. `None`
+/// when there are too few values or no film curve comes close.
+#[must_use]
+pub fn fit_camera_curve(scene: &[f32], picture: &[f32]) -> Option<CurveFit> {
+    let (shape, _) = fit_shape(scene, picture)?;
+    Some(CurveFit::new(shape.grey, shape.slope * CAMERA_MATCH_SOFTEN, shape.shoulder_from, shape.toe_power))
+}
+
+/// The best shape and its root-mean-square error (sRGB-encoded).
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // percentiles and grid steps
+fn fit_shape(scene: &[f32], picture: &[f32]) -> Option<(Shape, f32)> {
+    const MIN_VALUES: usize = 1000;
+    const WORST_RMS: f32 = 0.06;
+    let sorted = |v: &[f32]| {
+        let mut v: Vec<f32> = v.iter().copied().filter(|x| x.is_finite()).collect();
+        v.sort_by(f32::total_cmp);
+        v
+    };
+    let (scene, picture) = (sorted(scene), sorted(picture));
+    if scene.len() < MIN_VALUES || picture.len() < MIN_VALUES {
+        return None;
+    }
+    let at = |v: &[f32], q: f32| v[((v.len() - 1) as f32 * q).round() as usize];
+    // Pairs (stops from grey, displayed value); clipped whites and blacks say nothing of the shape.
+    let pairs: Vec<(f32, f32)> = (1..100)
+        .map(|k| k as f32 / 100.0)
+        .map(|q| (at(&scene, q), at(&picture, q)))
+        .filter(|&(n, y)| n > 0.0 && y > 0.005 && y < 0.995)
+        .map(|(n, y)| ((n / GREY).log2(), y))
+        .collect();
+    if pairs.len() < 20 {
+        return None;
+    }
+    let error = |shape: &Shape| {
+        let sum: f32 = pairs.iter().map(|&(e, y)| (encoded(shape, e) - y).powi(2)).sum();
+        (sum / pairs.len() as f32).sqrt()
+    };
+    let shape = |grey: f32, slope: f32, shoulder_from: f32, toe_power: Option<f32>| Shape {
+        grey,
+        slope,
+        shoulder_from,
+        toe_power,
+        saturation: FILM_SATURATION,
+    };
+    let consider = |best: &mut (Shape, f32), candidate: Shape| {
+        let e = error(&candidate);
+        if e < best.1 {
+            *best = (candidate, e);
+        }
+    };
+    let mut best = (shape(FILM_GREY, SLOPE, SHOULDER_FROM, None), f32::MAX);
+    // A coarse grid over every parameter…
+    for toe in FIT_TOES {
+        for k_shoulder in 0..13 {
+            let shoulder_from = 0.5 + 0.25 * k_shoulder as f32;
+            for k_grey in 0..26 {
+                for k_slope in 0..14 {
+                    let candidate =
+                        shape(0.25 + 0.02 * k_grey as f32, 0.08 + 0.02 * k_slope as f32, shoulder_from, toe);
+                    consider(&mut best, candidate);
+                }
+            }
+        }
+    }
+    // …then finer around the best grey and slope.
+    let coarse = best.0;
+    for k_grey in -4..=4 {
+        for k_slope in -4..=4 {
+            let grey = coarse.grey + 0.005 * k_grey as f32;
+            let slope = coarse.slope + 0.005 * k_slope as f32;
+            if grey > 0.0 && slope > 0.0 {
+                consider(&mut best, shape(grey, slope, coarse.shoulder_from, coarse.toe_power));
+            }
+        }
+    }
+    (best.1 <= WORST_RMS).then_some(best)
 }
 
 /// How far the curve has flattened at scene value `n`: 0 below the
@@ -336,6 +439,42 @@ mod tests {
         // Linear Response: the flattest midtones, shadows kept, highlights gentler.
         assert!(at(linear, 1.0) - at(linear, -1.0) < at(std, 1.0) - at(std, -1.0));
         assert!(at(linear, -4.0) > at(std, -4.0) && at(linear, 2.0) < at(std, 2.0));
+    }
+
+    /// Scene luminances spread over 12 stops, and the picture `shape` makes of them.
+    fn scene_and_picture(shape: &Shape) -> (Vec<f32>, Vec<f32>) {
+        let scene: Vec<f32> = (0..4000).map(|k| GREY * 2_f32.powf(-8.0 + 12.0 * k as f32 / 4000.0)).collect();
+        let picture = scene.iter().map(|n| encoded(shape, (n / GREY).log2())).collect();
+        (scene, picture)
+    }
+
+    #[test]
+    fn the_camera_curve_is_found_from_the_two_pictures_alone() {
+        let truth = Shape { grey: 0.46, slope: 0.17, shoulder_from: 1.5, toe_power: Some(2.5), saturation: 1.0 };
+        let (scene, mut picture) = scene_and_picture(&truth);
+        picture.reverse(); // the order does not matter, only the distributions
+        let (fitted, rms) = fit_shape(&scene, &picture).expect("a fit");
+        assert!(rms < 0.01, "rms {rms}");
+        for k in -60..=40 {
+            let e = k as f32 / 10.0;
+            assert!((encoded(&fitted, e) - encoded(&truth, e)).abs() < 0.03, "at {e} stops: {fitted:?}");
+        }
+        // The curve kept is a little gentler than the camera's.
+        let fit = fit_camera_curve(&scene, &picture).expect("a camera curve");
+        assert!((fit.slope() - fitted.slope * CAMERA_MATCH_SOFTEN).abs() < 0.001);
+        let curve = BaseCurve::CameraMatch(fit);
+        assert!(
+            curve_value(curve, 0.01) < curve_value(curve, 0.18) && curve_value(curve, 0.18) < curve_value(curve, 2.0)
+        );
+    }
+
+    #[test]
+    fn no_camera_curve_without_enough_values_or_a_close_shape() {
+        assert!(fit_camera_curve(&[0.18; 10], &[0.5; 10]).is_none());
+        // A picture brighter where the scene is darker is no film curve.
+        let scene: Vec<f32> = (0..4000).map(|k| 0.001 + k as f32 / 4000.0).collect();
+        let picture: Vec<f32> = (0..4000).map(|k| if k % 2 == 0 { 0.02 } else { 0.98 }).collect();
+        assert!(fit_camera_curve(&scene, &picture).is_none());
     }
 
     #[test]

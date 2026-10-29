@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 mod display;
+pub mod resize;
 pub mod tone;
 
 use core_model::{GraphError, ImageF32, MaskImage, NodeGraph, NodeId, NodeKind, Orientation, ToolId};

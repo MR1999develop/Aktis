@@ -10,8 +10,8 @@
 //! imported; 4 adds each imported photo's file name and capture time
 //! (duplicate checks) and the photographer and copyright given at import
 //! (table `texts`); 5 adds the Trash (column `imported.trashed`) and the
-//! albums (tables `albums` and `album_photos`). Older files are upgraded
-//! on open.
+//! albums (tables `albums` and `album_photos`); 6 adds sub-albums (column
+//! `albums.parent`). Older files are upgraded on open.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -21,11 +21,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::import::{ImportMetadata, ImportedPhoto, ShotKey};
 use crate::model::{
-    Album, Collection, ColorLabel, ImportBatch, MAX_RATING, PhotoMeta, StoredVariant, Tag, TagSource, VariantInfo,
+    Album, Collection, ColorLabel, ImportBatch, MAX_RATING, MergeUndo, PhotoMeta, StoredVariant, Tag, TagSource,
+    VariantInfo,
 };
 
 /// Layout version of the database; older files are upgraded on open.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS photos (
@@ -90,6 +91,8 @@ pub enum CatalogError {
     Io(std::io::Error),
     /// The file was written by a newer version of the editor.
     NewerVersion(i64),
+    /// The operation makes no sense (the message says why).
+    Refused(String),
 }
 
 impl fmt::Display for CatalogError {
@@ -100,6 +103,7 @@ impl fmt::Display for CatalogError {
             Self::NewerVersion(v) => {
                 write!(f, "the catalog was written by a newer version of the editor (layout {v}); update the editor")
             }
+            Self::Refused(why) => write!(f, "{why}"),
         }
     }
 }
@@ -109,7 +113,7 @@ impl std::error::Error for CatalogError {
         match self {
             Self::Sqlite(e) => Some(e),
             Self::Io(e) => Some(e),
-            Self::NewerVersion(_) => None,
+            Self::NewerVersion(_) | Self::Refused(_) => None,
         }
     }
 }
@@ -190,6 +194,12 @@ impl Catalog {
             if has == 0 {
                 tx.execute_batch(&format!("ALTER TABLE imported ADD COLUMN {column} {kind};"))?;
             }
+        }
+        // Version 5 had no sub-albums.
+        let has_parent: i64 =
+            tx.query_row("SELECT COUNT(*) FROM pragma_table_info('albums') WHERE name = 'parent'", [], |r| r.get(0))?;
+        if has_parent == 0 {
+            tx.execute_batch("ALTER TABLE albums ADD COLUMN parent INTEGER;")?;
         }
         // The index needs the name column, so it comes after the upgrade.
         tx.execute_batch("CREATE INDEX IF NOT EXISTS imported_by_shot ON imported(name, captured);")?;
@@ -348,22 +358,46 @@ impl Catalog {
     /// # Errors
     /// [`CatalogError::Sqlite`]; nothing is changed then.
     pub fn rename(&mut self, from: &Path, to: &Path) -> Result<(), CatalogError> {
-        let (f, t) = (key(from), key(to));
         let tx = self.conn.transaction()?;
-        tx.execute("DELETE FROM photos WHERE path = ?1", params![t])?;
-        tx.execute("DELETE FROM tags WHERE path = ?1", params![t])?;
-        tx.execute("DELETE FROM variants WHERE path = ?1", params![t])?;
-        tx.execute("UPDATE photos SET path = ?2 WHERE path = ?1", params![f, t])?;
-        tx.execute("UPDATE tags SET path = ?2 WHERE path = ?1", params![f, t])?;
-        tx.execute("UPDATE variants SET path = ?2 WHERE path = ?1", params![f, t])?;
-        tx.execute("DELETE FROM imported WHERE path = ?1", params![t])?;
-        tx.execute("UPDATE imported SET path = ?2 WHERE path = ?1", params![f, t])?;
-        tx.execute("DELETE FROM texts WHERE path = ?1", params![t])?;
-        tx.execute("UPDATE texts SET path = ?2 WHERE path = ?1", params![f, t])?;
-        tx.execute("DELETE FROM album_photos WHERE path = ?1", params![t])?;
-        tx.execute("UPDATE album_photos SET path = ?2 WHERE path = ?1", params![f, t])?;
+        rename_rows(&tx, from, to)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Follows folder `from` moved or renamed to `to`: every photo inside
+    /// it (and its sub-folders) keeps its data at its new path. Returns how
+    /// many photos moved.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn move_folder(&mut self, from: &Path, to: &Path) -> Result<usize, CatalogError> {
+        let inside: Vec<PathBuf> = self.paths()?.into_iter().filter(|p| p.starts_with(from)).collect();
+        let tx = self.conn.transaction()?;
+        for p in &inside {
+            let Ok(rest) = p.strip_prefix(from) else { continue };
+            rename_rows(&tx, p, &to.join(rest))?;
+        }
+        tx.commit()?;
+        Ok(inside.len())
+    }
+
+    /// How many photos of the catalog are in folder `dir` or below.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn count_below(&self, dir: &Path) -> Result<usize, CatalogError> {
+        Ok(self.paths()?.iter().filter(|p| p.starts_with(dir)).count())
+    }
+
+    /// Removes from the catalog every photo in folder `dir` or below;
+    /// returns them.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn remove_below(&mut self, dir: &Path) -> Result<Vec<PathBuf>, CatalogError> {
+        let gone: Vec<PathBuf> = self.paths()?.into_iter().filter(|p| p.starts_with(dir)).collect();
+        self.remove(&gone)?;
+        Ok(gone)
     }
 
     // ----- imported photos -----
@@ -529,6 +563,13 @@ impl Catalog {
             Collection::Folder(dir) => {
                 rows(&format!("SELECT path FROM imported WHERE {live} AND folder = ?1"), Some(Value::Text(key(dir))))?
             }
+            Collection::Search(text) => {
+                let text = text.trim().to_lowercase();
+                let all = rows(&format!("SELECT path FROM imported WHERE {live}"), None)?;
+                all.into_iter()
+                    .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().contains(&text)))
+                    .collect()
+            }
             Collection::Album(id) => rows(
                 "SELECT a.path FROM album_photos a JOIN imported i ON i.path = a.path
                  WHERE i.trashed IS NULL AND a.album = ?1",
@@ -552,6 +593,16 @@ impl Catalog {
             .query_map([], |r| Ok((PathBuf::from(r.get::<_, String>(0)?), r.get::<_, i64>(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows.into_iter().map(|(p, n)| (p, usize::try_from(n).unwrap_or(0))).collect())
+    }
+
+    /// Every photo of the catalog, the Trash included.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn paths(&self) -> Result<Vec<PathBuf>, CatalogError> {
+        let mut stmt = self.conn.prepare("SELECT path FROM imported")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().map(PathBuf::from).collect())
     }
 
     /// The last `limit` imports that still have photos, the latest first.
@@ -624,22 +675,106 @@ impl Catalog {
         let mut stmt = self.conn.prepare(
             "SELECT al.id, al.name,
                     (SELECT COUNT(*) FROM album_photos a JOIN imported i ON i.path = a.path
-                     WHERE a.album = al.id AND i.trashed IS NULL)
+                     WHERE a.album = al.id AND i.trashed IS NULL),
+                    al.parent
              FROM albums al ORDER BY al.name COLLATE NOCASE, al.id",
         )?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
+            .query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<i64>>(3)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows.into_iter().map(|(id, name, n)| Album { id, name, count: usize::try_from(n).unwrap_or(0) }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(id, name, n, parent)| Album { id, name, count: usize::try_from(n).unwrap_or(0), parent })
+            .collect())
     }
 
-    /// Makes an album called `name` (trimmed); returns its number.
+    /// Makes an album called `name` (trimmed), inside album `parent` when
+    /// given; returns its number.
     ///
     /// # Errors
     /// [`CatalogError::Sqlite`].
-    pub fn create_album(&mut self, name: &str) -> Result<i64, CatalogError> {
-        self.conn.execute("INSERT INTO albums (name, created) VALUES (?1, ?2)", params![name.trim(), now()])?;
+    pub fn create_album(&mut self, name: &str, parent: Option<i64>) -> Result<i64, CatalogError> {
+        self.conn.execute(
+            "INSERT INTO albums (name, created, parent) VALUES (?1, ?2, ?3)",
+            params![name.trim(), now(), parent],
+        )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Merges album `from` into album `into`: `into` gets its photos and
+    /// its sub-albums, `from` is deleted. Returns what is needed to undo it
+    /// ([`Self::undo_merge`]).
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then. Merging an album
+    /// into itself or into one of its own sub-albums is refused as
+    /// [`CatalogError::Refused`].
+    pub fn merge_albums(&mut self, from: i64, into: i64) -> Result<MergeUndo, CatalogError> {
+        let albums = self.albums()?;
+        if from == into || crate::model::album_descendants(&albums, from).contains(&into) {
+            return Err(CatalogError::Refused("an album cannot be merged into itself or its sub-albums".to_owned()));
+        }
+        let album = albums
+            .iter()
+            .find(|a| a.id == from)
+            .cloned()
+            .ok_or_else(|| CatalogError::Refused("the album is gone".to_owned()))?;
+        let photos = self.album_paths(from)?;
+        let had: std::collections::HashSet<PathBuf> = self.album_paths(into)?.into_iter().collect();
+        let added: Vec<PathBuf> = photos.iter().filter(|p| !had.contains(*p)).cloned().collect();
+        let children: Vec<i64> = albums.iter().filter(|a| a.parent == Some(from)).map(|a| a.id).collect();
+        let tx = self.conn.transaction()?;
+        let now = now();
+        for p in &added {
+            tx.execute(
+                "INSERT OR IGNORE INTO album_photos (album, path, added) VALUES (?1, ?2, ?3)",
+                params![into, key(p), now],
+            )?;
+        }
+        tx.execute("UPDATE albums SET parent = ?2 WHERE parent = ?1", params![from, into])?;
+        tx.execute("DELETE FROM album_photos WHERE album = ?1", params![from])?;
+        tx.execute("DELETE FROM albums WHERE id = ?1", params![from])?;
+        tx.commit()?;
+        Ok(MergeUndo { album, photos, into, added, children })
+    }
+
+    /// Undoes a merge: the merged album comes back (same number, name and
+    /// place) with its photos and sub-albums, and the other album gives
+    /// back the photos it got.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn undo_merge(&mut self, undo: &MergeUndo) -> Result<(), CatalogError> {
+        let tx = self.conn.transaction()?;
+        let now = now();
+        let a = &undo.album;
+        tx.execute(
+            "INSERT OR REPLACE INTO albums (id, name, created, parent) VALUES (?1, ?2, ?3, ?4)",
+            params![a.id, a.name, now, a.parent],
+        )?;
+        for p in &undo.photos {
+            tx.execute(
+                "INSERT OR IGNORE INTO album_photos (album, path, added) VALUES (?1, ?2, ?3)",
+                params![a.id, key(p), now],
+            )?;
+        }
+        for p in &undo.added {
+            tx.execute("DELETE FROM album_photos WHERE album = ?1 AND path = ?2", params![undo.into, key(p)])?;
+        }
+        for child in &undo.children {
+            tx.execute("UPDATE albums SET parent = ?2 WHERE id = ?1", params![child, a.id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The photos put in album `id` (the Trash included).
+    fn album_paths(&self, id: i64) -> Result<Vec<PathBuf>, CatalogError> {
+        let mut stmt = self.conn.prepare("SELECT path FROM album_photos WHERE album = ?1")?;
+        let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().map(PathBuf::from).collect())
     }
 
     /// Renames album `id`.
@@ -651,12 +786,17 @@ impl Catalog {
         Ok(())
     }
 
-    /// Deletes album `id`; its photos stay in the catalog.
+    /// Deletes album `id`; its photos stay in the catalog and its
+    /// sub-albums move up to its place.
     ///
     /// # Errors
     /// [`CatalogError::Sqlite`]; nothing is changed then.
     pub fn delete_album(&mut self, id: i64) -> Result<(), CatalogError> {
         let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE albums SET parent = (SELECT parent FROM albums WHERE id = ?1) WHERE parent = ?1",
+            params![id],
+        )?;
         tx.execute("DELETE FROM album_photos WHERE album = ?1", params![id])?;
         tx.execute("DELETE FROM albums WHERE id = ?1", params![id])?;
         tx.commit()?;
@@ -863,6 +1003,22 @@ impl Catalog {
 const CHOSEN_FIRST: &str = "number = COALESCE((SELECT variant FROM photos WHERE path = ?1), 1) DESC";
 
 /// Seconds since 1970, for the `updated` column.
+/// Moves the rows of photo `from` to `to` in every table (replacing
+/// whatever `to` had), inside transaction `tx`.
+fn rename_rows(tx: &rusqlite::Transaction<'_>, from: &Path, to: &Path) -> Result<(), CatalogError> {
+    let (f, t) = (key(from), key(to));
+    if f == t {
+        return Ok(());
+    }
+    for table in ["photos", "tags", "variants", "imported", "texts", "album_photos"] {
+        tx.execute(&format!("DELETE FROM {table} WHERE path = ?1"), params![t])?;
+        tx.execute(&format!("UPDATE {table} SET path = ?2 WHERE path = ?1"), params![f, t])?;
+    }
+    let folder = to.parent().map(key).unwrap_or_default();
+    tx.execute("UPDATE imported SET folder = ?2 WHERE path = ?1", params![t, folder])?;
+    Ok(())
+}
+
 /// Fields of table `texts`.
 const TEXT_ARTIST: &str = "artist";
 const TEXT_COPYRIGHT: &str = "copyright";
@@ -957,8 +1113,8 @@ mod tests {
         let imports = c.recent_imports(10).unwrap();
         assert_eq!(imports.iter().map(|i| (i.number, i.count)).collect::<Vec<_>>(), [(2, 1), (1, 2)]);
         assert_eq!(c.collection(&Collection::Import(1)).unwrap(), [a.clone(), b.clone()]);
-        let best = c.create_album(" Best ").unwrap();
-        let other = c.create_album("Another").unwrap();
+        let best = c.create_album(" Best ", None).unwrap();
+        let other = c.create_album("Another", None).unwrap();
         assert_eq!(c.add_to_album(best, &[x.clone(), a.clone()]).unwrap(), 2);
         assert_eq!(c.add_to_album(best, std::slice::from_ref(&a)).unwrap(), 0);
         assert_eq!(c.collection(&Collection::Album(best)).unwrap(), [a.clone(), x.clone()]);
@@ -972,6 +1128,61 @@ mod tests {
         c.delete_album(best).unwrap();
         assert_eq!(c.albums().unwrap().len(), 1);
         assert!(c.is_imported(&a).unwrap(), "deleting an album keeps its photos");
+    }
+
+    #[test]
+    fn sub_albums_merges_undo_and_search() {
+        let mut c = Catalog::open_in_memory().unwrap();
+        let (a, b, x) = (p("d/IMG_1.NEF"), p("d/IMG_2.NEF"), p("e/other.NEF"));
+        c.import(&[a.clone(), b.clone(), x.clone()]).unwrap();
+        let trips = c.create_album("Trips", None).unwrap();
+        let italy = c.create_album("Italy", Some(trips)).unwrap();
+        let como = c.create_album("Como", Some(italy)).unwrap();
+        c.add_to_album(italy, &[a.clone(), b.clone()]).unwrap();
+        c.add_to_album(trips, std::slice::from_ref(&a)).unwrap();
+        assert!(matches!(c.merge_albums(trips, como), Err(CatalogError::Refused(_))), "not into its own sub-album");
+        let undo = c.merge_albums(italy, trips).unwrap();
+        assert_eq!(undo.added, std::slice::from_ref(&b), "a was in Trips already");
+        assert_eq!(c.collection(&Collection::Album(trips)).unwrap(), [a.clone(), b.clone()]);
+        let albums = c.albums().unwrap();
+        assert!(albums.iter().all(|al| al.id != italy));
+        assert_eq!(albums.iter().find(|al| al.id == como).unwrap().parent, Some(trips), "Como moved up");
+        c.undo_merge(&undo).unwrap();
+        assert_eq!(c.collection(&Collection::Album(trips)).unwrap(), std::slice::from_ref(&a));
+        assert_eq!(c.collection(&Collection::Album(italy)).unwrap(), [a.clone(), b.clone()]);
+        let albums = c.albums().unwrap();
+        assert_eq!(albums.iter().find(|al| al.id == italy).unwrap().parent, Some(trips));
+        assert_eq!(albums.iter().find(|al| al.id == como).unwrap().parent, Some(italy));
+        // Deleting an album moves its sub-albums up.
+        c.delete_album(italy).unwrap();
+        assert_eq!(c.albums().unwrap().iter().find(|al| al.id == como).unwrap().parent, Some(trips));
+        assert_eq!(c.collection(&Collection::Search("img".into())).unwrap(), [a.clone(), b.clone()]);
+        c.trash(std::slice::from_ref(&a)).unwrap();
+        assert_eq!(c.collection(&Collection::Search(" IMG_".into())).unwrap(), std::slice::from_ref(&b));
+        assert!(!x.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn a_moved_folder_takes_its_photos_along() {
+        let mut c = Catalog::open_in_memory().unwrap();
+        let (a, b, other) = (p("d/trip/a.NEF"), p("d/trip/day2/b.NEF"), p("d/tripper/c.NEF"));
+        c.import(&[a.clone(), b.clone(), other.clone()]).unwrap();
+        c.set_rating(std::slice::from_ref(&b), 4).unwrap();
+        let album = c.create_album("Best", None).unwrap();
+        c.add_to_album(album, std::slice::from_ref(&b)).unwrap();
+        assert_eq!(c.count_below(&p("d/trip")).unwrap(), 2, "a folder with a longer name is not inside");
+        assert_eq!(c.move_folder(&p("d/trip"), &p("e/2026 trip")).unwrap(), 2);
+        // Built as the catalog does: the new folder and the rest of the old path.
+        let moved = p("e/2026 trip").join(b.strip_prefix("d/trip").unwrap());
+        assert!(c.is_imported(&moved).unwrap() && !c.is_imported(&b).unwrap());
+        assert_eq!(c.meta(&moved).unwrap().rating, 4);
+        assert_eq!(c.collection(&Collection::Album(album)).unwrap(), std::slice::from_ref(&moved));
+        assert_eq!(
+            c.collection(&Collection::Folder(moved.parent().unwrap().to_path_buf())).unwrap(),
+            std::slice::from_ref(&moved)
+        );
+        assert_eq!(c.remove_below(&p("e/2026 trip")).unwrap().len(), 2);
+        assert_eq!(c.collection(&Collection::All).unwrap(), std::slice::from_ref(&other));
     }
 
     #[test]

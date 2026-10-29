@@ -1156,6 +1156,7 @@ dependencies = [
  "platform",
  "raw-io",
  "recipe-store",
+ "render-cpu",
  "tool-adjust",
  "tool-api",
 ]

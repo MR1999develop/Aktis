@@ -46,7 +46,7 @@ cargo fmt --all --check
 | `crates/core-color` | Transfer curves, primaries, camera profiles (dual-illuminant matrices, DCP files). |
 | `crates/tool-api` | The `Tool` contract, parameter descriptors, the tool registry. |
 | `crates/commands` | Edits with validation and undo/redo: the only way UI and MCP change a recipe. |
-| `crates/develop` | Fixed development stage on the CPU (white balance, Bayer and X-Trans demosaic, lens corrections, camera profile). |
+| `crates/develop` | Fixed development stage on the CPU (white balance, Bayer demosaic with RCD, X-Trans demosaic with Markesteijn, false-colour suppression, lens corrections, camera profile). |
 | `crates/render-cpu` | Reference renderer: evaluates the graph with each tool's CPU code. |
 | `crates/platform` | The single place where Windows, Ubuntu and macOS differ. |
 | `crates/raw-io` | RAW/DNG → sensor data with rawler; levels, valid area, CFA, DNG gain maps, colour matrices, lens and shooting data. |
@@ -71,7 +71,8 @@ quantisation happens only on output.
 
 ## Supported cameras
 
-RAW files are decoded by [rawler](https://github.com/dnglab/dnglab) 0.8.0
+JPEG and TIFF pictures are imported and edited too (read as sRGB; see
+`docs/catalog.md`). RAW files are decoded by [rawler](https://github.com/dnglab/dnglab) 0.8.0
 (pinned); the editor develops Bayer and Fujifilm X-Trans mosaics and linear
 (already demosaiced) DNGs. rawler recognises cameras through its own
 database: a body newer than rawler 0.8.0, or a raw mode not listed for it,
@@ -84,7 +85,7 @@ Monochrom, Pentax K-3 III Monochrome) are not supported yet.
 | Canon | CR3 (C-RAW and dual-pixel included), CR2, CRW | CR2 sRAW/mRAW are developed as linear RGB; CR3 burst rolls open their first frame; CRM movies are not offered. |
 | Nikon | NEF, NRW | High Efficiency and High Efficiency★ NEF (Z 8, Z 9, Z 6III, Zf …) are refused by rawler 0.8.0; lossless, lossy and uncompressed NEF work. |
 | Sony | ARW, SR2, SRF | Uncompressed, compressed and lossless compressed ARW work; the newest compression (TIFF code 32766, "ARW6") has no decoder in rawler 0.8.0. |
-| Fujifilm | RAF | X-Trans and Bayer (GFX) sensors; uncompressed, lossless and lossy compressed RAF. X-Trans uses its own CPU demosaic (preview quality, like the Bayer one). |
+| Fujifilm | RAF | X-Trans and Bayer (GFX) sensors; uncompressed, lossless and lossy compressed RAF. X-Trans sensors use Markesteijn's three-pass demosaic (as RawTherapee and darktable); Bayer sensors, GFX included, use RCD. Base characteristics ▸ Demosaic offers the fast methods too. |
 | Apple | DNG (ProRAW) | ProRAW is a linear DNG: no demosaic, white balance and camera matrix only. JPEG XL compressed DNGs decode only with 8- or 16-bit streams. |
 | Google Pixel | DNG | Lens shading stored as DNG GainMap opcodes is applied when the file is opened; other opcodes (for example the WarpRectilinear distortion correction in OpcodeList3) are not, and a note says so when the file marks them as required. |
 | Panasonic | RW2, RAW | |
@@ -99,6 +100,11 @@ offered. DNG opcodes other than GainMap are not applied anywhere.
 
 ## Camera profiles and lens corrections
 
+- **Base curve.** Auto shows a RAW file with the camera's own look: a film
+  curve fitted to the JPEG the camera embedded in the file (Camera Match, a
+  little gentler than the camera), Film Standard when there is none; JPEG
+  and TIFF pictures get no curve. The other film curves can be chosen in
+  Base characteristics.
 - **Profiles.** By default each camera uses its own calibration matrices
   (illuminant A and D65 for about 740 cameras, from rawler's camera data),
   mixed according to the white balance as the DNG specification describes.
@@ -181,18 +187,22 @@ RAW samples for the ignored real-file test go in `testdata/` (not committed):
 
 ## The window
 
-Left: Explorer (folders, rating/label/name/keyword filters, AI keywords)
-and filmstrip side by side, History and Metadata tabs below. Centre: the
+Left: the Library (Catalog Collections, Albums, the catalog's Folders, the
+Disk, then rating/label/name/keyword filters and AI keywords) and the
+filmstrip side by side, History and Metadata tabs below. Centre: the
 photo above the node graph (a new photo has only the Source: click a
 node's output port to add a tool after it; drag nodes, drag the background
 to pan). Right: histogram and the settings of the node selected in the
 graph. Filmstrip: click, Ctrl+click and Shift+click select as in
 a photo viewer (several selected photos show as tiles in the viewer); keys:
 arrows previous/next, 0–5 rating, 6–9 colour label (on the selection), F2
-rename, Ctrl+A select all, Escape back to one photo. Ratings, labels and keywords are kept
-in `catalog.sqlite` in the data folder.
+rename, Delete to the Trash, Ctrl+A select all, Escape back to one photo;
+drag photos onto an album. Photos come in through File ▸ Import Images…
+and live in a catalog (`Name.rnecatalog`): see `docs/catalog.md`.
 
 ## Status
 
 Phase 0 (foundations) is done; phase 1 (tracer bullet) is complete with the
-first window. See `docs/progress.md`.
+first window. Development now follows the user's plan in five phases
+(catalog and import, Library, metadata and tagging, filmstrip options,
+variants). See `docs/progress.md`.

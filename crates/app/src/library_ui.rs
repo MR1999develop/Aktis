@@ -18,7 +18,7 @@ use editor::variants::Save;
 use editor::{Filmstrip, FolderListing, FolderTree, StripPhoto, ThumbCache, ThumbJob, ThumbState, Worker};
 use eframe::egui::{
     self, Align, Button, Color32, CornerRadius, FontId, Key, Label, Layout, Modifiers, Rect, RichText, Sense, Stroke,
-    StrokeKind, TextEdit, TextureHandle, TextureOptions, pos2, vec2,
+    StrokeKind, TextEdit, TextureHandle, pos2, vec2,
 };
 
 use crate::actions::Command;
@@ -49,6 +49,8 @@ const OVERVIEW_HEADER: f32 = 30.0;
 
 #[path = "library_collections.rs"]
 mod collections;
+#[path = "library_disk.rs"]
+mod disk;
 
 /// How many photos the Library's catalog collections hold, as last read.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -86,8 +88,6 @@ pub enum LibraryAction {
     StopTagging,
     /// Tell the user something went wrong.
     Error(String),
-    /// Import these photos into the catalog.
-    Import(Vec<PathBuf>),
     /// These photos left the catalog's collections, moved to the Trash or
     /// (`emptied`) removed from the catalog with the Trash: the window
     /// closes the open photo if it is one of them.
@@ -96,6 +96,25 @@ pub enum LibraryAction {
         photos: Vec<PathBuf>,
         /// The Trash was emptied.
         emptied: bool,
+        /// The photo to open in place of the open one when it went: the
+        /// next one in the filmstrip, else the one before.
+        next: Option<PathBuf>,
+    },
+    /// Open the Import Images window on this folder.
+    ImportFolder(PathBuf),
+    /// A folder of the disk was moved or renamed (the catalog followed).
+    FolderMoved {
+        /// Where it was.
+        from: PathBuf,
+        /// Where it is.
+        to: PathBuf,
+    },
+    /// Two albums were merged (`text` says which); `undo` takes it back.
+    Merged {
+        /// What happened, for the message.
+        text: String,
+        /// What undoes it.
+        undo: catalog::MergeUndo,
     },
 }
 
@@ -164,14 +183,24 @@ pub struct Library {
     counts: Counts,
     /// Catalog folders shown closed in the Library.
     folders_closed: HashSet<PathBuf>,
+    /// Albums whose sub-albums are hidden.
+    albums_closed: HashSet<i64>,
+    /// The text of the catalog's search field.
+    search: String,
     /// The New Album / Rename Album window, while open.
     album_dialog: Option<collections::AlbumDialog>,
     /// The album whose deletion waits for confirmation.
     delete_album: Option<Album>,
     /// Emptying the Trash waits for confirmation.
     confirm_empty_trash: bool,
-    /// The photos of the disk folder shown that are not in the catalog yet.
-    not_imported: Vec<PathBuf>,
+    /// The disk folder cut (Cut / Paste), if any.
+    disk_cut: Option<PathBuf>,
+    /// The warning before a disk folder changes, while open.
+    disk_dialog: Option<disk::DiskDialog>,
+    /// A disk folder being moved to the wastebasket.
+    deleting: Option<disk::Deleting>,
+    /// Disk folders to list again (they changed).
+    relist: Vec<PathBuf>,
     /// The photos of the current folder and the filters.
     pub strip: Filmstrip,
     catalog: Option<Catalog>,
@@ -231,10 +260,15 @@ impl Library {
             albums: Vec::new(),
             counts: Counts::default(),
             folders_closed: HashSet::new(),
+            albums_closed: HashSet::new(),
+            search: String::new(),
             album_dialog: None,
             delete_album: None,
             confirm_empty_trash: false,
-            not_imported: Vec::new(),
+            disk_cut: None,
+            disk_dialog: None,
+            deleting: None,
+            relist: Vec::new(),
             strip: Filmstrip::default(),
             catalog,
             catalog_problem,
@@ -333,6 +367,14 @@ impl Library {
         Ok(added)
     }
 
+    /// What the Import Images window needs to tell duplicates: the shots
+    /// and the files in the catalog.
+    #[must_use]
+    pub fn import_context(&self) -> (HashSet<ShotKey>, HashSet<PathBuf>) {
+        let Some(c) = self.catalog.as_ref() else { return (HashSet::new(), HashSet::new()) };
+        (c.known_shots().unwrap_or_default(), c.paths().unwrap_or_default().into_iter().collect())
+    }
+
     /// `true` when `path` was imported into the catalog.
     #[must_use]
     pub fn is_imported(&self, path: &Path) -> bool {
@@ -379,11 +421,6 @@ impl Library {
             all: count(&Collection::All),
             edits: count(&Collection::RecentEdits),
             trash: count(&Collection::Trash),
-        };
-        self.not_imported = if self.collection.is_none() {
-            self.strip.photos.iter().map(|p| p.path.clone()).filter(|p| !c.is_imported(p).unwrap_or(false)).collect()
-        } else {
-            Vec::new()
         };
     }
 
@@ -493,7 +530,11 @@ impl Library {
         let state = match result {
             Ok(t) => {
                 let image = egui::ColorImage::from_rgb([t.width as usize, t.height as usize], &t.rgb);
-                ThumbState::Ready(ctx.load_texture(format!("thumb:{}", path.display()), image, TextureOptions::LINEAR))
+                ThumbState::Ready(ctx.load_texture(
+                    format!("thumb:{}", path.display()),
+                    image,
+                    crate::photo_texture::smooth(),
+                ))
             }
             Err(why) => ThumbState::Failed(why),
         };
@@ -516,7 +557,7 @@ impl Library {
                 ThumbState::Ready(ctx.load_texture(
                     format!("preview:{}", path.display()),
                     image,
-                    TextureOptions::LINEAR,
+                    crate::photo_texture::smooth(),
                 ))
             }
             Err(why) => ThumbState::Failed(why),
@@ -528,6 +569,10 @@ impl Library {
     /// large previews of those filling the viewer, when those lists changed.
     pub fn request_thumbnails(&mut self, worker: Option<&Worker>) {
         let Some(worker) = worker else { return };
+        // Folders changed on the disk are listed again.
+        for dir in self.relist.drain(..) {
+            worker.list_folder(dir);
+        }
         if let Some(list) = self.previews.to_request(&self.wanted_previews) {
             worker.request_previews(self.thumb_jobs(list));
         }
@@ -850,7 +895,7 @@ impl Library {
         // Delete moves to the Trash, as in Capture One (not from a disk folder),
         // with the pointer over the filmstrip: elsewhere it deletes a node or a spot.
         if self.strip_hovered && self.collection.as_ref().is_some_and(|c| !c.is_trash()) && pressed(Key::Delete) {
-            self.trash(&targets, actions);
+            self.trash(&targets, current, actions);
         }
     }
 
@@ -896,25 +941,16 @@ impl Library {
             .id_salt("explorer-folders")
             .max_height(tree_height)
             .auto_shrink([false, true])
-            .show(ui, |ui| self.folder_tree(ui, &t, worker));
-        // A folder of the disk: its photos are only seen until imported.
-        if self.collection.is_none() && self.strip.folder.is_some() {
-            let new = self.not_imported.clone();
-            if new.is_empty() {
+            .show(ui, |ui| self.folder_tree(ui, &t, worker, actions));
+        if let Some(path) = self.deleting() {
+            ui.horizontal(|ui| {
+                ui.spinner();
                 ui.label(
-                    RichText::new("Every photo of this folder is in the catalog").size(FONT[0]).color(t.text_weak),
+                    RichText::new(format!("Deleting {}\u{2026}", editor::library::folder_name(path)))
+                        .size(FONT[0])
+                        .color(t.text_weak),
                 );
-            } else {
-                let label = format!("Import this folder ({})", new.len());
-                let button = Button::new(RichText::new(label).color(t.on_accent)).fill(t.accent);
-                if ui
-                    .add(button)
-                    .on_hover_text("Add its photos to the catalog; the files stay where they are")
-                    .clicked()
-                {
-                    actions.push(LibraryAction::Import(new));
-                }
-            }
+            });
         }
         ui.separator();
         egui::ScrollArea::vertical().id_salt("explorer-filters").auto_shrink([false, false]).show(ui, |ui| {
@@ -924,9 +960,17 @@ impl Library {
         });
     }
 
-    fn folder_tree(&mut self, ui: &mut egui::Ui, t: &Tokens, worker: Option<&Worker>) {
+    fn folder_tree(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Tokens,
+        worker: Option<&Worker>,
+        actions: &mut Vec<LibraryAction>,
+    ) {
         let mut toggle = None;
         let mut select = None;
+        let mut menu = None;
+        let cut = self.disk_cut.clone();
         let current = if self.collection.is_none() { self.strip.folder.clone() } else { None };
         if self.tree.roots.is_empty() {
             ui.weak("No folders found");
@@ -954,6 +998,11 @@ impl Library {
                 if name.double_clicked() {
                     toggle = Some(node.path.clone());
                 }
+                name.context_menu(|ui| {
+                    if let Some(m) = disk::folder_menu(ui, &node.path, cut.as_deref()) {
+                        menu = Some(m);
+                    }
+                });
             });
         }
         if let Some(path) = toggle
@@ -964,6 +1013,9 @@ impl Library {
         }
         if let Some(path) = select {
             self.show_folder(path, worker);
+        }
+        if let Some(m) = menu {
+            self.folder_action(m, actions);
         }
     }
 
@@ -1196,7 +1248,7 @@ impl Library {
                 CardAction::Rename(p) => self.begin_rename(p),
                 CardAction::Trash(p) => {
                     let targets = self.strip.targets(&p);
-                    self.trash(&targets, actions);
+                    self.trash(&targets, current, actions);
                 }
                 CardAction::Restore(p) => {
                     let targets = self.strip.targets(&p);
@@ -1208,7 +1260,7 @@ impl Library {
                 }
                 CardAction::NewAlbum(p) => {
                     let targets = self.strip.targets(&p);
-                    self.begin_new_album(targets);
+                    self.begin_new_album(targets, None);
                 }
                 CardAction::RemoveFromAlbum(p, id) => {
                     let targets = self.strip.targets(&p);
@@ -1340,6 +1392,7 @@ impl Library {
     pub fn dialogs(&mut self, ctx: &egui::Context, actions: &mut Vec<LibraryAction>) {
         self.rename_dialog(ctx, actions);
         self.album_dialogs(ctx, actions);
+        self.disk_dialogs(ctx, actions);
     }
 
     fn rename_dialog(&mut self, ctx: &egui::Context, actions: &mut Vec<LibraryAction>) {
@@ -1396,15 +1449,6 @@ impl Library {
 /// Runs a program of the system (file manager, default app).
 pub(crate) fn launch(l: &platform::Launch) -> std::io::Result<()> {
     std::process::Command::new(l.program).args(&l.args).spawn().map(drop)
-}
-
-/// A selectable row whose text is cut short with "…" rather than widening the panel.
-fn choice(ui: &mut egui::Ui, on: bool, text: String) -> egui::Response {
-    ui.scope(|ui| {
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        ui.add(Button::selectable(on, text))
-    })
-    .inner
 }
 
 /// The colour of a label.

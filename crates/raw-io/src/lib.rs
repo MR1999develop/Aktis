@@ -237,7 +237,7 @@ fn convert(
         sensor,
         make: raw.clean_make.clone(),
         model: raw.clean_model.clone(),
-        orientation: orientation(raw.orientation),
+        orientation: file_orientation(raw.orientation, metadata.and_then(|m| m.exif.orientation)),
         has_camera_white_balance: has_wb,
         capture,
         info: PhotoInfo::default(),
@@ -489,6 +489,16 @@ pub fn orientation_from_exif(code: u16) -> Orientation {
     }
 }
 
+/// How the photo is turned: the decoder's reading of the RAW file, else
+/// the Exif Orientation tag (which the filmstrip's previews use), else upright.
+/// Some decoders leave the orientation unknown on files whose Exif has it.
+fn file_orientation(decoded: rawler::Orientation, exif: Option<u16>) -> Orientation {
+    match (orientation(decoded), exif) {
+        (Orientation::Normal, Some(code)) => orientation_from_exif(code),
+        (o, _) => o,
+    }
+}
+
 fn orientation(o: rawler::Orientation) -> Orientation {
     use rawler::Orientation as R;
     match o {
@@ -584,6 +594,14 @@ mod tests {
     fn a_missing_file_is_an_io_error() {
         let r = read_raw(Path::new("this/file/does/not/exist.dng"));
         assert!(matches!(r, Err(RawIoError::Io(_))), "{r:?}");
+    }
+
+    #[test]
+    fn the_exif_orientation_stands_in_when_the_decoder_has_none() {
+        assert_eq!(file_orientation(rawler::Orientation::Unknown, Some(6)), Orientation::Rotate90);
+        assert_eq!(file_orientation(rawler::Orientation::Normal, Some(8)), Orientation::Rotate270);
+        assert_eq!(file_orientation(rawler::Orientation::Rotate270, Some(1)), Orientation::Rotate270);
+        assert_eq!(file_orientation(rawler::Orientation::Unknown, None), Orientation::Normal);
     }
 
     #[test]

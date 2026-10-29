@@ -31,7 +31,7 @@ use core_color::ProfileLibrary;
 use lens_db::LensDatabase;
 use platform::{APP_DIR, Os};
 
-use core_model::{BaseCurve, Geometry, ImageError, ImageF32, NodeGraph, NodeId, Orientation, Rgba, ToolId};
+use core_model::{BaseCurve, Geometry, ImageError, ImageF32, NodeGraph, NodeId, Orientation, ToolId};
 use tool_api::{RegistryError, ToolError, ToolRegistry};
 
 /// Every tool compiled into this build, registered once.
@@ -289,9 +289,9 @@ pub struct Rgb8Image {
     pub pixels: Vec<u8>,
 }
 
-/// A copy of `image` whose longer side is at most `max_side`, made by
-/// averaging square blocks of pixels (a box low-pass before decimation, so
-/// fine detail does not alias). Returns a plain copy when it already fits.
+/// A copy of `image` whose longer side is `max_side` (when larger), made by
+/// area averaging (a low-pass before decimation, so fine detail does not
+/// alias; [`render_cpu::resize`]). Returns a plain copy when it already fits.
 ///
 /// # Errors
 /// [`ImageError`] only if `max_side` is 0.
@@ -300,34 +300,11 @@ pub fn downscale(image: &ImageF32, max_side: u32) -> Result<ImageF32, ImageError
         return Err(ImageError::Empty);
     }
     let (w, h) = (image.width(), image.height());
-    let factor = w.max(h).div_ceil(max_side).max(1);
-    if factor == 1 {
+    let (ow, oh) = render_cpu::resize::fitted_size(w, h, max_side);
+    if (ow, oh) == (w, h) {
         return Ok(image.clone());
     }
-    let (ow, oh) = (w.div_ceil(factor), h.div_ceil(factor));
-    let src = image.pixels();
-    let w_us = w as usize;
-    let mut out: Vec<Rgba> = Vec::with_capacity(ow as usize * oh as usize);
-    for oy in 0..oh {
-        let y0 = oy * factor;
-        let y1 = (y0 + factor).min(h);
-        for ox in 0..ow {
-            let x0 = ox * factor;
-            let x1 = (x0 + factor).min(w);
-            let mut sum = [0.0_f64; 4];
-            for y in y0..y1 {
-                let row = &src[y as usize * w_us..][x0 as usize..x1 as usize];
-                for p in row {
-                    for (s, v) in sum.iter_mut().zip(p) {
-                        *s += f64::from(*v);
-                    }
-                }
-            }
-            let n = f64::from((y1 - y0) * (x1 - x0));
-            #[allow(clippy::cast_possible_truncation)] // an average of f32 values fits an f32
-            out.push(sum.map(|s| (s / n) as f32));
-        }
-    }
+    let out = render_cpu::resize::shrink(image.pixels(), w, h, ow, oh);
     ImageF32::from_pixels(ow, oh, image.space(), out)
 }
 
@@ -398,36 +375,21 @@ pub fn finish(image: &ImageF32, orientation: Orientation, geometry: &Geometry) -
     geometry::apply(&upright, geometry, true).map_err(EngineError::Image)
 }
 
-/// A copy of `image` whose longer side is at most `max_side` (at least 1),
-/// made by averaging square blocks of pixels like [`downscale`]. A copy
-/// when it already fits or its buffer does not match its size.
+/// A copy of `image` whose longer side is `max_side` (at least 1, when
+/// larger), made by area averaging like [`downscale`]. A copy when it
+/// already fits or its buffer does not match its size.
 #[must_use]
 pub fn downscale_rgb8(image: &Rgb8Image, max_side: u32) -> Rgb8Image {
     let (w, h) = (image.width, image.height);
-    let factor = w.max(h).div_ceil(max_side.max(1)).max(1);
-    if factor == 1 || image.pixels.len() != w as usize * h as usize * 3 {
+    let (ow, oh) = render_cpu::resize::fitted_size(w, h, max_side.max(1));
+    if (ow, oh) == (w, h) || image.pixels.len() != w as usize * h as usize * 3 {
         return image.clone();
     }
-    let (ow, oh) = (w.div_ceil(factor), h.div_ceil(factor));
-    let mut pixels = Vec::with_capacity(ow as usize * oh as usize * 3);
-    for oy in 0..oh {
-        let (y0, y1) = (oy * factor, ((oy + 1) * factor).min(h));
-        for ox in 0..ow {
-            let (x0, x1) = (ox * factor, ((ox + 1) * factor).min(w));
-            let mut sum = [0_u32; 3];
-            for y in y0..y1 {
-                let row = (y as usize * w as usize + x0 as usize) * 3;
-                for px in image.pixels[row..row + (x1 - x0) as usize * 3].chunks_exact(3) {
-                    for (s, v) in sum.iter_mut().zip(px) {
-                        *s += u32::from(*v);
-                    }
-                }
-            }
-            let n = (y1 - y0) * (x1 - x0);
-            // A rounded average of bytes is a byte.
-            pixels.extend(sum.map(|s| u8::try_from((s + n / 2) / n).unwrap_or(u8::MAX)));
-        }
-    }
+    let src: Vec<[f32; 3]> =
+        image.pixels.chunks_exact(3).map(|p| [f32::from(p[0]), f32::from(p[1]), f32::from(p[2])]).collect();
+    let out = render_cpu::resize::shrink(&src, w, h, ow, oh);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a rounded mean of bytes is a byte
+    let pixels = out.iter().flat_map(|p| p.map(|v| v.round().clamp(0.0, 255.0) as u8)).collect();
     Rgb8Image { width: ow, height: oh, pixels }
 }
 
@@ -473,14 +435,15 @@ mod tests {
     }
 
     #[test]
-    fn eight_bit_images_are_reduced_by_averaging_blocks() {
+    fn eight_bit_images_are_reduced_by_averaging_the_area_covered() {
         // 5 × 2: columns of 0, 100, 200, 50, 250 (all channels).
         let row = [0_u8, 100, 200, 50, 250];
         let pixels: Vec<u8> = (0..2).flat_map(|_| row.iter().flat_map(|v| [*v; 3])).collect();
         let img = Rgb8Image { width: 5, height: 2, pixels };
         let small = downscale_rgb8(&img, 3);
         assert_eq!((small.width, small.height), (3, 1));
-        assert_eq!(small.pixels, vec![50, 50, 50, 125, 125, 125, 250, 250, 250]);
+        // 5 → 3: each output covers 5/3 columns (0.6·0 + 0.4·100 = 40, …).
+        assert_eq!(small.pixels, vec![40, 40, 40, 150, 150, 150, 170, 170, 170]);
         assert_eq!(downscale_rgb8(&img, 5), img, "it fits");
         assert_eq!(downscale_rgb8(&img, 0).width, 1);
         let broken = Rgb8Image { width: 5, height: 2, pixels: vec![0; 3] };
@@ -503,13 +466,13 @@ mod tests {
     }
 
     #[test]
-    fn downscaling_averages_blocks_and_keeps_partial_edge_blocks() {
-        // 5×1 → factor 2 → 3 pixels: avg(0,1), avg(2,3), 4.
-        let img = ramp(5, 1);
-        let small = downscale(&img, 3).unwrap();
-        assert_eq!((small.width(), small.height()), (3, 1));
+    fn downscaling_averages_the_area_each_pixel_covers() {
+        // 4×1 → 2 pixels: avg(0,1), avg(2,3).
+        let img = ramp(4, 1);
+        let small = downscale(&img, 2).unwrap();
+        assert_eq!((small.width(), small.height()), (2, 1));
         let r: Vec<f32> = small.pixels().iter().map(|p| p[0]).collect();
-        assert_eq!(r, vec![0.5, 2.5, 4.0]);
+        assert_eq!(r, vec![0.5, 2.5]);
         assert!(small.pixels().iter().all(|p| p[1] == 1.0 && p[2] == 0.5));
     }
 
@@ -518,7 +481,7 @@ mod tests {
         for (w, h, max) in [(1500, 1000, 512), (1000, 1500, 512), (1201, 801, 1200), (101, 7, 10), (7, 1, 1)] {
             let img = ImageF32::new(w, h, WorkingSpace::LinearRec2020).unwrap();
             let small = downscale(&img, max).unwrap();
-            assert!(small.width().max(small.height()) <= max, "{w}×{h} → {max}");
+            assert_eq!(small.width().max(small.height()), max, "{w}×{h} → {max}");
             assert!(small.width() >= 1 && small.height() >= 1);
         }
         assert!(downscale(&ramp(2, 2), 0).is_err());
