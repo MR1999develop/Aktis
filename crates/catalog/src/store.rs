@@ -584,8 +584,8 @@ mod tests {
         assert_eq!(c.collection(&Collection::LastImport).unwrap(), vec![x.clone()], "only the new one");
         assert_eq!(c.collection(&Collection::Folder(p("trip"))).unwrap(), vec![b.clone(), a.clone()]);
         assert_eq!(c.imported_folders().unwrap(), vec![(p("home"), 1), (p("trip"), 2)]);
-        c.set_rating(&[x.clone()], 3).unwrap();
-        c.remove(&[x.clone()]).unwrap();
+        c.set_rating(std::slice::from_ref(&x), 3).unwrap();
+        c.remove(std::slice::from_ref(&x)).unwrap();
         assert!(!c.is_imported(&x).unwrap());
         assert_eq!(c.meta(&x).unwrap().rating, 0, "its data went with it");
         c.rename(&a, &p("trip/c.NEF")).unwrap();
