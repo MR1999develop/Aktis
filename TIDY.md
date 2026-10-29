@@ -181,3 +181,8 @@
   an "Apply Defaults" to existing photos is not offered. Saving the same
   tool twice keeps one node per tool; a photo whose defaults hold two
   nodes of one tool cannot be expressed.
+- Gradient masks: their points are kept inside the photo (`NormPoint`
+  clamps), so a linear gradient cannot start beyond an edge; a radial
+  gradient cannot be rotated; only the last gradient of a mask shows
+  handles, and a gradient cannot be inverted on its own (use Alt to
+  take it away, or the mask's Invert).

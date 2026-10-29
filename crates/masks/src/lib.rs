@@ -11,6 +11,7 @@
 mod brush;
 mod evaluate;
 mod filter;
+mod gradient;
 mod key;
 mod refine;
 mod resample;
@@ -19,6 +20,7 @@ mod store;
 pub use brush::rasterize;
 pub use evaluate::{EvaluatedMask, evaluate, guide_of};
 pub use filter::{box_mean, soft_blur};
+pub use gradient::{linear, radial};
 pub use key::{fingerprint, raster_key};
 pub use refine::{Guide, refine};
 pub use resample::{fit_within, resize_plane};

@@ -383,6 +383,46 @@ pub struct BrushMask {
     pub edge_aware: bool,
 }
 
+/// A linear gradient, as Capture One's Linear Gradient Mask: the mask is
+/// full on the side of `start`, nothing beyond `end`, and fades smoothly
+/// along the line between them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinearGradient {
+    /// Where the fade starts (full mask up to here).
+    pub start: NormPoint,
+    /// Where it ends (no mask from here on).
+    pub end: NormPoint,
+}
+
+/// A radial gradient, as Capture One's Radial Gradient Mask: an ellipse,
+/// full inside and fading to nothing at its edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RadialGradient {
+    /// Centre of the ellipse.
+    pub centre: NormPoint,
+    /// Horizontal and vertical radius, as fractions of the image's long side.
+    pub radius: [f32; 2],
+    /// Share of the radius over which the mask fades out (0 = hard edge, 1 =
+    /// fading from the centre).
+    pub feather: f32,
+}
+
+/// Smallest gradient radius, as a fraction of the image's long side.
+pub const MIN_RADIUS: f32 = 0.005;
+/// Largest gradient radius, as a fraction of the image's long side.
+pub const MAX_RADIUS: f32 = 2.0;
+
+impl RadialGradient {
+    /// Radii and feather inside their ranges (non-finite values become defaults).
+    #[must_use]
+    pub fn sanitized(mut self) -> Self {
+        let fix = |v: f32, lo: f32, hi: f32, default: f32| if v.is_finite() { v.clamp(lo, hi) } else { default };
+        self.radius = self.radius.map(|r| fix(r, MIN_RADIUS, MAX_RADIUS, 0.2));
+        self.feather = fix(self.feather, 0.0, 1.0, 0.5);
+        self
+    }
+}
+
 /// Where a component's values come from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MaskSource {
@@ -390,6 +430,10 @@ pub enum MaskSource {
     Ai(AiMask),
     /// Painted with a brush.
     Brush(BrushMask),
+    /// A linear gradient.
+    Linear(LinearGradient),
+    /// A radial gradient.
+    Radial(RadialGradient),
 }
 
 /// How a component combines with the components before it. Masks are soft,
@@ -424,6 +468,18 @@ impl MaskComponent {
     #[must_use]
     pub fn ai(label: impl Into<String>, op: MaskOp, target: AiTarget, model: ModelId) -> Self {
         Self { label: label.into(), op, enabled: true, source: MaskSource::Ai(AiMask { target, model, raster: None }) }
+    }
+
+    /// An enabled linear gradient component.
+    #[must_use]
+    pub fn linear(label: impl Into<String>, op: MaskOp, gradient: LinearGradient) -> Self {
+        Self { label: label.into(), op, enabled: true, source: MaskSource::Linear(gradient) }
+    }
+
+    /// An enabled radial gradient component.
+    #[must_use]
+    pub fn radial(label: impl Into<String>, op: MaskOp, gradient: RadialGradient) -> Self {
+        Self { label: label.into(), op, enabled: true, source: MaskSource::Radial(gradient.sanitized()) }
     }
 
     /// An enabled brush component. With [`MaskOp::Subtract`] it erases.
@@ -466,8 +522,12 @@ impl MaskDef {
         self.feather = if self.feather.is_finite() { self.feather.clamp(0.0, MAX_FEATHER) } else { 0.0 };
         self.opacity = if self.opacity.is_finite() { self.opacity.clamp(0.0, 1.0) } else { 1.0 };
         for c in &mut self.components {
-            if let MaskSource::Brush(b) = &mut c.source {
-                b.strokes = std::mem::take(&mut b.strokes).into_iter().map(BrushStroke::sanitized).collect();
+            match &mut c.source {
+                MaskSource::Brush(b) => {
+                    b.strokes = std::mem::take(&mut b.strokes).into_iter().map(BrushStroke::sanitized).collect();
+                }
+                MaskSource::Radial(r) => *r = r.sanitized(),
+                MaskSource::Ai(_) | MaskSource::Linear(_) => {}
             }
         }
         self
@@ -477,7 +537,7 @@ impl MaskDef {
     pub fn pending_ai(&self) -> impl Iterator<Item = (usize, &AiMask)> {
         self.components.iter().enumerate().filter_map(|(i, c)| match &c.source {
             MaskSource::Ai(ai) if ai.raster.is_none() => Some((i, ai)),
-            MaskSource::Ai(_) | MaskSource::Brush(_) => None,
+            MaskSource::Ai(_) | MaskSource::Brush(_) | MaskSource::Linear(_) | MaskSource::Radial(_) => None,
         })
     }
 }

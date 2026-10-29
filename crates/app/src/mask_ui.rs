@@ -7,6 +7,11 @@
 //!   Alt + right-drag changes the size (across) and hardness (up/down),
 //!   Shift + right-drag the opacity; a right-click opens the brush settings
 //!   (size, hardness, opacity, auto mask).
+//!   L draws a **linear gradient** (drag from where the mask is full to
+//!   where it ends) and T a **radial gradient** (drag from the centre
+//!   outwards), as in Capture One; with Alt they take away from the mask.
+//!   The last gradient shows handles to move it; the radial one has its
+//!   own feather in the options bar.
 //! - **AI Select**: click on an object to select it; Alt-click marks a
 //!   part to leave out; Shift-click starts another object. "Select
 //!   subject" finds the main subject. The models run in the background.
@@ -22,7 +27,7 @@
 //! The editing logic is in [`editor::masking`]; this module draws and turns
 //! pointer input into [`MaskEdit`]s.
 
-use core_model::{MaskDef, NodeId, NormPoint, Style};
+use core_model::{LinearGradient, MaskDef, MaskSource, NodeId, NormPoint, RadialGradient, Style};
 use editor::masking::Brush;
 use eframe::egui::{self, Align2, CornerRadius, Id, Order, Pos2, Rect, Response, RichText, Stroke, TextureHandle};
 
@@ -89,6 +94,47 @@ pub enum MaskEdit {
     ChooseStyleBrush(usize),
 }
 
+/// What the Masks tool draws.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Shape {
+    /// Brush strokes (or the eraser).
+    #[default]
+    Brush,
+    /// A linear gradient (L).
+    Linear,
+    /// A radial gradient (T).
+    Radial,
+}
+
+/// Which part of a gradient a drag moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Handle {
+    /// Linear: where it starts. Radial: the centre.
+    Start,
+    /// Linear: where it ends.
+    End,
+    /// Radial: the horizontal radius.
+    RadiusX,
+    /// Radial: the vertical radius.
+    RadiusY,
+}
+
+/// A gradient being drawn or moved, shown live and written when the drag ends.
+#[derive(Debug, Clone, PartialEq)]
+struct GradientDrag {
+    /// The component moved; `None` for a new gradient.
+    index: Option<usize>,
+    /// The handle dragged.
+    handle: Handle,
+    /// The gradient as it is now.
+    source: MaskSource,
+    /// It takes away from the mask (Alt when it was started).
+    subtract: bool,
+}
+
+/// Pointer distance, in points, within which a handle is grabbed.
+const HANDLE_REACH: f32 = 10.0;
+
 /// A style brush waiting for its first stroke.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArmedBrush {
@@ -120,6 +166,10 @@ pub struct MaskUi {
     adjusting: Option<(Brush, Pos2)>,
     /// The end of the last stroke, for Shift-click straight lines.
     last_point: Option<(NormPoint, Pos2)>,
+    /// What the Masks tool draws.
+    shape: Shape,
+    /// A gradient being drawn or moved.
+    gradient: Option<GradientDrag>,
 }
 
 impl std::fmt::Debug for MaskUi {
@@ -146,7 +196,8 @@ impl MaskUi {
     }
 
     /// Keys of the mask tools, as in Capture One: `[`/`]` brush size,
-    /// Shift+`[`/`]` hardness, B brush, E eraser, M mask overlay. Not while typing.
+    /// Shift+`[`/`]` hardness, B brush, E eraser, L linear gradient, T radial
+    /// gradient, M mask overlay. Not while typing.
     pub fn keys(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
             return;
@@ -167,6 +218,13 @@ impl MaskUi {
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::E) {
                 self.erase = true;
+                self.shape = Shape::Brush;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::L) {
+                self.shape = Shape::Linear;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::T) {
+                self.shape = Shape::Radial;
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::M) {
                 self.show = !self.show;
@@ -180,6 +238,7 @@ impl MaskUi {
     /// The Masks tool was chosen again (B): back to the brush from the eraser.
     pub fn choose_brush(&mut self) {
         self.erase = false;
+        self.shape = Shape::Brush;
     }
 
     /// A right-drag over the photo: with Alt, across changes the size and
@@ -272,8 +331,10 @@ impl MaskUi {
         response: &Response,
         tool: ViewerTool,
         node: Option<NodeId>,
+        def: Option<&MaskDef>,
         long_side: f32,
         to_developed: &dyn Fn(Pos2) -> Option<NormPoint>,
+        to_screen: &dyn Fn(NormPoint) -> Option<Pos2>,
         edits: &mut Vec<MaskEdit>,
     ) -> bool {
         let t = Tokens::of(ui.ctx().theme());
@@ -284,6 +345,12 @@ impl MaskUi {
         let painter = ui.painter_at(response.rect);
         let alt = ui.input(|i| i.modifiers.alt) && !painting_style;
         match tool {
+            ViewerTool::Masks if !painting_style && self.shape != Shape::Brush => {
+                let Some(node) = node else { return false };
+                let map = Mapping { long_side, to_developed, to_screen };
+                self.gradient_input(ui, response, node, def, &map, alt, edits);
+                true
+            }
             ViewerTool::Masks => {
                 self.right_button(ui, response);
                 self.settings_popup(ui.ctx());
@@ -365,6 +432,88 @@ impl MaskUi {
                 false
             }
             _ => false,
+        }
+    }
+
+    /// Linear and radial gradients: a drag on a handle of the last gradient
+    /// moves it, a drag elsewhere draws a new one; the mask is written when
+    /// the drag ends (one undo step).
+    #[allow(clippy::too_many_arguments)]
+    fn gradient_input(
+        &mut self,
+        ui: &egui::Ui,
+        response: &Response,
+        node: NodeId,
+        def: Option<&MaskDef>,
+        map: &Mapping<'_>,
+        alt: bool,
+        edits: &mut Vec<MaskEdit>,
+    ) {
+        let t = Tokens::of(ui.ctx().theme());
+        let last = def.and_then(editor::masking::last_gradient);
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        if response.drag_started_by(egui::PointerButton::Primary)
+            && let Some(p) = response.interact_pointer_pos()
+            && let Some(d) = (map.to_developed)(p)
+        {
+            // A handle of the last gradient of the kind being drawn, else a new gradient.
+            let grabbed = last.as_ref().and_then(|(i, src)| {
+                let kind_matches = matches!(
+                    (src, self.shape),
+                    (MaskSource::Linear(_), Shape::Linear) | (MaskSource::Radial(_), Shape::Radial)
+                );
+                if !kind_matches {
+                    return None;
+                }
+                handles(src, map)
+                    .into_iter()
+                    .filter(|(_, at)| at.distance(p) <= HANDLE_REACH)
+                    .min_by(|a, b| a.1.distance(p).total_cmp(&b.1.distance(p)))
+                    .map(|(h, _)| GradientDrag { index: Some(*i), handle: h, source: src.clone(), subtract: false })
+            });
+            self.gradient = grabbed.or_else(|| {
+                let source = match self.shape {
+                    Shape::Radial => MaskSource::Radial(RadialGradient {
+                        centre: d,
+                        radius: [core_model::MIN_RADIUS; 2],
+                        feather: editor::masking::RADIAL_FEATHER,
+                    }),
+                    _ => MaskSource::Linear(LinearGradient { start: d, end: d }),
+                };
+                let handle = if self.shape == Shape::Radial { Handle::RadiusX } else { Handle::End };
+                Some(GradientDrag { index: None, handle, source, subtract: alt })
+            });
+        }
+        if let Some(drag) = &mut self.gradient
+            && response.dragged_by(egui::PointerButton::Primary)
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            move_handle(drag, p, map, ui.input(|i| i.modifiers.shift));
+        }
+        // What to draw: the gradient being dragged, else the last one.
+        let shown = self.gradient.as_ref().map(|g| g.source.clone()).or_else(|| last.map(|(_, s)| s));
+        if let Some(src) = &shown {
+            draw_gradient(&ui.painter_at(response.rect), src, map, response.rect, &t);
+        }
+        if response.drag_stopped_by(egui::PointerButton::Primary)
+            && let Some(drag) = self.gradient.take()
+        {
+            let next = match (drag.index, &drag.source, def) {
+                (Some(i), _, Some(d)) => Some(editor::masking::with_source(d, i, drag.source.clone())),
+                (None, MaskSource::Linear(g), _) if g.start != g.end => {
+                    Some(editor::masking::add_linear(def, g.start, g.end, drag.subtract))
+                }
+                (None, MaskSource::Radial(g), _) if g.radius[0] > core_model::MIN_RADIUS => {
+                    let r = editor::masking::add_radial(def, g.centre, g.radius, drag.subtract);
+                    Some(r)
+                }
+                _ => None,
+            };
+            if let Some(def) = next {
+                edits.push(MaskEdit::Def { node, def });
+            }
         }
     }
 
@@ -453,8 +602,31 @@ impl MaskUi {
                             ui.separator();
                             match tool {
                                 ViewerTool::Masks => {
-                                    ui.selectable_value(&mut self.erase, false, "Brush").on_hover_text("B");
-                                    ui.selectable_value(&mut self.erase, true, "Eraser").on_hover_text("E, or hold Alt");
+                                    let mut choice = match (self.shape, self.erase) {
+                                        (Shape::Brush, false) => 0,
+                                        (Shape::Brush, true) => 1,
+                                        (Shape::Linear, _) => 2,
+                                        (Shape::Radial, _) => 3,
+                                    };
+                                    let before = choice;
+                                    ui.selectable_value(&mut choice, 0, "Brush").on_hover_text("B");
+                                    ui.selectable_value(&mut choice, 1, "Eraser").on_hover_text("E, or hold Alt");
+                                    ui.selectable_value(&mut choice, 2, "Linear")
+                                        .on_hover_text("L: drag from where the mask is full to where it ends (Alt: take away)");
+                                    ui.selectable_value(&mut choice, 3, "Radial")
+                                        .on_hover_text("T: drag from the centre outwards; Shift for a circle (Alt: take away)");
+                                    if choice != before {
+                                        (self.shape, self.erase) = match choice {
+                                            1 => (Shape::Brush, true),
+                                            2 => (Shape::Linear, false),
+                                            3 => (Shape::Radial, false),
+                                            _ => (Shape::Brush, false),
+                                        };
+                                    }
+                                    if self.shape != Shape::Brush {
+                                        ui.separator();
+                                        self.gradient_options(ui, node, def, edits);
+                                    } else {
                                     ui.label("Size");
                                     let mut size = self.brush.radius * 100.0;
                                     if ui
@@ -470,6 +642,7 @@ impl MaskUi {
                                     ui.add(egui::Slider::new(&mut self.brush.opacity, MIN_OPACITY..=1.0).fixed_decimals(2));
                                     ui.checkbox(&mut self.brush.edge_aware, "Auto mask")
                                         .on_hover_text("The stroke stops at edges in the photo");
+                                    }
                                 }
                                 _ => {
                                     ui.label(RichText::new("Click an object \u{b7} Alt-click: leave out \u{b7} Shift-click: another object").color(t.text_weak));
@@ -509,6 +682,33 @@ impl MaskUi {
 }
 
 impl MaskUi {
+    /// The options of the gradients: the radial one's feather (written when
+    /// let go), and a hint.
+    fn gradient_options(&mut self, ui: &mut egui::Ui, node: NodeId, def: Option<&MaskDef>, edits: &mut Vec<MaskEdit>) {
+        let last = def.and_then(editor::masking::last_gradient);
+        match (self.shape, last) {
+            (Shape::Radial, Some((i, MaskSource::Radial(mut g)))) => {
+                ui.label("Feather");
+                let mut v = g.feather * 100.0;
+                let r = ui
+                    .add(egui::Slider::new(&mut v, 0.0..=100.0).suffix(" %").fixed_decimals(0))
+                    .on_hover_text("How much of the radius fades out");
+                if (r.drag_stopped() || (r.changed() && !r.dragged()))
+                    && let Some(d) = def
+                {
+                    g.feather = v / 100.0;
+                    edits.push(MaskEdit::Def { node, def: editor::masking::with_source(d, i, MaskSource::Radial(g)) });
+                }
+            }
+            _ => {
+                ui.label(
+                    RichText::new("Drag on the photo; drag the handles to move the last gradient")
+                        .color(Tokens::of(ui.ctx().theme()).text_weak),
+                );
+            }
+        }
+    }
+
     /// The Style brush menu of the options bar: the brushes, and Cancel
     /// while one is armed.
     fn style_brush_picker(&mut self, ui: &mut egui::Ui, t: &Tokens, brushes: &[String], edits: &mut Vec<MaskEdit>) {
@@ -545,4 +745,123 @@ pub fn long_side_on_screen(screen: Rect, crop: [f32; 2], scale: f32) -> f32 {
     let w = screen.width() / crop[0].max(1e-3);
     let h = screen.height() / crop[1].max(1e-3);
     w.max(h) * scale
+}
+
+/// Between the screen and the developed image, for the gradients.
+struct Mapping<'a> {
+    /// The developed image's long side on screen, in points.
+    long_side: f32,
+    to_developed: &'a dyn Fn(Pos2) -> Option<NormPoint>,
+    to_screen: &'a dyn Fn(NormPoint) -> Option<Pos2>,
+}
+
+/// The handles of a gradient on screen.
+fn handles(src: &MaskSource, map: &Mapping<'_>) -> Vec<(Handle, Pos2)> {
+    match src {
+        MaskSource::Linear(g) => [(Handle::Start, g.start), (Handle::End, g.end)]
+            .into_iter()
+            .filter_map(|(h, p)| (map.to_screen)(p).map(|s| (h, s)))
+            .collect(),
+        MaskSource::Radial(g) => {
+            let Some(c) = (map.to_screen)(g.centre) else { return Vec::new() };
+            let (rx, ry) = (g.radius[0] * map.long_side, g.radius[1] * map.long_side);
+            vec![
+                (Handle::Start, c),
+                (Handle::RadiusX, c + egui::vec2(rx, 0.0)),
+                (Handle::RadiusY, c + egui::vec2(0.0, -ry)),
+            ]
+        }
+        MaskSource::Ai(_) | MaskSource::Brush(_) => Vec::new(),
+    }
+}
+
+/// Moves `drag`'s handle to screen point `p`; `circle` keeps a radial
+/// gradient round.
+fn move_handle(drag: &mut GradientDrag, p: Pos2, map: &Mapping<'_>, circle: bool) {
+    match (&mut drag.source, drag.handle) {
+        (MaskSource::Linear(g), Handle::Start) => {
+            if let Some(d) = (map.to_developed)(p) {
+                g.start = d;
+            }
+        }
+        (MaskSource::Linear(g), _) => {
+            if let Some(d) = (map.to_developed)(p) {
+                g.end = d;
+            }
+        }
+        (MaskSource::Radial(g), Handle::Start) => {
+            if let Some(d) = (map.to_developed)(p) {
+                g.centre = d;
+            }
+        }
+        (MaskSource::Radial(g), handle) => {
+            let Some(c) = (map.to_screen)(g.centre) else { return };
+            let long = map.long_side.max(1.0);
+            let clamp = |r: f32| r.clamp(core_model::MIN_RADIUS, core_model::MAX_RADIUS);
+            match handle {
+                Handle::RadiusY => g.radius[1] = clamp((c.y - p.y).abs() / long),
+                _ if drag.index.is_none() || circle => {
+                    // A new radial gradient is a circle through the pointer.
+                    let r = clamp(c.distance(p) / long);
+                    g.radius = [r, r];
+                }
+                _ => g.radius[0] = clamp((p.x - c.x).abs() / long),
+            }
+        }
+        (MaskSource::Ai(_) | MaskSource::Brush(_), _) => {}
+    }
+}
+
+/// Draws a gradient's guides and handles: for a linear one the lines where
+/// it is full and where it ends, for a radial one its edge and where the
+/// fade starts.
+fn draw_gradient(painter: &egui::Painter, src: &MaskSource, map: &Mapping<'_>, area: Rect, t: &Tokens) {
+    let line = Stroke::new(1.5, t.text_strong);
+    let shadow = Stroke::new(3.0, egui::Color32::from_black_alpha(140));
+    let dot = |c: Pos2| {
+        painter.circle_filled(c, 5.0, egui::Color32::from_black_alpha(160));
+        painter.circle_stroke(c, 5.0, line);
+    };
+    match src {
+        MaskSource::Linear(g) => {
+            let (Some(a), Some(b)) = ((map.to_screen)(g.start), (map.to_screen)(g.end)) else { return };
+            let dir = b - a;
+            let len = dir.length();
+            if len > 0.5 {
+                // Lines across the photo, square to the gradient, through both ends.
+                let n = egui::vec2(-dir.y, dir.x) / len * (area.width() + area.height());
+                for c in [a, b] {
+                    painter.line_segment([c - n, c + n], shadow);
+                    painter.line_segment([c - n, c + n], line);
+                }
+                painter.line_segment([a, b], Stroke::new(1.0, t.text_strong.gamma_multiply(0.6)));
+            }
+            dot(a);
+            dot(b);
+        }
+        MaskSource::Radial(g) => {
+            let Some(c) = (map.to_screen)(g.centre) else { return };
+            let (rx, ry) = (g.radius[0] * map.long_side, g.radius[1] * map.long_side);
+            let inner = 1.0 - g.feather.clamp(0.0, 1.0);
+            let ellipse = |k: f32, stroke: Stroke| {
+                let points: Vec<Pos2> = (0..=72)
+                    .map(|i| {
+                        #[allow(clippy::cast_precision_loss)] // 73 points
+                        let a = i as f32 / 72.0 * std::f32::consts::TAU;
+                        c + egui::vec2(a.cos() * rx * k, a.sin() * ry * k)
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(points, stroke));
+            };
+            ellipse(1.0, shadow);
+            ellipse(1.0, line);
+            if inner > 0.01 {
+                ellipse(inner, Stroke::new(1.0, t.text_strong.gamma_multiply(0.6)));
+            }
+            for (_, at) in handles(src, map) {
+                dot(at);
+            }
+        }
+        MaskSource::Ai(_) | MaskSource::Brush(_) => {}
+    }
 }

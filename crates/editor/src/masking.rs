@@ -3,8 +3,8 @@
 //! overlay on the photo. The drawing and the pointer are in the app.
 
 use core_model::{
-    AiTarget, BrushMask, BrushStroke, Geometry, ImageF32, MaskComponent, MaskDef, MaskOp, MaskSource, NormPoint,
-    Orientation, PromptPoint,
+    AiTarget, BrushMask, BrushStroke, Geometry, ImageF32, LinearGradient, MaskComponent, MaskDef, MaskOp, MaskSource,
+    NormPoint, Orientation, PromptPoint, RadialGradient,
 };
 
 /// The brush of the Masks tool.
@@ -49,6 +49,52 @@ pub fn add_stroke(def: Option<&MaskDef>, points: Vec<NormPoint>, brush: Brush, e
                 BrushMask { strokes: vec![stroke], edge_aware: brush.edge_aware },
             ));
         }
+    }
+    def.sanitized()
+}
+
+/// Share of a new radial gradient's radius over which it fades.
+pub const RADIAL_FEATHER: f32 = 0.5;
+
+/// `def` (or a new mask) with a linear gradient added: full at `start`,
+/// nothing at `end`; `subtract` takes it away from the mask instead.
+#[must_use]
+pub fn add_linear(def: Option<&MaskDef>, start: NormPoint, end: NormPoint, subtract: bool) -> MaskDef {
+    let mut def = def.cloned().unwrap_or_default();
+    let op = if subtract { MaskOp::Subtract } else { MaskOp::Add };
+    def.components.push(MaskComponent::linear("Linear gradient", op, LinearGradient { start, end }));
+    def.sanitized()
+}
+
+/// `def` (or a new mask) with a radial gradient added at `centre` with
+/// `radius` (fractions of the long side); `subtract` takes it away.
+#[must_use]
+pub fn add_radial(def: Option<&MaskDef>, centre: NormPoint, radius: [f32; 2], subtract: bool) -> MaskDef {
+    let mut def = def.cloned().unwrap_or_default();
+    let op = if subtract { MaskOp::Subtract } else { MaskOp::Add };
+    let g = RadialGradient { centre, radius, feather: RADIAL_FEATHER };
+    def.components.push(MaskComponent::radial("Radial gradient", op, g));
+    def.sanitized()
+}
+
+/// The last enabled gradient of `def` (the one the handles move), with its index.
+#[must_use]
+pub fn last_gradient(def: &MaskDef) -> Option<(usize, MaskSource)> {
+    def.components
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, c)| c.enabled && matches!(c.source, MaskSource::Linear(_) | MaskSource::Radial(_)))
+        .map(|(i, c)| (i, c.source.clone()))
+}
+
+/// `def` with component `index` taking its values from `source` (a moved
+/// gradient); unchanged when there is no such component.
+#[must_use]
+pub fn with_source(def: &MaskDef, index: usize, source: MaskSource) -> MaskDef {
+    let mut def = def.clone();
+    if let Some(c) = def.components.get_mut(index) {
+        c.source = source;
     }
     def.sanitized()
 }
@@ -160,6 +206,22 @@ mod tests {
 
     fn p(x: f32, y: f32) -> NormPoint {
         NormPoint::new(x, y).unwrap()
+    }
+
+    #[test]
+    fn gradients_are_added_found_and_moved() {
+        let def = add_linear(None, p(0.5, 0.0), p(0.5, 0.5), false);
+        let def = add_stroke(Some(&def), vec![p(0.2, 0.2)], Brush::default(), false);
+        let def = add_radial(Some(&def), p(0.3, 0.3), [0.1, 0.1], true);
+        assert_eq!(def.components.len(), 3);
+        assert_eq!(def.components[2].op, MaskOp::Subtract);
+        let (i, src) = last_gradient(&def).unwrap();
+        assert_eq!(i, 2);
+        let MaskSource::Radial(mut g) = src else { panic!("radial") };
+        g.radius = [0.3, 0.2];
+        let moved = with_source(&def, i, MaskSource::Radial(g));
+        assert!(matches!(&moved.components[2].source, MaskSource::Radial(r) if r.radius == [0.3, 0.2]));
+        assert_eq!(with_source(&def, 9, MaskSource::Radial(g)), def, "no such component");
     }
 
     #[test]

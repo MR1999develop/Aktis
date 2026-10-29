@@ -70,6 +70,8 @@ pub fn evaluate(def: &MaskDef, rasters: &dyn RasterSource, guide: &ImageF32) -> 
                     painted
                 }
             }
+            MaskSource::Linear(g) => crate::gradient::linear(g, w, h),
+            MaskSource::Radial(g) => crate::gradient::radial(g, w, h),
         };
         acc = Some(match acc {
             None => values,

@@ -8,9 +8,9 @@
 use commands::{Edit, SavedHistory, SavedStep};
 use core_model::{
     AiMask, AiTarget, BaseCurve, BodyPart, BrushMask, BrushStroke, CustomLens, DevelopSettings, Geometry, LensAmounts,
-    LensSettings, Link, ManualLens, MaskComponent, MaskDef, MaskOp, MaskSource, ModelId, Node, NodeGraph, NodeId,
-    NodeKind, NormPoint, NormRect, ParamId, ParamValue, Params, ProfileChoice, PromptPoint, RasterKey, Recipe, Style,
-    StyleNode, ToolId, WhiteBalance,
+    LensSettings, LinearGradient, Link, ManualLens, MaskComponent, MaskDef, MaskOp, MaskSource, ModelId, Node,
+    NodeGraph, NodeId, NodeKind, NormPoint, NormRect, ParamId, ParamValue, Params, ProfileChoice, PromptPoint,
+    RadialGradient, RasterKey, Recipe, Style, StyleNode, ToolId, WhiteBalance,
 };
 
 use crate::Layout;
@@ -411,6 +411,18 @@ fn component(c: &MaskComponent) -> Value {
                 ("edge_aware", Value::Bool(b.edge_aware)),
             ]),
         ),
+        MaskSource::Linear(g) => tagged(
+            "linear",
+            Value::object([("start", f32s(&[g.start.x(), g.start.y()])), ("end", f32s(&[g.end.x(), g.end.y()]))]),
+        ),
+        MaskSource::Radial(g) => tagged(
+            "radial",
+            Value::object([
+                ("centre", f32s(&[g.centre.x(), g.centre.y()])),
+                ("radius", f32s(&g.radius)),
+                ("feather", Value::f32(g.feather)),
+            ]),
+        ),
     };
     Value::object([
         ("label", Value::text(&c.label)),
@@ -444,6 +456,21 @@ fn read_component(v: &Value) -> Result<MaskComponent, String> {
                 required(b, "strokes")?.as_array("strokes")?.iter().map(read_stroke).collect::<Result<_, _>>()?;
             MaskSource::Brush(BrushMask { strokes, edge_aware: required(b, "edge_aware")?.as_bool("edge_aware")? })
         }
+        ("linear", d) => {
+            let g = data(d, "linear gradient")?.as_object("linear gradient")?;
+            MaskSource::Linear(LinearGradient {
+                start: read_norm_point(required(g, "start")?, "start")?,
+                end: read_norm_point(required(g, "end")?, "end")?,
+            })
+        }
+        ("radial", d) => {
+            let g = data(d, "radial gradient")?.as_object("radial gradient")?;
+            MaskSource::Radial(RadialGradient {
+                centre: read_norm_point(required(g, "centre")?, "centre")?,
+                radius: read_f32s::<2>(required(g, "radius")?, "radius")?,
+                feather: required(g, "feather")?.as_f32("feather")?,
+            })
+        }
         (other, _) => return Err(format!("unknown mask source '{other}'")),
     };
     Ok(MaskComponent {
@@ -452,6 +479,12 @@ fn read_component(v: &Value) -> Result<MaskComponent, String> {
         enabled: required(f, "enabled")?.as_bool("enabled")?,
         source,
     })
+}
+
+/// A point stored as `[x, y]` fractions.
+fn read_norm_point(v: &Value, what: &str) -> Result<NormPoint, String> {
+    let [x, y] = read_f32s::<2>(v, what)?;
+    NormPoint::new(x, y).ok_or_else(|| format!("{what}: not a number"))
 }
 
 fn mask_def(d: &MaskDef) -> Value {

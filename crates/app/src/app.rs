@@ -1904,8 +1904,22 @@ impl EditorApp {
                         let scale = if geometry.warps() { geometry.warp(frame_aspect).scale() } else { 1.0 };
                         let long_side = crate::mask_ui::long_side_on_screen(screen, crop, scale);
                         let to_developed = |p: egui::Pos2| at(p).and_then(|u| doc.developed_point(u));
-                        tool_drag =
-                            self.mask_ui.overlay(ui, &response, tool, node, long_side, &to_developed, &mut mask_edits);
+                        let to_screen = |d: core_model::NormPoint| {
+                            let shown = geometry.to_shown(doc.upright_point(d), frame_aspect, cropped)?;
+                            Some(egui::pos2(r.x + shown[0] * r.w, r.y + shown[1] * r.h))
+                        };
+                        let def = node.and_then(|n| doc.mask_of(n)).map(|(_, d)| d.clone());
+                        tool_drag = self.mask_ui.overlay(
+                            ui,
+                            &response,
+                            tool,
+                            node,
+                            def.as_ref(),
+                            long_side,
+                            &to_developed,
+                            &to_screen,
+                            &mut mask_edits,
+                        );
                     }
                     // Retouch (T4): the Heal and Clone spots.
                     Some(tool @ (ViewerTool::Heal | ViewerTool::Clone)) => {

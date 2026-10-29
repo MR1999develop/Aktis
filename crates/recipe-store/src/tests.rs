@@ -65,8 +65,15 @@ fn every_mask() -> MaskDef {
         MaskComponent::brush("Brush", MaskOp::Subtract, BrushMask { strokes: vec![stroke], edge_aware: true });
     brush.enabled = false;
     let empty = MaskComponent::brush("Empty", MaskOp::Add, BrushMask::default());
+    let linear =
+        MaskComponent::linear("Sky", MaskOp::Add, core_model::LinearGradient { start: p(0.5, 0.1), end: p(0.5, 0.45) });
+    let radial = MaskComponent::radial(
+        "Face",
+        MaskOp::Subtract,
+        core_model::RadialGradient { centre: p(0.4, 0.6), radius: [0.15, 0.25], feather: 0.75 },
+    );
     MaskDef {
-        components: vec![subject, object, clicks_only, part, brush, empty],
+        components: vec![subject, object, clicks_only, part, brush, empty, linear, radial],
         refine_edges: false,
         feather: 0.012_5,
         opacity: 0.7,

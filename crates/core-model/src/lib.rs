@@ -26,8 +26,9 @@ pub use graph::{GraphError, Link, Node, NodeGraph, NodeKind, NodeMut, PortKind};
 pub use ids::{IdError, ModelId, NodeId, ParamId, ToolId};
 pub use image::{ImageError, ImageF32, MAX_PIXELS, Rgba, WorkingSpace};
 pub use mask::{
-    AiMask, AiTarget, BodyPart, BrushMask, BrushStroke, MAX_BRUSH_RADIUS, MAX_FEATHER, MaskComponent, MaskDef,
-    MaskImage, MaskOp, MaskSource, NormPoint, NormRect, PromptPoint, RasterKey,
+    AiMask, AiTarget, BodyPart, BrushMask, BrushStroke, LinearGradient, MAX_BRUSH_RADIUS, MAX_FEATHER, MAX_RADIUS,
+    MIN_RADIUS, MaskComponent, MaskDef, MaskImage, MaskOp, MaskSource, NormPoint, NormRect, PromptPoint,
+    RadialGradient, RasterKey,
 };
 pub use math::Matrix3;
 pub use orientation::Orientation;
