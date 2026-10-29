@@ -48,6 +48,8 @@ pub enum Unit {
     Degrees,
     /// Kelvin.
     Kelvin,
+    /// Pixels of the full-size photo.
+    Pixels,
 }
 
 /// The type, range and default of one parameter.

@@ -767,7 +767,7 @@ pub fn param_widget(
     ui.add_space(SPACE[1]);
 }
 
-/// Text after a value: " EV", " %", "°", " K".
+/// Text after a value: " EV", " %", "°", " K", " px".
 fn unit_suffix(unit: Unit) -> &'static str {
     match unit {
         Unit::None => "",
@@ -775,6 +775,7 @@ fn unit_suffix(unit: Unit) -> &'static str {
         Unit::Percent => " %",
         Unit::Degrees => "\u{b0}",
         Unit::Kelvin => " K",
+        Unit::Pixels => " px",
     }
 }
 

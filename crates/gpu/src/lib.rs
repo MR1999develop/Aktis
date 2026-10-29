@@ -467,7 +467,9 @@ impl GpuRenderer {
             return Ok(input.clone());
         }
         let pixels = self.run(input.pixels(), [input.width(), input.height()], steps, buffers, slot, masks)?;
-        ImageF32::from_pixels(input.width(), input.height(), input.space(), pixels).map_err(GpuError::Image)
+        ImageF32::from_pixels(input.width(), input.height(), input.space(), pixels)
+            .map(|i| i.with_pixel_size(input.pixel_size()))
+            .map_err(GpuError::Image)
     }
 
     /// Runs the planned steps over `src`, chunk by chunk, and reads back `result_slot`.

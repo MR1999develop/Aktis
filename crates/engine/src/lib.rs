@@ -305,7 +305,9 @@ pub fn downscale(image: &ImageF32, max_side: u32) -> Result<ImageF32, ImageError
         return Ok(image.clone());
     }
     let out = render_cpu::resize::shrink(image.pixels(), w, h, ow, oh);
-    ImageF32::from_pixels(ow, oh, image.space(), out)
+    #[allow(clippy::cast_precision_loss)] // image sizes
+    let size = image.pixel_size() * w.max(h) as f32 / ow.max(oh) as f32;
+    ImageF32::from_pixels(ow, oh, image.space(), out).map(|i| i.with_pixel_size(size))
 }
 
 /// Upright 8-bit sRGB pixels of `image` for the screen, no larger than
@@ -474,6 +476,9 @@ mod tests {
         let r: Vec<f32> = small.pixels().iter().map(|p| p[0]).collect();
         assert_eq!(r, vec![0.5, 2.5]);
         assert!(small.pixels().iter().all(|p| p[1] == 1.0 && p[2] == 0.5));
+        // Each pixel spans two of the photo's, and a copy of the copy four.
+        assert!((small.pixel_size() - 2.0).abs() < 1e-6);
+        assert!((downscale(&small, 1).unwrap().pixel_size() - 4.0).abs() < 1e-6);
     }
 
     #[test]

@@ -133,6 +133,30 @@ offered. DNG opcodes other than GainMap are not applied anywhere.
   the profile). Fujifilm photos start at 50, other cameras at 0; a custom
   lens keeps its own value.
 
+## Sharpening and noise reduction
+
+Two nodes of the Details group, as Capture One's tools, on the CPU:
+
+- **Sharpening**: Amount (0–100, 45 to start; 25 adds the edge detail
+  once), Radius (0.2–2.5 px of
+  the full-size photo, 0.8), Threshold (0–10 levels, 1) and Halo
+  suppression (0–100). An unsharp mask on the luminance encoded with a 2.2
+  gamma; R, G and B are scaled together, so colours keep their hue. The
+  radius follows the size of the copy being rendered (a reduced preview
+  gets a smaller radius, `ImageF32::pixel_size`), so the effect is judged
+  at 100 %, as in Capture One.
+- **Noise Reduction**: Luminance, Details, Color (50 to start) and Single
+  pixel (0). The noise is measured on the image itself, so the same
+  settings fit any ISO and a preview as well as the full photo; each plane
+  (luminance and two colour differences of square-root encoded values) is
+  cleaned with an "à trous" wavelet and the non-negative garrote, which
+  keeps edges above the noise. Single pixel removes hot pixels on the
+  full-size photo. Place it first in the graph, before tone and colour.
+
+About 2.4 s (noise reduction) and 1 s (sharpening) for 24 MP on two
+cores; a preview copy takes a tenth of that. `tools/adjust/src/filters.rs`
+has the shared Gaussian, wavelet and noise estimate.
+
 ## Adding a tool
 
 1. Create `tools/<name>` with a type implementing `tool_api::Tool`

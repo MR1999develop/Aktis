@@ -88,7 +88,7 @@ impl ImageF32 {
         }
         let out = reorient(self.pixels(), self.width() as usize, self.height() as usize, o);
         let (ow, oh) = if o.swaps_axes() { (self.height(), self.width()) } else { (self.width(), self.height()) };
-        Self::from_pixels(ow, oh, self.space(), out)
+        Self::from_pixels(ow, oh, self.space(), out).map(|i| i.with_pixel_size(self.pixel_size()))
     }
 }
 

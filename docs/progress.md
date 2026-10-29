@@ -511,3 +511,26 @@ Details in `docs/catalog.md`.
   (`develop::fringe`).
 - Fujifilm photos never edited start with purple fringing at 50
   (`editor::camera_defaults::start_purple_fringing`).
+
+## 29 October, night: block D, Sharpening and Noise Reduction
+
+- Images know the size of their pixels compared with the full-size photo
+  (`ImageF32::pixel_size`, 1 by default): `engine::downscale` multiplies
+  it, the GPU engine and orientation keep it. Tools working at the scale of
+  the pixel use it, so a reduced preview does not exaggerate them.
+- Sharpening node (Details): Amount 0–100 (45 to start, as Capture One's
+  180 on its 0–1000 scale), Radius 0.2–2.5 px, Threshold
+  0–10, Halo suppression 0–100, as Capture One; unsharp mask on gamma-2.2
+  luminance, threshold with a soft step, halo suppression limits overshoot
+  above and below the neighbours' range; new unit "px" (`Unit::Pixels`).
+- Noise Reduction node (Details): Luminance, Details, Color, Single pixel.
+  Square-root encoding (photon noise about even across tones), luminance
+  and two colour differences, noise measured per plane from the finest
+  diagonal differences (MAD), "à trous" B3 wavelet (4 levels for
+  luminance, 5 for colour) with the non-negative garrote; Details below 50
+  smooths more, above 50 gives back fine detail; hot pixels (far above all
+  eight neighbours) take the neighbours' median, on the full-size photo
+  only.
+- `tools/adjust/src/filters.rs`: exact small Gaussian, à trous wavelet
+  streamed one level at a time with reused buffers (allocating fresh
+  buffers per level made it 6 times slower), noise estimate.

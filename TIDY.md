@@ -21,6 +21,13 @@
   plane) is not touched. The thresholds (edge 0.25–0.75 stops, chroma,
   hue window) were set on synthetic images: tune them on real Fujifilm and
   fast-lens photos.
+- Sharpening and Noise Reduction run on the CPU (Host kernels): about
+  1 s and 2.4 s for 24 MP on two cores. Move them to the GPU (separable
+  passes) if editing full-size photos feels slow. Capture One also derives
+  the noise reduction from camera and ISO and applies some by default; ours
+  only runs as a node the user adds (or a camera default).
+- Noise Reduction works on the rendered image, not on the RAW data as
+  Capture One does: place it first in the graph.
 - Neural X-Trans demosaic: candidates found (vkdt `jddcnn`, DemosaicNet's
   X-Trans model); weights licences and input contracts to confirm first.
 - Below 100 % each zoom step re-renders the node graph to get the photo at

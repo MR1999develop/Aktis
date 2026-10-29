@@ -70,11 +70,16 @@ pub(crate) fn pixel_count(width: u32, height: u32) -> Result<usize, ImageError> 
 }
 
 /// A linear RGBA image in `f32`, rows top to bottom, no padding.
+///
+/// It also knows how large its pixels are compared with the full-size
+/// photo ([`ImageF32::pixel_size`]), so that tools working at the scale of
+/// the pixel (sharpening) do the same on a reduced preview as on the photo.
 #[derive(Clone, PartialEq)]
 pub struct ImageF32 {
     width: u32,
     height: u32,
     space: WorkingSpace,
+    pixel_size: f32,
     pixels: Vec<Rgba>,
 }
 
@@ -85,6 +90,7 @@ impl fmt::Debug for ImageF32 {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("space", &self.space)
+            .field("pixel_size", &self.pixel_size)
             .finish_non_exhaustive()
     }
 }
@@ -96,7 +102,7 @@ impl ImageF32 {
     /// [`ImageError::Empty`] or [`ImageError::TooLarge`].
     pub fn new(width: u32, height: u32, space: WorkingSpace) -> Result<Self, ImageError> {
         let n = pixel_count(width, height)?;
-        Ok(Self { width, height, space, pixels: vec![[0.0, 0.0, 0.0, 1.0]; n] })
+        Ok(Self { width, height, space, pixel_size: 1.0, pixels: vec![[0.0, 0.0, 0.0, 1.0]; n] })
     }
 
     /// Wraps an existing buffer of `width × height` pixels.
@@ -108,7 +114,23 @@ impl ImageF32 {
         if pixels.len() != expected {
             return Err(ImageError::LengthMismatch { expected, actual: pixels.len() });
         }
-        Ok(Self { width, height, space, pixels })
+        Ok(Self { width, height, space, pixel_size: 1.0, pixels })
+    }
+
+    /// How many pixels of the full-size photo one pixel of this image spans
+    /// across: 1 for the photo itself (the default), 3 for a copy reduced to
+    /// a third.
+    #[must_use]
+    pub fn pixel_size(&self) -> f32 {
+        self.pixel_size
+    }
+
+    /// The image with its [`ImageF32::pixel_size`] set; a value that is not
+    /// a positive number means 1.
+    #[must_use]
+    pub fn with_pixel_size(mut self, size: f32) -> Self {
+        self.pixel_size = if size.is_finite() && size > 0.0 { size } else { 1.0 };
+        self
     }
 
     /// Width in pixels.
@@ -177,6 +199,16 @@ mod tests {
     fn a_buffer_of_the_wrong_length_is_refused() {
         let r = ImageF32::from_pixels(2, 2, WorkingSpace::LinearSrgb, vec![[0.0; 4]; 3]);
         assert_eq!(r, Err(ImageError::LengthMismatch { expected: 4, actual: 3 }));
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // exact constants
+    fn pixel_size_is_one_unless_set_to_a_positive_number() {
+        let img = ImageF32::new(2, 1, WorkingSpace::LinearSrgb).expect("valid size");
+        assert_eq!(img.pixel_size(), 1.0);
+        assert_eq!(img.clone().with_pixel_size(3.25).pixel_size(), 3.25);
+        assert_eq!(img.clone().with_pixel_size(f32::NAN).pixel_size(), 1.0);
+        assert_eq!(img.with_pixel_size(-2.0).pixel_size(), 1.0);
     }
 
     #[test]
