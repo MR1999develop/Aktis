@@ -491,3 +491,8 @@ Details in `docs/catalog.md`.
   X-Trans), RCD, Bilinear, Markesteijn 3-pass, X-Trans fast; saved with the
   recipe (`DevelopSettings::demosaic`, optional field, older recipes read as
   Auto), undoable, the photo is developed again.
+- Software renderers are no longer taken for a GPU (Microsoft Basic Render
+  Driver, llvmpipe: what a virtual machine offers): they read back wrong
+  pixels or fail, so the editor uses the CPU engine; `RNE_SOFTWARE_GPU=1`
+  accepts them for debugging. `scripts\setup-windows.bat` installs Git, the
+  C++ build tools, rustup and the pinned toolchain on a new PC.

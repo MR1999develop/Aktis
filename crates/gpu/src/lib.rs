@@ -105,6 +105,10 @@ impl fmt::Debug for GpuContext {
 impl GpuContext {
     /// Opens the most powerful GPU with compute support. The backend can be
     /// forced with the `WGPU_BACKEND` environment variable (`vulkan`, `dx12`, `metal`).
+    /// Software renderers (Microsoft Basic Render Driver, llvmpipe: the only
+    /// "GPU" of a virtual machine) are refused: they are slower than the CPU
+    /// engine and give wrong results or fail to read back. `RNE_SOFTWARE_GPU=1`
+    /// accepts them, for debugging.
     ///
     /// # Errors
     /// [`GpuError::NoAdapter`] or [`GpuError::Device`].
@@ -118,6 +122,10 @@ impl GpuContext {
         };
         let adapter =
             pollster::block_on(instance.request_adapter(&options)).map_err(|e| GpuError::NoAdapter(e.to_string()))?;
+        let info = adapter.get_info();
+        if info.device_type == wgpu::DeviceType::Cpu && std::env::var_os("RNE_SOFTWARE_GPU").is_none() {
+            return Err(GpuError::NoAdapter(format!("{} is a software renderer", info.name)));
+        }
         if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS) {
             return Err(GpuError::NoAdapter(format!("{} has no compute shaders", adapter.get_info().name)));
         }
@@ -131,7 +139,7 @@ impl GpuContext {
             trace: wgpu::Trace::Off,
         }))
         .map_err(|e| GpuError::Device(e.to_string()))?;
-        Ok(Self { device, queue, info: adapter.get_info(), limits })
+        Ok(Self { device, queue, info, limits })
     }
 
     /// Adapter name and backend, for the status bar and logs ("NVIDIA GeForce RTX 4070 · Vulkan").

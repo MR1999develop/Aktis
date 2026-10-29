@@ -9,6 +9,10 @@ to build and where things live.
 
 ## Build and test
 
+On a new Windows PC, double-click `scripts\setup-windows.bat` first: it
+installs Git, the Visual Studio 2022 C++ build tools, rustup and the pinned
+toolchain with winget (log in `target\setup.log`).
+
 On Windows, double-click `scripts\check.bat`: it runs format check, clippy,
 tests and a release build, showing everything on screen, and writes
 `target\check.log` (full output) and `target\check-summary.txt` (environment:
@@ -50,7 +54,7 @@ cargo fmt --all --check
 | `crates/render-cpu` | Reference renderer: evaluates the graph with each tool's CPU code. |
 | `crates/platform` | The single place where Windows, Ubuntu and macOS differ. |
 | `crates/raw-io` | RAW/DNG → sensor data with rawler; levels, valid area, CFA, DNG gain maps, colour matrices, lens and shooting data. |
-| `crates/gpu` | GPU engine on wgpu (Vulkan, DirectX 12, Metal); must match `render-cpu`. |
+| `crates/gpu` | GPU engine on wgpu (Vulkan, DirectX 12, Metal); must match `render-cpu`. Software renderers (a virtual machine's) are refused, so the CPU engine runs instead; `RNE_SOFTWARE_GPU=1` accepts them. |
 | `crates/export` | JPEG with an embedded sRGB profile, atomic writes, non-destructive names. |
 | `crates/engine` | Shared by window and command line: built-in tools, GPU render with CPU fallback, preview copy, display pixels, JPEG export. |
 | `crates/editor` | The editor without the window: documents and undo, background jobs (open, preview, export, folder listings, thumbnails), viewer zoom and pan, folder tree and filmstrip model, graph layout, histogram. |
