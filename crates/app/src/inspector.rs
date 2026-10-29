@@ -426,8 +426,13 @@ fn released(
     suffix: &str,
 ) -> Option<f32> {
     let mut shown = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(stored);
+    let default = if suffix == " %" { 100.0 } else { 0.0 };
     let slider = egui::Slider::new(&mut shown, range).suffix(suffix).step_by(1.0).fixed_decimals(0);
-    let response = ui.add_enabled(enabled, slider);
+    let response = ui.add_enabled(enabled, slider).on_hover_text("Double-click to reset");
+    if response.double_clicked() {
+        ui.ctx().data_mut(|d| d.remove::<f32>(id));
+        return Some(default);
+    }
     if response.drag_stopped() {
         ui.ctx().data_mut(|d| d.remove::<f32>(id));
         return Some(shown);
@@ -575,7 +580,7 @@ pub fn float_slider(
             )
         })
         .inner
-        .on_hover_text("Drag, or click the number to type a value. Right-click to reset.");
+        .on_hover_text("Drag, or click the number to type a value. Double-click or right-click to reset.");
     if response.drag_started() {
         edits.push(UiEdit::BeginDrag { node, param: param.clone() });
     }
@@ -585,6 +590,10 @@ pub fn float_slider(
     }
     if response.drag_stopped() {
         edits.push(UiEdit::EndDrag);
+    }
+    // As in Capture One, a double-click goes back to the default.
+    if response.double_clicked() {
+        edits.push(UiEdit::Reset { node, param: param.clone() });
     }
     response.context_menu(|ui| {
         if ui.button("Reset to default").clicked() {

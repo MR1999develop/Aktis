@@ -346,7 +346,12 @@ impl GeometryUi {
                     if r.drag_started() {
                         edits.push(GeoEdit::Begin);
                     }
-                    (r.changed(), r.dragged() || r.drag_started(), r.drag_stopped())
+                    // A double-click goes back to 0, as in Capture One.
+                    let reset = r.double_clicked();
+                    if reset {
+                        *v = 0.0;
+                    }
+                    (r.changed() || reset, r.dragged() || r.drag_started(), r.drag_stopped())
                 };
             let mut changes = Vec::new();
             match tool {
