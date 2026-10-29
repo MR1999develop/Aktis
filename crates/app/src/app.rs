@@ -24,6 +24,7 @@ use catalog::{Collection, VariantInfo, next_variant_number, variant_name};
 use core_model::{DevelopSettings, NodeId, NodeKind, Recipe, ToolId};
 use editor::adjust::Pick;
 use editor::graph_view::GraphView;
+use editor::import_job::{ImportJob, ImportProgress, ImportRequest, Skipped};
 use editor::variants::{self, Reopened, VariantState};
 use editor::{
     Document, Event, ExportHandle, ExportJob, ExportPhoto, ExportSummary, Histogram, OpenPhoto, OpenTiming, Quality,
@@ -50,7 +51,7 @@ use crate::models_ui::ModelsUi;
 use crate::prefs_ui::Preferences;
 use crate::presets_ui::{PresetAction, PresetsUi};
 use crate::scopes::{ScopeKind, Scopes};
-use crate::settings::{STORAGE_KEY, Settings, ThemeChoice};
+use crate::settings::{ImportSettings, STORAGE_KEY, Settings, ThemeChoice};
 use crate::tagging_job::{Progress, TaggingJob};
 use crate::theme::{
     self, FILMSTRIP_WIDTH, FONT, GRAPH_HEIGHT, HISTOGRAM_HEIGHT, INSPECTOR_WIDTH, LEFT_WIDTH, SPACE,
@@ -81,6 +82,26 @@ struct ExportRun {
     done: usize,
     total: usize,
     current: String,
+}
+
+/// An import running in the background, and what it has done so far.
+#[derive(Debug)]
+struct ImportRun {
+    job: ImportJob,
+    /// The catalog's number for this import.
+    batch: i64,
+    /// Given to every photo as it is added.
+    metadata: catalog::ImportMetadata,
+    /// Applied to every photo when the import ends ("Group / Name").
+    preset: Option<String>,
+    /// Open the first photo when the import ends (photos dropped on the window).
+    open_first: bool,
+    /// Photos added to the catalog.
+    added: Vec<PathBuf>,
+    /// Photos left out as already in the catalog.
+    duplicates: usize,
+    /// Photos (or backups) that failed, with why.
+    failed: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +253,8 @@ pub struct EditorApp {
     new_catalog: Option<NewCatalog>,
     /// The Import Images window, while open.
     import: Option<Import>,
+    /// The import running, if any.
+    importing: Option<ImportRun>,
 }
 
 impl std::fmt::Debug for EditorApp {
@@ -330,6 +353,7 @@ impl EditorApp {
             wheel: 0.0,
             new_catalog: None,
             import: None,
+            importing: None,
         };
         app.settings.catalog_opened(&catalog_dir);
         if let Some(note) = catalog_note {
@@ -369,7 +393,7 @@ impl EditorApp {
             has_document: self.doc.is_some(),
             image_current: self.doc.as_ref().is_some_and(|d| !self.plan.is_stale(d.generation()))
                 && !self.plan.is_waiting(),
-            busy: self.opening.is_some() || self.exporting.is_some(),
+            busy: self.opening.is_some() || self.exporting.is_some() || self.importing.is_some(),
         }
     }
 
@@ -445,6 +469,91 @@ impl EditorApp {
         }
     }
 
+    /// Starts importing `photos` in the background with `options`;
+    /// `open_first` opens the first one when it ends.
+    fn start_import(&mut self, photos: Vec<PathBuf>, options: &ImportSettings, open_first: bool, ctx: &egui::Context) {
+        if self.importing.is_some() {
+            self.toast = Some(info_toast("An import is running: wait for it to end, or stop it".to_owned()));
+            return;
+        }
+        let request = options.destination().and_then(|destination| {
+            let backup = options.backup_folder()?;
+            let (batch, known) = self.library.begin_import()?;
+            let request =
+                ImportRequest { files: photos, destination, backup, skip_duplicates: options.skip_duplicates, known };
+            Ok((batch, request))
+        });
+        let (batch, request) = match request {
+            Ok(r) => r,
+            Err(e) => {
+                self.toast = Some(error_toast(format!("The import could not start: {e}")));
+                return;
+            }
+        };
+        let repaint = ctx.clone();
+        match ImportJob::start(request, move || repaint.request_repaint()) {
+            Ok(job) => {
+                self.importing = Some(ImportRun {
+                    job,
+                    batch,
+                    metadata: options.metadata(),
+                    preset: options.preset.clone(),
+                    open_first,
+                    added: Vec::new(),
+                    duplicates: 0,
+                    failed: Vec::new(),
+                });
+            }
+            Err(e) => self.toast = Some(error_toast(format!("The import could not start: {e}"))),
+        }
+    }
+
+    /// Adds what the import job reported to the catalog; when it ends,
+    /// applies the preset and tells what was done.
+    fn poll_import(&mut self) {
+        let Some(run) = &mut self.importing else { return };
+        let mut photos = Vec::new();
+        let mut finished = None;
+        for progress in run.job.poll() {
+            match progress {
+                ImportProgress::Imported(photo) => photos.push(photo),
+                ImportProgress::Skipped { why: Skipped::Duplicate, .. } => run.duplicates += 1,
+                ImportProgress::Skipped { path, why: Skipped::Failed(why) } => {
+                    run.failed.push(format!("{}: {why}", file_name(&path)));
+                }
+                ImportProgress::BackupFailed { path, why } => {
+                    run.failed.push(format!("backup of {}: {why}", file_name(&path)));
+                }
+                ImportProgress::Finished { stopped } => finished = Some(stopped),
+            }
+        }
+        if !photos.is_empty() {
+            let first = run.added.is_empty();
+            match self.library.add_imported(run.batch, &photos, &run.metadata, first) {
+                Ok(_) => run.added.extend(photos.into_iter().map(|p| p.path)),
+                Err(e) => run.failed.push(format!("the catalog refused {} photos: {e}", photos.len())),
+            }
+        }
+        let Some(stopped) = finished else { return };
+        let Some(run) = self.importing.take() else { return };
+        if let Some(name) = &run.preset
+            && !run.added.is_empty()
+            && let Some(index) = self.presets.preset_names().iter().position(|n| n == name)
+        {
+            self.apply_preset(index, &run.added);
+        }
+        let text = catalog_ui::import_summary(run.added.len(), run.duplicates, run.failed.len(), stopped);
+        self.toast = Some(match run.failed.first() {
+            Some(first) => error_toast(format!("{text} ({first})")),
+            None => info_toast(text),
+        });
+        if run.open_first
+            && let Some(first) = run.added.first()
+        {
+            self.open(first.clone());
+        }
+    }
+
     /// The New Catalog and Import Images windows, while open.
     fn catalog_dialogs(&mut self, ctx: &egui::Context) {
         let mut outcome = Outcome::Open;
@@ -452,7 +561,8 @@ impl EditorApp {
             outcome = catalog_ui::new_catalog_dialog(ctx, form);
         } else if let Some(form) = &mut self.import {
             let name = editor::catalogs::name(self.library.catalog_dir());
-            outcome = catalog_ui::import_dialog(ctx, form, &name);
+            let presets = self.presets.preset_names();
+            outcome = catalog_ui::import_dialog(ctx, form, &mut self.settings.import, &presets, &name);
         }
         match outcome {
             Outcome::Open => {}
@@ -468,7 +578,8 @@ impl EditorApp {
                 if let Some(form) = self.import.take() {
                     self.settings.import_dir = Some(form.folder().to_owned());
                 }
-                self.import_photos(&photos);
+                let options = self.settings.import.clone();
+                self.start_import(photos, &options, false, ctx);
             }
         }
     }
@@ -825,10 +936,16 @@ impl EditorApp {
             self.toast = Some(info_toast("There are no RAW files among the dropped files".to_owned()));
             return;
         }
-        self.import_photos(&photos);
-        if let Some(first) = photos.into_iter().next() {
-            self.open(first);
+        // Dropped photos are added where they are, the duplicates left out;
+        // when they are all in the catalog already, the first one opens.
+        let new: Vec<PathBuf> = photos.iter().filter(|p| !self.library.is_imported(p)).cloned().collect();
+        if new.is_empty() {
+            if let Some(first) = photos.into_iter().next() {
+                self.open(first);
+            }
+            return;
         }
+        self.start_import(new, &ImportSettings::default(), true, ctx);
     }
 
     fn consume_shortcuts(ctx: &egui::Context) -> Vec<Command> {
@@ -948,7 +1065,7 @@ impl EditorApp {
     fn apply_library(&mut self, actions: Vec<LibraryAction>, ctx: &egui::Context) {
         for action in actions {
             match action {
-                LibraryAction::Import(photos) => self.import_photos(&photos),
+                LibraryAction::Import(photos) => self.start_import(photos, &ImportSettings::default(), false, ctx),
                 LibraryAction::Open(path) => {
                     let already = self.doc.as_ref().is_some_and(|d| d.path() == path);
                     let pending = self.opening_path.as_ref() == Some(&path);
@@ -1837,6 +1954,24 @@ impl EditorApp {
                     } else {
                         ui.ctx().request_repaint_after(Duration::from_secs_f32(SPINNER_DELAY_SECONDS));
                     }
+                }
+                if let Some(run) = &self.importing {
+                    ui.separator();
+                    if ui
+                        .button("Stop")
+                        .on_hover_text("Stop after the photo being imported; photos imported stay")
+                        .clicked()
+                    {
+                        run.job.stop();
+                    }
+                    #[allow(clippy::cast_precision_loss)] // photo counts
+                    let fraction = if run.job.total == 0 { 0.0 } else { run.job.done as f32 / run.job.total as f32 };
+                    ui.add(egui::ProgressBar::new(fraction).desired_width(120.0));
+                    ui.label(format!(
+                        "Importing {} of {}\u{2026}",
+                        (run.job.done + 1).min(run.job.total),
+                        run.job.total
+                    ));
                 }
                 if let Some(run) = &self.exporting {
                     // Right to left: Cancel at the end, the text first.
@@ -2989,6 +3124,7 @@ impl eframe::App for EditorApp {
         self.handle_events(&ctx);
         self.handle_dropped_files(&ctx);
         self.poll_tagging();
+        self.poll_import();
         self.poll_ai_mask(&ctx);
         let mut commands = Self::consume_shortcuts(&ctx);
         let mut edits = Vec::new();

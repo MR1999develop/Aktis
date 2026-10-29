@@ -159,6 +159,100 @@ impl WarningSettings {
     }
 }
 
+/// The Import Images window's options, as they were last used.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImportSettings {
+    /// Copy the files into `copy_dir` instead of adding them where they are.
+    pub copy: bool,
+    /// The folder the copies go in.
+    pub copy_dir: Option<PathBuf>,
+    /// Sub-folders below it ([`catalog::FolderPattern`]).
+    pub pattern: String,
+    /// Make a second copy of the originals in `backup_dir`.
+    pub backup: bool,
+    /// The backup folder.
+    pub backup_dir: Option<PathBuf>,
+    /// Leave out photos already in the catalog (file name and capture time).
+    pub skip_duplicates: bool,
+    /// Preset applied to every photo ("Group / Name"), if any.
+    pub preset: Option<String>,
+    /// Photographer given to every photo.
+    pub artist: String,
+    /// Copyright notice given to every photo.
+    pub copyright: String,
+    /// Keywords, separated by commas.
+    pub keywords: String,
+    /// Rating given to every photo (0: none).
+    pub rating: u8,
+}
+
+impl Default for ImportSettings {
+    fn default() -> Self {
+        Self {
+            copy: false,
+            copy_dir: None,
+            pattern: catalog::import::DEFAULT_PATTERN.to_owned(),
+            backup: false,
+            backup_dir: None,
+            skip_duplicates: true,
+            preset: None,
+            artist: String::new(),
+            copyright: String::new(),
+            keywords: String::new(),
+            rating: 0,
+        }
+    }
+}
+
+impl ImportSettings {
+    /// Where the photos go.
+    ///
+    /// # Errors
+    /// A message when copying and no folder is chosen.
+    pub fn destination(&self) -> Result<catalog::Destination, String> {
+        if !self.copy {
+            return Ok(catalog::Destination::InPlace);
+        }
+        let folder = self.copy_dir.clone().ok_or("Choose the folder the copies go in")?;
+        Ok(catalog::Destination::Copy { folder, pattern: catalog::FolderPattern::new(&self.pattern) })
+    }
+
+    /// The backup folder, when there is a backup.
+    ///
+    /// # Errors
+    /// A message when the backup is on and no folder is chosen, or when it
+    /// is the copies' folder.
+    pub fn backup_folder(&self) -> Result<Option<PathBuf>, String> {
+        if !self.backup {
+            return Ok(None);
+        }
+        let dir = self.backup_dir.clone().ok_or("Choose the backup folder")?;
+        if self.copy && self.copy_dir.as_ref() == Some(&dir) {
+            return Err("The backup needs a folder of its own, apart from the copies".to_owned());
+        }
+        Ok(Some(dir))
+    }
+
+    /// Why the import cannot start yet, if it cannot.
+    #[must_use]
+    pub fn problem(&self) -> Option<String> {
+        self.destination().err().or_else(|| self.backup_folder().err())
+    }
+
+    /// What the import gives to every photo.
+    #[must_use]
+    pub fn metadata(&self) -> catalog::ImportMetadata {
+        let text = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
+        catalog::ImportMetadata {
+            artist: text(&self.artist),
+            copyright: text(&self.copyright),
+            keywords: catalog::ImportMetadata::parse_keywords(&self.keywords),
+            rating: self.rating.min(catalog::MAX_RATING),
+        }
+    }
+}
+
 /// Remembered between sessions.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -196,6 +290,8 @@ pub struct Settings {
     pub catalogs_dir: Option<PathBuf>,
     /// The folder of the last import (File ▸ Import Images…).
     pub import_dir: Option<PathBuf>,
+    /// The Import Images window's options.
+    pub import: ImportSettings,
     /// Recently opened catalogs, newest first.
     pub recent_catalogs: Vec<PathBuf>,
 }
@@ -455,6 +551,28 @@ impl ExportSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_options_say_what_is_missing_before_an_import() {
+        let mut o = ImportSettings::default();
+        assert_eq!(o.destination(), Ok(catalog::Destination::InPlace));
+        assert!(o.problem().is_none() && o.skip_duplicates);
+        o.copy = true;
+        assert!(o.problem().is_some(), "no folder for the copies");
+        o.copy_dir = Some(PathBuf::from("D:/Photos"));
+        assert!(matches!(o.destination(), Ok(catalog::Destination::Copy { .. })));
+        o.backup = true;
+        assert!(o.problem().is_some(), "no backup folder");
+        o.backup_dir = Some(PathBuf::from("D:/Photos"));
+        assert!(o.problem().is_some(), "the backup is the copies' folder");
+        o.backup_dir = Some(PathBuf::from("E:/Backup"));
+        assert_eq!(o.backup_folder(), Ok(Some(PathBuf::from("E:/Backup"))));
+        o.artist = "  Ann ".into();
+        o.keywords = "sea, boat".into();
+        o.rating = 9;
+        let m = o.metadata();
+        assert_eq!((m.artist.as_deref(), m.copyright, m.keywords.len(), m.rating), (Some("Ann"), None, 2, 5));
+    }
 
     #[test]
     fn recent_catalogs_are_newest_first_unique_and_the_last_is_reopened() {

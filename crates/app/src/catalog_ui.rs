@@ -7,11 +7,12 @@
 
 use std::path::{Path, PathBuf};
 
+use catalog::{Day, FolderPattern};
 use editor::catalogs;
 use eframe::egui::{self, RichText};
 
-use crate::dialog::{Choice, dialog, dialog_buttons};
-use crate::settings::Settings;
+use crate::dialog::{Choice, dialog, dialog_buttons, dialog_with_width};
+use crate::settings::{ImportSettings, Settings};
 use crate::theme::{FONT, SPACE, Tokens};
 
 /// The catalog to open at start-up: the one open when the editor was
@@ -196,49 +197,161 @@ pub fn new_catalog_dialog(ctx: &egui::Context, form: &mut NewCatalog) -> Outcome
     }
 }
 
-/// The Import Images window, importing into the catalog `catalog`.
-pub fn import_dialog(ctx: &egui::Context, form: &mut Import, catalog: &str) -> Outcome {
+/// Width of the Import Images window.
+const IMPORT_WIDTH: f32 = 560.0;
+
+/// The Import Images window, importing into the catalog `catalog` with
+/// `options` (kept for the next import); `presets` are the names offered.
+pub fn import_dialog(
+    ctx: &egui::Context,
+    form: &mut Import,
+    options: &mut ImportSettings,
+    presets: &[String],
+    catalog: &str,
+) -> Outcome {
     let t = Tokens::of(ctx.theme());
     let mut choice = None;
-    dialog(ctx, "rne-import", |ui| {
+    dialog_with_width(ctx, "rne-import", IMPORT_WIDTH, |ui| {
         ui.label(RichText::new("Import Images").size(FONT[4]).strong());
-        ui.add_space(SPACE[1]);
-        ui.label(
-            RichText::new(format!(
-                "The photos are added to the catalog \u{201c}{catalog}\u{201d}; the files stay where they are."
-            ))
-            .color(t.text_weak),
-        );
+        ui.add_space(SPACE[0]);
+        ui.label(RichText::new(format!("Into the catalog \u{201c}{catalog}\u{201d}")).color(t.text_weak));
         ui.add_space(SPACE[2]);
-        ui.label("Import from");
-        ui.horizontal(|ui| {
-            if ui.button("Choose\u{2026}").clicked()
-                && let Some(dir) = rfd::FileDialog::new().set_directory(form.folder()).pick_folder()
-            {
-                form.set_folder(dir);
-            }
-            ui.add(egui::Label::new(RichText::new(form.folder().display().to_string()).color(t.text_weak)).truncate());
+        let max = (ui.ctx().content_rect().height() * 0.7).max(240.0);
+        egui::ScrollArea::vertical().max_height(max).auto_shrink([false, true]).show(ui, |ui| {
+            source_section(ui, &t, form);
+            destination_section(ui, &t, options);
+            options_section(ui, &t, options, presets);
         });
-        let mut subfolders = form.subfolders();
-        if ui.checkbox(&mut subfolders, "Include sub-folders").changed() {
-            form.set_subfolders(subfolders);
-        }
-        ui.add_space(SPACE[1]);
-        let n = form.found().len();
-        let count = match n {
-            0 => "No RAW files here".to_owned(),
-            1 => "1 RAW file".to_owned(),
-            n => format!("{n} RAW files"),
-        };
-        ui.label(RichText::new(count).color(if n == 0 { t.warning } else { t.text_weak }));
         ui.add_space(SPACE[2]);
-        choice = dialog_buttons(ui, &t, (n > 0).then_some("Import"), "Cancel", |_| {});
+        let n = form.found().len();
+        let problem = if n == 0 { Some("No RAW files to import".to_owned()) } else { options.problem() };
+        if let Some(why) = &problem {
+            ui.label(RichText::new(why).color(t.warning));
+            ui.add_space(SPACE[1]);
+        }
+        let action = match n {
+            1 => "Import 1 photo".to_owned(),
+            n => format!("Import {n} photos"),
+        };
+        choice = dialog_buttons(ui, &t, problem.is_none().then_some(action.as_str()), "Cancel", |_| {});
     });
     match choice {
         Some(Choice::Action) => Outcome::Import(form.found().to_vec()),
         Some(Choice::Cancel) => Outcome::Cancelled,
         None => Outcome::Open,
     }
+}
+
+fn heading(ui: &mut egui::Ui, t: &Tokens, title: &str) {
+    ui.add_space(SPACE[1]);
+    ui.label(RichText::new(title).strong().color(t.text_strong));
+}
+
+/// A folder and its Choose… button; returns the folder chosen.
+fn folder_row(ui: &mut egui::Ui, t: &Tokens, folder: Option<&Path>, title: &str) -> Option<PathBuf> {
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        if ui.button("Choose\u{2026}").clicked() {
+            let mut pick = rfd::FileDialog::new().set_title(title);
+            if let Some(dir) = folder.filter(|d| d.is_dir()) {
+                pick = pick.set_directory(dir);
+            }
+            chosen = pick.pick_folder();
+        }
+        let shown = folder.map_or_else(|| "No folder chosen".to_owned(), |d| d.display().to_string());
+        ui.add(egui::Label::new(RichText::new(shown).color(t.text_weak)).truncate());
+    });
+    chosen
+}
+
+fn source_section(ui: &mut egui::Ui, t: &Tokens, form: &mut Import) {
+    heading(ui, t, "Import From");
+    if let Some(dir) = folder_row(ui, t, Some(form.folder()), "Import images from a folder") {
+        form.set_folder(dir);
+    }
+    let mut subfolders = form.subfolders();
+    if ui.checkbox(&mut subfolders, "Include sub-folders").changed() {
+        form.set_subfolders(subfolders);
+    }
+    let count = match form.found().len() {
+        0 => "No RAW files here".to_owned(),
+        1 => "1 RAW file".to_owned(),
+        n => format!("{n} RAW files"),
+    };
+    ui.label(RichText::new(count).size(FONT[0]).color(t.text_weak));
+}
+
+fn destination_section(ui: &mut egui::Ui, t: &Tokens, o: &mut ImportSettings) {
+    heading(ui, t, "Import To");
+    ui.radio_value(&mut o.copy, false, "Add to the catalog: the files stay where they are");
+    ui.radio_value(&mut o.copy, true, "Copy to a folder");
+    if o.copy {
+        ui.indent("rne-import-copy", |ui| {
+            if let Some(dir) = folder_row(ui, t, o.copy_dir.as_deref(), "Folder for the copies") {
+                o.copy_dir = Some(dir);
+            }
+            ui.horizontal(|ui| {
+                ui.label("Sub-folders");
+                ui.add(egui::TextEdit::singleline(&mut o.pattern).desired_width(200.0))
+                    .on_hover_text("{yyyy} year, {yy} short year, {mm} month, {dd} day; / starts a sub-folder");
+                if ui.small_button("Default").clicked() {
+                    o.pattern = catalog::import::DEFAULT_PATTERN.to_owned();
+                }
+            });
+            let example = FolderPattern::new(&o.pattern).folder_for(Day::from_exif("2026:10:29"));
+            let example = if example.as_os_str().is_empty() {
+                "Every copy straight in the folder".to_owned()
+            } else {
+                format!("A photo of 29 October 2026 goes in {}", example.display())
+            };
+            ui.label(RichText::new(example).size(FONT[0]).color(t.text_weak));
+        });
+    }
+    ui.checkbox(&mut o.backup, "Back up the originals to a second folder");
+    if o.backup {
+        ui.indent("rne-import-backup", |ui| {
+            if let Some(dir) = folder_row(ui, t, o.backup_dir.as_deref(), "Backup folder") {
+                o.backup_dir = Some(dir);
+            }
+        });
+    }
+}
+
+fn options_section(ui: &mut egui::Ui, t: &Tokens, o: &mut ImportSettings, presets: &[String]) {
+    heading(ui, t, "Options");
+    ui.checkbox(&mut o.skip_duplicates, "Leave out photos already in the catalog")
+        .on_hover_text("The same file name and capture time, wherever the file is");
+    ui.horizontal(|ui| {
+        ui.label("Preset");
+        let shown = o.preset.clone().unwrap_or_else(|| "None".to_owned());
+        egui::ComboBox::from_id_salt("rne-import-preset").selected_text(shown).width(260.0).show_ui(ui, |ui| {
+            ui.selectable_value(&mut o.preset, None, "None");
+            for name in presets {
+                ui.selectable_value(&mut o.preset, Some(name.clone()), name.as_str());
+            }
+        });
+    });
+    heading(ui, t, "Metadata");
+    egui::Grid::new("rne-import-metadata").num_columns(2).spacing([SPACE[2], SPACE[1]]).show(ui, |ui| {
+        ui.label("Photographer");
+        ui.add(egui::TextEdit::singleline(&mut o.artist).desired_width(300.0));
+        ui.end_row();
+        ui.label("Copyright");
+        ui.add(egui::TextEdit::singleline(&mut o.copyright).desired_width(300.0).hint_text("\u{a9} 2026 Your Name"));
+        ui.end_row();
+        ui.label("Keywords");
+        ui.add(egui::TextEdit::singleline(&mut o.keywords).desired_width(300.0).hint_text("sea, holiday"))
+            .on_hover_text("Separated by commas");
+        ui.end_row();
+        ui.label("Rating");
+        ui.horizontal(|ui| {
+            for r in 0..=catalog::MAX_RATING {
+                let label = if r == 0 { "None".to_owned() } else { "\u{2605}".repeat(usize::from(r)) };
+                ui.selectable_value(&mut o.rating, r, label);
+            }
+        });
+        ui.end_row();
+    });
 }
 
 /// The toast after an import of `wanted` photos, `added` of them new.
@@ -250,6 +363,27 @@ pub fn import_message(wanted: usize, added: usize) -> String {
         (w, a) if w == a => format!("{} imported", photos(a)),
         (w, a) => format!("{} imported, {} already in the catalog", photos(a), w - a),
     }
+}
+
+/// The toast at the end of an import job: `added` photos imported,
+/// `duplicates` left out, `failed` that could not be copied, whether it was
+/// `stopped`.
+#[must_use]
+pub fn import_summary(added: usize, duplicates: usize, failed: usize, stopped: bool) -> String {
+    let photos = |n: usize| if n == 1 { "1 photo".to_owned() } else { format!("{n} photos") };
+    let mut text = match (added, stopped) {
+        (0, true) => "Import stopped".to_owned(),
+        (0, false) => "No photo imported".to_owned(),
+        (n, true) => format!("Import stopped: {} imported", photos(n)),
+        (n, false) => format!("{} imported", photos(n)),
+    };
+    if duplicates > 0 {
+        text.push_str(&format!(", {duplicates} already in the catalog"));
+    }
+    if failed > 0 {
+        text.push_str(&format!(", {failed} failed"));
+    }
+    text
 }
 
 fn capitalized(s: &str) -> String {
@@ -300,5 +434,9 @@ mod tests {
         assert_eq!(import_message(3, 1), "1 photo imported, 2 already in the catalog");
         assert_eq!(import_message(2, 0), "These photos are already in the catalog");
         assert_eq!(capitalized("a catalog"), "A catalog");
+        assert_eq!(import_summary(3, 0, 0, false), "3 photos imported");
+        assert_eq!(import_summary(1, 2, 1, false), "1 photo imported, 2 already in the catalog, 1 failed");
+        assert_eq!(import_summary(0, 4, 0, false), "No photo imported, 4 already in the catalog");
+        assert_eq!(import_summary(5, 0, 0, true), "Import stopped: 5 photos imported");
     }
 }

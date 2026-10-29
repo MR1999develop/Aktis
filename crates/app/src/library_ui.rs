@@ -6,10 +6,14 @@
 //! the window does (opening, exporting, a rename of the open file) is
 //! handed to it as a [`LibraryAction`].
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use catalog::{Catalog, Collection, ColorLabel, FIRST_VARIANT, MAX_RATING, PhotoMeta, StoredVariant, VariantInfo};
+use catalog::{
+    Catalog, Collection, ColorLabel, FIRST_VARIANT, ImportMetadata, ImportedPhoto, MAX_RATING, PhotoMeta, ShotKey,
+    StoredVariant, VariantInfo,
+};
 use editor::variants::Save;
 use editor::{Filmstrip, FolderListing, FolderTree, StripPhoto, ThumbCache, ThumbJob, ThumbState, Worker};
 use eframe::egui::{
@@ -240,6 +244,46 @@ impl Library {
         let added = catalog.import(paths).map_err(|e| e.to_string())?;
         self.refresh_collections();
         if added > 0 {
+            self.show_collection(Collection::LastImport);
+        }
+        Ok(added)
+    }
+
+    /// The number of the next import and the shots already in the catalog,
+    /// to start an import job.
+    ///
+    /// # Errors
+    /// A message when the catalog cannot be read.
+    pub fn begin_import(&self) -> Result<(i64, HashSet<ShotKey>), String> {
+        let catalog = self.catalog.as_ref().ok_or("there is no catalog")?;
+        let batch = catalog.next_import().map_err(|e| e.to_string())?;
+        let known = catalog.known_shots().map_err(|e| e.to_string())?;
+        Ok((batch, known))
+    }
+
+    /// Adds photos an import job reported to import `batch` and gives them
+    /// `metadata`. The filmstrip shows the import from its `first` photos,
+    /// and follows it while it shows it.
+    ///
+    /// # Errors
+    /// A message when the catalog refuses them.
+    pub fn add_imported(
+        &mut self,
+        batch: i64,
+        photos: &[ImportedPhoto],
+        metadata: &ImportMetadata,
+        first: bool,
+    ) -> Result<usize, String> {
+        let catalog = self.catalog.as_mut().ok_or("there is no catalog")?;
+        let added = catalog.add_imported(batch, photos).map_err(|e| e.to_string())?;
+        if !metadata.is_empty() {
+            let paths: Vec<PathBuf> = photos.iter().map(|p| p.path.clone()).collect();
+            catalog.apply_metadata(&paths, metadata).map_err(|e| e.to_string())?;
+        }
+        self.refresh_collections();
+        // As Capture One: the photos show up in the import as they come in
+        // (the selection stays, the collection being the same).
+        if first || self.collection == Some(Collection::LastImport) {
             self.show_collection(Collection::LastImport);
         }
         Ok(added)

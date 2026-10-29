@@ -8,10 +8,12 @@
 //! feature. The edits are stored as text written by the `recipe-store`
 //! crate; the catalog does not read them.
 
+pub mod import;
 pub mod model;
 #[cfg(feature = "sqlite")]
 mod store;
 
+pub use import::{Day, Destination, FolderPattern, ImportMetadata, ImportedPhoto, ShotKey, free_name};
 pub use model::{
     Collection, ColorLabel, FIRST_VARIANT, Filter, LabelSet, MAX_RATING, PhotoMeta, RatingSet, StoredVariant, Tag,
     TagSource, VariantInfo, next_variant_number, sort_by_name, tag_counts, variant_name,

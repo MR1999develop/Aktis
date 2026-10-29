@@ -7,7 +7,9 @@
 //! (table `variants`, one row per variant of a photo) and the variant shown
 //! (column `photos.variant`); 3 adds the photos imported into the catalog
 //! (table `imported`), every photo an older file knew about counting as
-//! imported. Older files are upgraded on open.
+//! imported; 4 adds each imported photo's file name and capture time
+//! (duplicate checks) and the photographer and copyright given at import
+//! (table `texts`). Older files are upgraded on open.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -15,10 +17,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::import::{ImportMetadata, ImportedPhoto, ShotKey};
 use crate::model::{Collection, ColorLabel, MAX_RATING, PhotoMeta, StoredVariant, Tag, TagSource, VariantInfo};
 
 /// Layout version of the database; older files are upgraded on open.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS photos (
@@ -49,9 +52,17 @@ CREATE TABLE IF NOT EXISTS imported (
     path     TEXT PRIMARY KEY NOT NULL,
     folder   TEXT NOT NULL,
     imported INTEGER NOT NULL,
-    batch    INTEGER NOT NULL
+    batch    INTEGER NOT NULL,
+    name     TEXT,
+    captured TEXT
 );
 CREATE INDEX IF NOT EXISTS imported_by_folder ON imported(folder);
+CREATE TABLE IF NOT EXISTS texts (
+    path  TEXT NOT NULL,
+    field TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (path, field)
+);
 ";
 
 /// Why the catalog could not be read or written.
@@ -152,6 +163,19 @@ impl Catalog {
         if has_variant == 0 {
             tx.execute_batch("ALTER TABLE photos ADD COLUMN variant INTEGER NOT NULL DEFAULT 1;")?;
         }
+        // Version 3 had no name and capture time of the imported photos.
+        for column in ["name", "captured"] {
+            let has: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('imported') WHERE name = ?1",
+                params![column],
+                |r| r.get(0),
+            )?;
+            if has == 0 {
+                tx.execute_batch(&format!("ALTER TABLE imported ADD COLUMN {column} TEXT;"))?;
+            }
+        }
+        // The index needs the name column, so it comes after the upgrade.
+        tx.execute_batch("CREATE INDEX IF NOT EXISTS imported_by_shot ON imported(name, captured);")?;
         // Before version 3 every photo the catalog knew about was browsed, not
         // imported: they all count as imported, in one first batch.
         if version < 3 {
@@ -317,6 +341,8 @@ impl Catalog {
         tx.execute("UPDATE variants SET path = ?2 WHERE path = ?1", params![f, t])?;
         tx.execute("DELETE FROM imported WHERE path = ?1", params![t])?;
         tx.execute("UPDATE imported SET path = ?2 WHERE path = ?1", params![f, t])?;
+        tx.execute("DELETE FROM texts WHERE path = ?1", params![t])?;
+        tx.execute("UPDATE texts SET path = ?2 WHERE path = ?1", params![f, t])?;
         tx.commit()?;
         Ok(())
     }
@@ -324,24 +350,114 @@ impl Catalog {
     // ----- imported photos -----
 
     /// Adds `paths` to the catalog (those already in it are left as they
-    /// are), as one import; returns how many were new.
+    /// are), as one import; returns how many were new. Their capture times
+    /// are not known: [`Self::add_imported`] keeps them.
     ///
     /// # Errors
     /// [`CatalogError::Sqlite`]; nothing is changed then.
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<usize, CatalogError> {
+        let batch = self.next_import()?;
+        let photos: Vec<ImportedPhoto> =
+            paths.iter().map(|p| ImportedPhoto { path: p.clone(), captured: None }).collect();
+        self.add_imported(batch, &photos)
+    }
+
+    /// The number of the next import, for [`Self::add_imported`]: an import
+    /// that adds photos over time (copying them) keeps one number.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn next_import(&self) -> Result<i64, CatalogError> {
+        Ok(self.conn.query_row("SELECT COALESCE(MAX(batch), 0) + 1 FROM imported", [], |r| r.get(0))?)
+    }
+
+    /// Adds `photos` to import `batch` (photos already in the catalog are
+    /// left as they are); returns how many were new.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn add_imported(&mut self, batch: i64, photos: &[ImportedPhoto]) -> Result<usize, CatalogError> {
         let tx = self.conn.transaction()?;
-        let batch: i64 = tx.query_row("SELECT COALESCE(MAX(batch), 0) + 1 FROM imported", [], |r| r.get(0))?;
         let now = now();
         let mut added = 0;
-        for p in paths {
+        for photo in photos {
+            let p = &photo.path;
             let folder = p.parent().map(key).unwrap_or_default();
+            let name = p.file_name().map(|n| n.to_string_lossy().to_lowercase());
             added += tx.execute(
-                "INSERT OR IGNORE INTO imported (path, folder, imported, batch) VALUES (?1, ?2, ?3, ?4)",
-                params![key(p), folder, now, batch],
+                "INSERT OR IGNORE INTO imported (path, folder, imported, batch, name, captured)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![key(p), folder, now, batch, name, photo.captured.as_deref().map(str::trim)],
             )?;
         }
         tx.commit()?;
         Ok(added)
+    }
+
+    /// The shots in the catalog (file name and capture time), to leave out
+    /// duplicates from an import.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn known_shots(&self) -> Result<std::collections::HashSet<ShotKey>, CatalogError> {
+        let mut stmt = self.conn.prepare("SELECT path, captured FROM imported WHERE captured IS NOT NULL")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().filter_map(|(p, c)| ShotKey::new(Path::new(&p), Some(&c))).collect())
+    }
+
+    /// Gives every photo in `paths` what an import adds: rating, keywords
+    /// (the user's own), photographer and copyright.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`]; nothing is changed then.
+    pub fn apply_metadata(&mut self, paths: &[PathBuf], metadata: &ImportMetadata) -> Result<(), CatalogError> {
+        let tx = self.conn.transaction()?;
+        for p in paths {
+            let k = key(p);
+            if metadata.rating > 0 {
+                tx.execute(
+                    "INSERT INTO photos (path, rating) VALUES (?1, ?2)
+                     ON CONFLICT(path) DO UPDATE SET rating = excluded.rating",
+                    params![k, metadata.rating.min(MAX_RATING)],
+                )?;
+            }
+            for name in metadata.keywords.iter().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+                tx.execute(
+                    "INSERT INTO tags (path, name, source, confidence) VALUES (?1, ?2, ?3, NULL)
+                     ON CONFLICT(path, name) DO UPDATE SET source = excluded.source, confidence = NULL",
+                    params![k, name, source_name(TagSource::User)],
+                )?;
+            }
+            for (field, value) in [(TEXT_ARTIST, &metadata.artist), (TEXT_COPYRIGHT, &metadata.copyright)] {
+                if let Some(v) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    tx.execute(
+                        "INSERT INTO texts (path, field, value) VALUES (?1, ?2, ?3)
+                         ON CONFLICT(path, field) DO UPDATE SET value = excluded.value",
+                        params![k, field, v],
+                    )?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The photographer and copyright given to `path` in the catalog.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn credits(&self, path: &Path) -> Result<(Option<String>, Option<String>), CatalogError> {
+        let get = |field: &str| -> Result<Option<String>, CatalogError> {
+            Ok(self
+                .conn
+                .query_row("SELECT value FROM texts WHERE path = ?1 AND field = ?2", params![key(path), field], |r| {
+                    r.get(0)
+                })
+                .optional()?)
+        };
+        Ok((get(TEXT_ARTIST)?, get(TEXT_COPYRIGHT)?))
     }
 
     /// `true` when `path` was imported into the catalog.
@@ -408,7 +524,7 @@ impl Catalog {
         let tx = self.conn.transaction()?;
         for p in paths {
             let k = key(p);
-            for table in ["imported", "photos", "tags", "variants"] {
+            for table in ["imported", "photos", "tags", "variants", "texts"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE path = ?1"), params![k])?;
             }
         }
@@ -559,6 +675,10 @@ impl Catalog {
 const CHOSEN_FIRST: &str = "number = COALESCE((SELECT variant FROM photos WHERE path = ?1), 1) DESC";
 
 /// Seconds since 1970, for the `updated` column.
+/// Fields of table `texts`.
+const TEXT_ARTIST: &str = "artist";
+const TEXT_COPYRIGHT: &str = "copyright";
+
 fn now() -> i64 {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     i64::try_from(secs).unwrap_or(i64::MAX)
@@ -590,6 +710,51 @@ mod tests {
         assert_eq!(c.meta(&x).unwrap().rating, 0, "its data went with it");
         c.rename(&a, &p("trip/c.NEF")).unwrap();
         assert!(c.is_imported(&p("trip/c.NEF")).unwrap() && !c.is_imported(&a).unwrap());
+    }
+
+    #[test]
+    fn an_import_keeps_capture_times_for_duplicates_and_gives_its_metadata() {
+        let mut c = Catalog::open_in_memory().unwrap();
+        let batch = c.next_import().unwrap();
+        let shot = ImportedPhoto { path: p("D/2026/IMG_1.CR3"), captured: Some("2026:10:29 10:00:00".into()) };
+        let plain = ImportedPhoto { path: p("D/2026/IMG_2.CR3"), captured: None };
+        assert_eq!(c.add_imported(batch, &[shot.clone(), plain.clone()]).unwrap(), 2);
+        assert_eq!(c.add_imported(batch, std::slice::from_ref(&shot)).unwrap(), 0);
+        assert_eq!(c.next_import().unwrap(), batch + 1);
+        let known = c.known_shots().unwrap();
+        assert!(known.contains(&ShotKey::new(Path::new("card/img_1.cr3"), Some("2026:10:29 10:00:00")).unwrap()));
+        assert_eq!(known.len(), 1, "a photo without a capture time is never a duplicate");
+        let metadata = ImportMetadata {
+            artist: Some("Ann".into()),
+            copyright: Some(" ".into()),
+            keywords: vec!["sea".into(), "boat".into()],
+            rating: 4,
+        };
+        let paths = [shot.path.clone()];
+        c.apply_metadata(&paths, &metadata).unwrap();
+        let meta = c.meta(&shot.path).unwrap();
+        assert_eq!(meta.rating, 4);
+        assert_eq!(meta.tags.len(), 2);
+        assert_eq!(c.credits(&shot.path).unwrap(), (Some("Ann".into()), None), "a blank copyright is not kept");
+        c.rename(&shot.path, &p("D/2026/IMG_1b.CR3")).unwrap();
+        assert_eq!(c.credits(&p("D/2026/IMG_1b.CR3")).unwrap().0.as_deref(), Some("Ann"));
+    }
+
+    #[test]
+    fn a_version_3_catalog_gets_the_shot_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imported (path TEXT PRIMARY KEY NOT NULL, folder TEXT NOT NULL,
+               imported INTEGER NOT NULL, batch INTEGER NOT NULL);
+             INSERT INTO imported VALUES ('d/a.NEF', 'd', 0, 1);
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+        let mut c = Catalog::init(conn).unwrap();
+        assert!(c.is_imported(&p("d/a.NEF")).unwrap());
+        let shot = ImportedPhoto { path: p("d/b.NEF"), captured: Some("2026:01:01 00:00:00".into()) };
+        assert_eq!(c.add_imported(2, &[shot]).unwrap(), 1);
+        assert_eq!(c.known_shots().unwrap().len(), 1);
     }
 
     #[test]

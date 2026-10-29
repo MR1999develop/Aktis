@@ -186,12 +186,16 @@
   gradient cannot be rotated; only the last gradient of a mask shows
   handles, and a gradient cannot be inverted on its own (use Alt to
   take it away, or the mask's Invert).
-- Catalogs: Import Images reads the folder (and its sub-folders) on the
-  interface thread to count the RAW files; a large tree should be read by
-  the worker. Capture One's import options (copy or move the files into a
-  folder, rename, apply a preset or metadata, skip duplicates, backup) are
-  not offered: files are always referenced where they are. Removing photos
-  from the catalog (`Catalog::remove`) has no menu yet; missing files cannot
-  be located again (relink); there is no catalog backup on quit nor
-  "Import Catalog" to merge one into another. User collections (albums,
-  smart albums, projects) are not done.
+- Catalogs and import: the Import Images window counts the RAW files of
+  the source on the interface thread; a large tree should be read by the
+  worker (the big window with thumbnails comes next and will). JPEG and
+  TIFF, and the RAW+JPEG choice, are not imported yet. Photos imported
+  before catalog version 4 have no capture time, so they are never taken
+  as duplicates. A file without a capture date is filed under its
+  modification day in UTC. Photographer and copyright given at import are
+  kept (table `texts`) but not shown until the Metadata panel. Photos
+  dropped on the window and "Import this folder" import in place with the
+  default options. Missing: removing photos from the catalog with a menu
+  (`Catalog::remove` exists), locating missing files, catalog backup,
+  Import Catalog, export as a catalog, user collections (albums, smart
+  albums, projects).
