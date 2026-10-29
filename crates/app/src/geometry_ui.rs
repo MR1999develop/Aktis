@@ -347,7 +347,7 @@ impl GeometryUi {
                         edits.push(GeoEdit::Begin);
                     }
                     // A double-click goes back to 0, as in Capture One.
-                    let reset = r.double_clicked();
+                    let reset = crate::inspector::double_clicked(ui, &r);
                     if reset {
                         *v = 0.0;
                     }

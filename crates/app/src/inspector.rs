@@ -286,11 +286,9 @@ fn base_characteristics(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdi
     });
     ui.label(RichText::new(curve_hint(current)).size(FONT[0]).color(t.text_weak));
     ui.add_space(SPACE[1]);
-    ui.horizontal(|ui| {
-        ui.label("Profile");
-        ui.label(RichText::new(doc.profile_description()).size(FONT[1]).color(t.text_weak))
-            .on_hover_text("The camera profile applied when the photo is developed, before every node");
-    });
+    // Not in a horizontal row: a long description must wrap, not widen the panel.
+    ui.label(RichText::new(format!("Profile: {}", doc.profile_description())).size(FONT[1]).color(t.text_weak))
+        .on_hover_text("The camera profile applied when the photo is developed, before every node");
     ui.label(
         RichText::new("Developed into linear Rec. 2020; shown and exported in sRGB through the curve above.")
             .size(FONT[0])
@@ -469,7 +467,7 @@ fn released(
     let default = if suffix == " %" { 100.0 } else { 0.0 };
     let slider = egui::Slider::new(&mut shown, range).suffix(suffix).step_by(1.0).fixed_decimals(0);
     let response = ui.add_enabled(enabled, slider).on_hover_text("Double-click to reset");
-    if response.double_clicked() {
+    if double_clicked(ui, &response) {
         ui.ctx().data_mut(|d| d.remove::<f32>(id));
         return Some(default);
     }
@@ -592,6 +590,12 @@ enum LensPick {
     Custom(LensSettings),
 }
 
+/// `true` when the primary button was double-clicked on `response`'s
+/// widget (sliders sense drags only, so their responses never report it).
+pub fn double_clicked(ui: &egui::Ui, response: &egui::Response) -> bool {
+    response.hovered() && ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary))
+}
+
 /// A slider for a float parameter, with its edits; returns the slider's
 /// response and the width of its track (where it starts on the left).
 pub fn float_slider(
@@ -631,8 +635,9 @@ pub fn float_slider(
     if response.drag_stopped() {
         edits.push(UiEdit::EndDrag);
     }
-    // As in Capture One, a double-click goes back to the default.
-    if response.double_clicked() {
+    // As in Capture One, a double-click goes back to the default (the
+    // slider itself only senses drags, so the pointer is asked).
+    if double_clicked(ui, &response) {
         edits.push(UiEdit::Reset { node, param: param.clone() });
     }
     response.context_menu(|ui| {

@@ -5,8 +5,10 @@
 //! colour is the average of the pixels whose darkest channel is in the top
 //! 0.1 %, and the haze in each place is the darkest channel smoothed over
 //! 1 % of the image diagonal (a mean rather than a minimum, which avoids
-//! halos at edges). Removing it divides out the estimated transmission,
-//! never by less than 0.15; adding haze mixes the haze colour in.
+//! halos at edges). Removing it divides the luminance's distance from the
+//! haze by the estimated transmission (at most 70 % of the haze removed,
+//! never dividing by less than 0.35) and scales the three channels alike,
+//! so saturation is unchanged; adding haze mixes the haze colour in.
 //!
 //! It needs the whole image, so it runs on the CPU.
 
@@ -46,6 +48,12 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     ],
 });
 
+/// Largest share of the estimated haze removed at 100 (some is always left,
+/// so the result stays natural).
+const MAX_STRENGTH: f32 = 0.7;
+/// Smallest transmission divided out: the most a tone can be stretched is 1/this.
+const MIN_TRANSMISSION: f32 = 0.35;
+
 /// The dehaze tool.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Dehaze;
@@ -66,6 +74,18 @@ fn airlight(pixels: &[[f32; 4]], dark: &[f32]) -> [f32; 3] {
     }
     #[allow(clippy::cast_possible_truncation)] // a colour
     sum.map(|s| (s / f64::from(n.max(1))) as f32)
+}
+
+/// One pixel without haze: its luminance's distance from the haze
+/// luminance `air_y` divided by the transmission `t`, the three channels
+/// scaled alike so that contrast comes back and saturation stays.
+fn remove_haze(rgb: [f32; 3], air_y: f32, t: f32) -> [f32; 3] {
+    let y = luma(rgb);
+    if y <= 1e-6 {
+        return rgb;
+    }
+    let k = ((y - air_y) / t + air_y).max(0.0) / y;
+    rgb.map(|v| v * k)
 }
 
 /// Takes the shadows' colour cast to `tone` (a colour, its brightness
@@ -137,12 +157,12 @@ impl Tool for Dehaze {
         let mut haze = dark;
         blur(&mut haze, w, h, (0.01 * (w as f32).hypot(h as f32)).max(1.0));
         let air_dark = air[0].min(air[1]).min(air[2]).max(1e-4);
-        let strength = 0.95 * amount / 100.0;
+        let strength = MAX_STRENGTH * amount / 100.0;
+        let air_y = luma(air);
         for (p, d) in image.pixels_mut().iter_mut().zip(haze) {
-            let t = (1.0 - strength * (d / air_dark).min(1.0)).max(0.15);
-            for c in 0..3 {
-                p[c] = (p[c] - air[c]) / t + air[c];
-            }
+            let t = (1.0 - strength * (d / air_dark).min(1.0)).max(MIN_TRANSMISSION);
+            let rgb = remove_haze([p[0], p[1], p[2]], air_y, t);
+            p[..3].copy_from_slice(&rgb);
         }
         let tone = match params.choice(SHADOW_TONE) {
             CUSTOM_TONE => Some(TONE_RGB.map(|id| params.float(id))),
@@ -174,7 +194,7 @@ mod tests {
         let haze = [0.6, 0.65, 0.7];
         let px = (0..40 * 40)
             .map(|i| {
-                let scene = if i % 40 < 20 { [0.05, 0.04, 0.03] } else { [0.3, 0.2, 0.1] };
+                let scene = if i % 40 < 20 { [0.05, 0.04, 0.0] } else { [0.3, 0.2, 0.0] };
                 let t = if i / 40 < 4 { 0.0 } else { 0.5 }; // the top rows are pure haze (sky)
                 let c: [f32; 3] = std::array::from_fn(|k| scene[k] * t + haze[k] * (1.0 - t));
                 [c[0], c[1], c[2], 1.0]
@@ -200,8 +220,24 @@ mod tests {
         assert!((air[2] - 0.7).abs() < 1e-5, "{air:?}");
         let before = hazy();
         let after = run(100.0);
-        let spread = |img: &ImageF32| img.pixels()[30 * 40 + 30][0] - img.pixels()[30 * 40 + 5][0];
+        let spread = |img: &ImageF32| {
+            let at = |i: usize| {
+                let p = img.pixels()[i];
+                luma([p[0], p[1], p[2]])
+            };
+            at(30 * 40 + 30) - at(30 * 40 + 5)
+        };
         assert!(spread(&after) > spread(&before) * 1.2, "{} {}", spread(&after), spread(&before));
+    }
+
+    #[test]
+    fn removing_haze_spreads_the_tones_and_keeps_the_saturation() {
+        let air_y = 0.6;
+        let (dark, light) = (remove_haze([0.4, 0.3, 0.2], air_y, 0.5), remove_haze([0.5, 0.45, 0.4], air_y, 0.5));
+        assert!(luma(light) - luma(dark) > 1.99 * (luma([0.5, 0.45, 0.4]) - luma([0.4, 0.3, 0.2])));
+        assert!((dark[0] / dark[2] - 2.0).abs() < 1e-4, "channel ratios kept: {dark:?}");
+        let haze = remove_haze([0.6, 0.6, 0.6], air_y, 0.5);
+        assert!(haze.iter().all(|v| (v - 0.6).abs() < 1e-5), "the haze itself stays: {haze:?}");
     }
 
     #[test]
