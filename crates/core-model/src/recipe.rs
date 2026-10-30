@@ -169,29 +169,10 @@ pub struct DevelopSettings {
     pub profile: ProfileChoice,
     /// Lens corrections.
     pub lens: LensSettings,
-    /// How the colour filter mosaic becomes RGB.
-    pub demosaic: Demosaic,
 }
 
-/// How the sensor's colour mosaic becomes three colours per pixel. Each
-/// method fits one kind of sensor; one that does not fit the photo's
-/// (a preset made for another camera) develops as [`Demosaic::Auto`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum Demosaic {
-    /// The best method for the sensor: RCD for Bayer, Markesteijn for X-Trans.
-    #[default]
-    Auto,
-    /// Bayer: ratio corrected demosaicing, sharp with few false colours.
-    Rcd,
-    /// Bayer: the plain average of the neighbours; fast and soft.
-    Bilinear,
-    /// X-Trans: Markesteijn's three passes, sharp with few false colours.
-    Markesteijn,
-    /// X-Trans: an edge-aware green and colour differences; fast and soft.
-    XTransFast,
-}
-
-/// The kinds of colour filter a method is for.
+/// The kinds of colour filter, each demosaiced by its best method
+/// (Markesteijn for X-Trans, RCD for Bayer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SensorKind {
     /// 2×2 Bayer filter.
@@ -202,85 +183,23 @@ pub enum SensorKind {
     Rgb,
 }
 
-impl Demosaic {
-    /// Every method, in menu order.
-    pub const ALL: [Self; 5] = [Self::Auto, Self::Rcd, Self::Bilinear, Self::Markesteijn, Self::XTransFast];
-
-    /// Name in menus.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Auto => "Auto",
-            Self::Rcd => "RCD",
-            Self::Bilinear => "Bilinear (fast)",
-            Self::Markesteijn => "Markesteijn 3-pass",
-            Self::XTransFast => "X-Trans fast",
-        }
-    }
-
-    /// Stable name in saved recipes.
-    #[must_use]
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Rcd => "rcd",
-            Self::Bilinear => "bilinear",
-            Self::Markesteijn => "markesteijn",
-            Self::XTransFast => "xtrans_fast",
-        }
-    }
-
-    /// The method saved as `id`.
-    #[must_use]
-    pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|d| d.id() == id)
-    }
-
-    /// Whether the method can develop a sensor of `kind` (Auto always can).
-    #[must_use]
-    pub fn fits(self, kind: SensorKind) -> bool {
-        match self {
-            Self::Auto => true,
-            Self::Rcd | Self::Bilinear => kind == SensorKind::Bayer,
-            Self::Markesteijn | Self::XTransFast => kind == SensorKind::XTrans,
-        }
-    }
-
-    /// The method actually used for a sensor of `kind`: this one when it
-    /// fits, else the best for the sensor ([`Self::Auto`] for linear data).
-    #[must_use]
-    pub fn for_sensor(self, kind: SensorKind) -> Self {
-        match (self, kind) {
-            (m, k) if m != Self::Auto && m.fits(k) => m,
-            (_, SensorKind::Bayer) => Self::Rcd,
-            (_, SensorKind::XTrans) => Self::Markesteijn,
-            (_, SensorKind::Rgb) => Self::Auto,
-        }
-    }
-}
-
 /// The tone curve of the output render (scene light → display), as Capture
 /// One's Base Characteristics ▸ Curve: the photo's basic look, under every
 /// adjustment.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum BaseCurve {
-    /// The default for the file: for a camera's RAW file the curve fitted to
-    /// the camera's own picture ([`BaseCurve::CameraMatch`]), or
+    /// Standard, the default for the file: for a camera's RAW file the curve
+    /// fitted to the camera's own picture ([`BaseCurve::CameraMatch`]), or
     /// [`BaseCurve::FilmStandard`] when there is none; [`BaseCurve::Linear`]
     /// for a JPEG or TIFF (a finished picture already has its tone curve).
     #[default]
     Auto,
-    /// Like slide film: deep blacks, bright midtones and highlights.
-    FilmStandard,
-    /// Film Standard with less contrast in the deep shadows (more detail there).
-    FilmExtraShadow,
-    /// More contrast than Film Standard: deeper shadows, brighter highlights.
-    FilmHighContrast,
-    /// Very low contrast with a gentle roll-off near white, to build the look
-    /// with the Curve and Levels nodes.
-    LinearResponse,
     /// No curve: the pixels shown as they are, as a JPEG or TIFF looks.
     Linear,
+    /// Like slide film: deep blacks, bright midtones and highlights. What
+    /// Standard becomes for a RAW file whose camera picture is unknown;
+    /// never saved (recipes keep Auto) and not in the menu.
+    FilmStandard,
     /// The film curve fitted to the camera's own picture of the photo (the
     /// JPEG inside the RAW file): what [`BaseCurve::Auto`] becomes for a RAW
     /// file whose picture is known ([`BaseCurve::with_camera_fit`]). Worked
@@ -341,27 +260,15 @@ impl CurveFit {
 }
 
 impl BaseCurve {
-    /// Every curve, in menu order.
-    pub const ALL: [Self; 6] = [
-        Self::Auto,
-        Self::FilmStandard,
-        Self::FilmExtraShadow,
-        Self::FilmHighContrast,
-        Self::LinearResponse,
-        Self::Linear,
-    ];
+    /// The curves offered in the menu, in order.
+    pub const ALL: [Self; 2] = [Self::Auto, Self::Linear];
 
-    /// Name in menus.
+    /// Name in menus: Standard covers what Auto becomes for each file.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::Auto => "Auto",
-            Self::FilmStandard => "Film Standard",
-            Self::FilmExtraShadow => "Film Extra Shadow",
-            Self::FilmHighContrast => "Film High Contrast",
-            Self::LinearResponse => "Linear Response",
+            Self::Auto | Self::FilmStandard | Self::CameraMatch(_) => "Standard",
             Self::Linear => "Linear",
-            Self::CameraMatch(_) => "Camera Match",
         }
     }
 
@@ -369,21 +276,24 @@ impl BaseCurve {
     #[must_use]
     pub fn id(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
-            Self::FilmStandard => "film_standard",
-            Self::FilmExtraShadow => "film_extra_shadow",
-            Self::FilmHighContrast => "film_high_contrast",
-            Self::LinearResponse => "linear_response",
+            // Never saved themselves: they are what Auto shows.
+            Self::Auto | Self::FilmStandard | Self::CameraMatch(_) => "auto",
             Self::Linear => "linear",
-            // Never saved itself: it is what Auto shows.
-            Self::CameraMatch(_) => "auto",
         }
     }
 
-    /// The curve saved as `id`.
+    /// The curve saved as `id`. The film curves that could once be chosen
+    /// (Film Standard, Extra Shadow, High Contrast, Linear Response) open
+    /// as Standard.
     #[must_use]
     pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|c| c.id() == id)
+        match id {
+            "auto" | "film_standard" | "film_extra_shadow" | "film_high_contrast" | "linear_response" => {
+                Some(Self::Auto)
+            }
+            "linear" => Some(Self::Linear),
+            _ => None,
+        }
     }
 
     /// The curve actually applied to a camera's RAW file: [`BaseCurve::Auto`]
@@ -456,28 +366,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_demosaic_method_fits_its_sensor_or_gives_way_to_the_best() {
-        assert_eq!(Demosaic::Auto.for_sensor(SensorKind::Bayer), Demosaic::Rcd);
-        assert_eq!(Demosaic::Auto.for_sensor(SensorKind::XTrans), Demosaic::Markesteijn);
-        assert_eq!(Demosaic::Bilinear.for_sensor(SensorKind::Bayer), Demosaic::Bilinear);
-        assert_eq!(Demosaic::Bilinear.for_sensor(SensorKind::XTrans), Demosaic::Markesteijn);
-        assert_eq!(Demosaic::XTransFast.for_sensor(SensorKind::XTrans), Demosaic::XTransFast);
-        assert_eq!(Demosaic::Rcd.for_sensor(SensorKind::Rgb), Demosaic::Auto);
-        for d in Demosaic::ALL {
-            assert_eq!(Demosaic::from_id(d.id()), Some(d));
-        }
-    }
-
-    #[test]
     fn auto_becomes_the_camera_match_only_for_raw_files_with_a_fit() {
         let fit = CurveFit::new(0.47, 0.19, 1.8, Some(2.5));
         assert_eq!(BaseCurve::Auto.with_camera_fit(false, Some(fit)), BaseCurve::CameraMatch(fit));
         assert_eq!(BaseCurve::Auto.with_camera_fit(false, None), BaseCurve::FilmStandard);
         assert_eq!(BaseCurve::Auto.with_camera_fit(true, Some(fit)), BaseCurve::Linear);
-        assert_eq!(BaseCurve::FilmHighContrast.with_camera_fit(false, Some(fit)), BaseCurve::FilmHighContrast);
+        assert_eq!(BaseCurve::Linear.with_camera_fit(false, Some(fit)), BaseCurve::Linear);
         assert_eq!(BaseCurve::CameraMatch(fit).id(), "auto");
         assert!((fit.slope() - 0.19).abs() < 1e-6 && fit.toe_power() == Some(2.5));
         assert_eq!(CurveFit::new(0.5, 0.2, 2.0, None).toe_power(), None);
+    }
+
+    #[test]
+    fn only_standard_and_linear_are_offered_and_the_old_film_curves_open_as_standard() {
+        for c in BaseCurve::ALL {
+            assert_eq!(BaseCurve::from_id(c.id()), Some(c));
+        }
+        assert_eq!(BaseCurve::Auto.label(), "Standard");
+        for old in ["film_standard", "film_extra_shadow", "film_high_contrast", "linear_response"] {
+            assert_eq!(BaseCurve::from_id(old), Some(BaseCurve::Auto), "{old}");
+        }
+        assert_eq!(BaseCurve::from_id("sepia"), None);
     }
 
     #[test]

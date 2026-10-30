@@ -263,6 +263,7 @@ dependencies = [
  "commands",
  "core-color",
  "core-model",
+ "develop",
  "editor",
  "eframe",
  "egui_kittest",

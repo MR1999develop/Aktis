@@ -7,7 +7,7 @@
 //! the other nodes.
 
 use commands::GestureId;
-use core_model::{BaseCurve, CustomLens, Demosaic, LensSettings, NodeId, NodeKind, ParamId, ParamValue, SensorKind};
+use core_model::{BaseCurve, CustomLens, LensSettings, NodeId, NodeKind, ParamId, ParamValue, SensorKind};
 use editor::adjust::Pick;
 use editor::custom_lenses::CustomLenses;
 use editor::{Document, Histogram};
@@ -77,8 +77,6 @@ pub enum UiEdit {
     DeleteCustomLens(String),
     /// Another base curve (Base Characteristics).
     Curve(BaseCurve),
-    /// Choose the demosaic method.
-    Demosaic(Demosaic),
     /// Several values of one node at once (one undo step; while dragging,
     /// merged with the drag started with `key`).
     SetMany {
@@ -276,13 +274,7 @@ fn base_characteristics(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdi
     let current = doc.recipe().curve;
     ui.horizontal(|ui| {
         ui.label("Curve");
-        // Auto says what it became for this photo.
-        let shown = if current == BaseCurve::Auto {
-            format!("Auto ({})", doc.output_curve().label())
-        } else {
-            current.label().to_owned()
-        };
-        egui::ComboBox::from_id_salt("rne-base-curve").selected_text(shown).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("rne-base-curve").selected_text(current.label()).show_ui(ui, |ui| {
             for curve in BaseCurve::ALL {
                 if ui.selectable_label(curve == current, curve.label()).on_hover_text(curve_hint(curve)).clicked()
                     && curve != current
@@ -294,7 +286,7 @@ fn base_characteristics(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdi
     });
     ui.label(RichText::new(curve_hint(current)).size(FONT[0]).color(t.text_weak));
     ui.add_space(SPACE[1]);
-    demosaic_choice(ui, doc, edits);
+    demosaic_line(ui, doc);
     // Not in a horizontal row: a long description must wrap, not widen the panel.
     ui.label(RichText::new(format!("Profile: {}", doc.profile_description())).size(FONT[1]).color(t.text_weak))
         .on_hover_text("The camera profile applied when the photo is developed, before every node");
@@ -305,59 +297,30 @@ fn base_characteristics(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdi
     );
 }
 
-/// The demosaic method, among those for the photo's sensor (none for a
-/// picture that is already RGB).
-fn demosaic_choice(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdit>) {
-    let Some(kind) = doc.sensor_kind().filter(|k| *k != SensorKind::Rgb) else { return };
+/// The demosaic method, chosen for the photo's sensor and ISO (nothing for
+/// a picture that is already RGB).
+fn demosaic_line(ui: &mut egui::Ui, doc: &Document) {
+    let high_iso = doc.info().iso.is_some_and(|iso| iso >= develop::LMMSE_FROM_ISO);
+    let method = match doc.sensor_kind() {
+        Some(SensorKind::Bayer) if high_iso => "LMMSE (high ISO)",
+        Some(SensorKind::Bayer) => "RCD",
+        Some(SensorKind::XTrans) => "Markesteijn 3-pass + VNG",
+        Some(SensorKind::Rgb) | None => return,
+    };
     let t = Tokens::of(ui.ctx().theme());
-    let current = doc.recipe().develop.demosaic;
-    let used = current.for_sensor(kind);
-    // Auto (or a method for another sensor, from a preset) says what it became.
-    let shown = if current == used { current.label().to_owned() } else { format!("Auto ({})", used.label()) };
-    ui.horizontal(|ui| {
-        ui.label("Demosaic");
-        egui::ComboBox::from_id_salt("rne-demosaic").selected_text(shown).show_ui(ui, |ui| {
-            for method in Demosaic::ALL.into_iter().filter(|m| m.fits(kind)) {
-                let label = if method == Demosaic::Auto {
-                    format!("Auto ({})", Demosaic::Auto.for_sensor(kind).label())
-                } else {
-                    method.label().to_owned()
-                };
-                if ui.selectable_label(method == current, label).on_hover_text(demosaic_hint(method)).clicked()
-                    && method != current
-                {
-                    edits.push(UiEdit::Demosaic(method));
-                }
-            }
-        });
-    });
-    ui.label(RichText::new(demosaic_hint(used)).size(FONT[0]).color(t.text_weak));
-    ui.add_space(SPACE[1]);
-}
-
-/// What a demosaic method does, in one line.
-fn demosaic_hint(method: Demosaic) -> &'static str {
-    match method {
-        Demosaic::Auto => "The best method for the sensor",
-        Demosaic::Rcd => "Sharp detail and few false colours (as RawTherapee and darktable)",
-        Demosaic::Bilinear => "Fast and soft, with false colours on fine detail",
-        Demosaic::Markesteijn => "Sharp detail without mazes or false colours (as RawTherapee and darktable)",
-        Demosaic::XTransFast => "Fast and soft",
-    }
+    ui.label(RichText::new(format!("Demosaic: {method}")).size(FONT[1]).color(t.text_weak))
+        .on_hover_text(
+            "Chosen for the sensor: RCD for Bayer, LMMSE for Bayer from ISO 3200, Markesteijn with VNG in flat areas for X-Trans",
+        );
 }
 
 /// What a base curve does, in one line.
 fn curve_hint(curve: BaseCurve) -> &'static str {
     match curve {
-        BaseCurve::Auto => {
-            "The default: the camera's own look for RAW files (Film Standard when the file has no picture), Linear for JPEG and TIFF"
+        BaseCurve::Auto | BaseCurve::FilmStandard | BaseCurve::CameraMatch(_) => {
+            "The camera's own look for RAW files (a film curve when the file has no picture); JPEG and TIFF files as they are"
         }
-        BaseCurve::FilmStandard => "Like slide film: deep blacks, bright midtones and highlights",
-        BaseCurve::FilmExtraShadow => "Film Standard with more detail in the deep shadows",
-        BaseCurve::FilmHighContrast => "More contrast: deeper shadows, brighter highlights",
-        BaseCurve::LinearResponse => "Very low contrast, to build the look with Curve and Levels",
         BaseCurve::Linear => "No curve: the picture as it is, as JPEG and TIFF files look",
-        BaseCurve::CameraMatch(_) => "Fitted to the picture the camera made of this photo, a little gentler",
     }
 }
 

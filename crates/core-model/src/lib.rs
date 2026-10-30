@@ -34,8 +34,8 @@ pub use math::Matrix3;
 pub use orientation::Orientation;
 pub use params::{ParamValue, Params};
 pub use recipe::{
-    BaseCurve, CurveFit, CustomLens, Demosaic, DevelopSettings, LensAmounts, LensSettings, ManualLens, ProfileChoice,
-    Recipe, SensorKind, WhiteBalance,
+    BaseCurve, CurveFit, CustomLens, DevelopSettings, LensAmounts, LensSettings, ManualLens, ProfileChoice, Recipe,
+    SensorKind, WhiteBalance,
 };
 pub use sensor::{BayerPattern, CfaPattern, SensorError, SensorImage};
 pub use style::{CameraDefaults, Style, StyleNode, StyleSelection, tool_nodes};

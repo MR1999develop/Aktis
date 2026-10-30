@@ -21,6 +21,7 @@ platform.workspace = true
 ai-models.workspace = true
 catalog = { workspace = true, features = ["sqlite"] }
 core-color.workspace = true
+develop.workspace = true
 tool-adjust.workspace = true
 masks.workspace = true
 # AI Select runs the segmentation models (ONNX Runtime, loaded at run time).

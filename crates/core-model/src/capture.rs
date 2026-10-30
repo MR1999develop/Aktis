@@ -133,6 +133,8 @@ pub struct CaptureInfo {
     pub aperture: Option<f32>,
     /// Focus distance in metres.
     pub focus_distance: Option<f32>,
+    /// ISO sensitivity (it chooses the demosaic method for Bayer sensors).
+    pub iso: Option<u32>,
     /// The camera's colour matrices, one per calibration illuminant (usually
     /// standard illuminant A and D65).
     pub color_matrices: Vec<CalibratedMatrix>,

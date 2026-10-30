@@ -1091,7 +1091,6 @@ impl EditorApp {
                     Ok(())
                 }
                 UiEdit::Curve(curve) => doc.set_base_curve(&self.registry, curve),
-                UiEdit::Demosaic(method) => doc.set_demosaic(&self.registry, method),
                 UiEdit::SetMany { node, key, values, in_drag } => {
                     let gesture =
                         self.drag.as_ref().filter(|d| in_drag && d.node == node && d.param == key).map(|d| d.gesture);
@@ -1409,7 +1408,8 @@ impl EditorApp {
     fn start_recipe(&self, opened: &editor::Opened) -> Recipe {
         let lens = self.custom_lenses.start_settings(opened.lens_key.as_deref());
         let nodes = self.camera_defaults.start_nodes(&opened.camera);
-        editor::camera_defaults::start_recipe(&self.registry, &opened.camera, lens, &nodes)
+        let raw_iso = opened.raw.as_ref().filter(|r| !r.capture.rendered).and(opened.info.iso);
+        editor::camera_defaults::start_recipe(&self.registry, &opened.camera, raw_iso, lens, &nodes)
     }
 
     fn install(&mut self, reopened: Reopened, same_photo: bool, keep_shown: bool) {
@@ -2025,6 +2025,20 @@ impl EditorApp {
                         ui.weak("No lens corrections").on_hover_text(notes);
                     }
                     None => {}
+                }
+                // Aperture, shutter speed and ISO, after the lens.
+                let info = doc.info();
+                let shot: Vec<String> = [
+                    info.aperture.map(|a| format!("f/{}", trim_number(a))),
+                    info.shutter_text(),
+                    info.iso.map(|i| format!("ISO {i}")),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if !shot.is_empty() {
+                    ui.separator();
+                    ui.label(shot.join(" \u{b7} ")).on_hover_text("Aperture, shutter speed and ISO");
                 }
             }
             if let Some(state) = &self.variant {
@@ -3687,9 +3701,25 @@ fn to_egui_rect(r: editor::Rect) -> egui::Rect {
     egui::Rect::from_min_size(egui::pos2(r.x, r.y), egui::vec2(r.w, r.h))
 }
 
+/// `8` for 8.0, `5.6` for 5.6: an f-number as cameras show it.
+fn trim_number(v: f32) -> String {
+    let text = format!("{v:.1}");
+    if let Some(whole) = text.strip_suffix(".0") {
+        return whole.to_owned();
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f_numbers_read_as_on_a_camera() {
+        assert_eq!(trim_number(8.0), "8");
+        assert_eq!(trim_number(5.6), "5.6");
+        assert_eq!(trim_number(1.4), "1.4");
+    }
 
     #[test]
     fn below_100_percent_the_photo_is_rendered_as_large_as_it_is_shown() {

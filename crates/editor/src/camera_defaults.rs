@@ -36,19 +36,53 @@ pub fn start_purple_fringing(camera: &str) -> f32 {
     }
 }
 
+/// ISO from which a camera's RAW file starts with colour noise reduction:
+/// below it colour noise is rarely visible, and the node costs time.
+pub const COLOR_NOISE_FROM_ISO: u32 = 400;
+
+/// Tool id of the noise reduction.
+const NOISE_REDUCTION: &str = "noise_reduction";
+
+/// The noise reduction a camera's RAW file shot at `raw_iso` starts with,
+/// as Capture One reduces noise from the start: colour noise only, at the
+/// tool's default strength (the tool measures the noise of each photo).
+/// `None` for a JPEG or TIFF (`raw_iso` is then `None`) and below
+/// [`COLOR_NOISE_FROM_ISO`].
+#[must_use]
+pub fn start_noise_reduction(raw_iso: Option<u32>) -> Option<StyleNode> {
+    if raw_iso? < COLOR_NOISE_FROM_ISO {
+        return None;
+    }
+    let mut params = Params::new();
+    params.set(ParamId::new("luminance").ok()?, ParamValue::Float(0.0));
+    Some(StyleNode { tool: ToolId::new(NOISE_REDUCTION).ok()?, params })
+}
+
 /// The recipe a photo of `camera` ("Maker Model") never edited starts with:
 /// the default one, with the settings of its custom lens (`lens`; without
-/// one, the camera's purple fringing, [`start_purple_fringing`]) and the
-/// nodes of its camera's defaults (`nodes`, those this build has), in their
-/// order after the Source.
+/// one, the camera's purple fringing, [`start_purple_fringing`]), colour
+/// noise reduction for a RAW file shot at a high ISO (`raw_iso`, `None`
+/// for a JPEG or TIFF; [`start_noise_reduction`]) unless the camera's
+/// defaults have their own, and the nodes of its camera's defaults
+/// (`nodes`, those this build has), in their order after the Source.
 #[must_use]
-pub fn start_recipe(registry: &ToolRegistry, camera: &str, lens: Option<LensSettings>, nodes: &[StyleNode]) -> Recipe {
+pub fn start_recipe(
+    registry: &ToolRegistry,
+    camera: &str,
+    raw_iso: Option<u32>,
+    lens: Option<LensSettings>,
+    nodes: &[StyleNode],
+) -> Recipe {
     let mut recipe = Recipe::default();
     match lens {
         Some(lens) => recipe.develop.lens = lens,
         None => recipe.develop.lens.purple_fringing = start_purple_fringing(camera),
     }
-    let style = Style { nodes: nodes.to_vec(), ..Style::default() };
+    // Noise first: it is taken away before any other node acts.
+    let own_noise_reduction = nodes.iter().any(|n| n.tool.as_str() == NOISE_REDUCTION);
+    let noise = start_noise_reduction(raw_iso).filter(|_| !own_noise_reduction);
+    let nodes: Vec<StyleNode> = noise.into_iter().chain(nodes.iter().cloned()).collect();
+    let style = Style { nodes, ..Style::default() };
     let (style, _) = crate::presets::usable(&style, registry);
     if style.nodes.is_empty() {
         return recipe;
@@ -205,18 +239,48 @@ mod tests {
             StyleNode { tool: tool("no_such_tool"), params: Params::new() },
         ];
         let lens = LensSettings { vignetting: false, ..LensSettings::default() };
-        let r = start_recipe(&reg, "FUJIFILM X-T5", Some(lens.clone()), &nodes);
+        let r = start_recipe(&reg, "FUJIFILM X-T5", None, Some(lens.clone()), &nodes);
         assert_eq!(r.develop.lens, lens);
         let tools: Vec<_> = core_model::tool_nodes(&r.graph).into_iter().filter_map(|id| r.graph.node(id)).collect();
         assert_eq!(tools.len(), 1, "unknown tools are left out");
         assert_eq!(tools[0].params.get(&ParamId::new("exposure").unwrap()), Some(ParamValue::Float(0.5)));
-        assert_eq!(start_recipe(&reg, "NIKON CORPORATION NIKON D3S", None, &[]), Recipe::default());
+        assert_eq!(start_recipe(&reg, "NIKON CORPORATION NIKON D3S", None, None, &[]), Recipe::default());
+    }
+
+    #[test]
+    fn a_raw_file_at_a_high_iso_starts_with_colour_noise_reduction() {
+        let reg = engine::builtin_tools().unwrap();
+        let tools = |r: &Recipe| -> Vec<(String, Params)> {
+            core_model::tool_nodes(&r.graph)
+                .into_iter()
+                .filter_map(|id| r.graph.node(id))
+                .filter_map(|n| match &n.kind {
+                    core_model::NodeKind::Tool(t) => Some((t.as_str().to_owned(), n.params.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        let canon = "Canon EOS R6";
+        let high = start_recipe(&reg, canon, Some(3200), None, &[]);
+        let found = tools(&high);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, NOISE_REDUCTION);
+        assert_eq!(found[0].1.get(&ParamId::new("luminance").unwrap()), Some(ParamValue::Float(0.0)));
+        assert_eq!(tools(&start_recipe(&reg, canon, Some(200), None, &[])), vec![], "low ISO: nothing");
+        assert_eq!(tools(&start_recipe(&reg, canon, None, None, &[])), vec![], "JPEG or TIFF: nothing");
+        // The camera's own noise reduction is kept instead, after nothing else.
+        let mut own = Params::new();
+        own.set(ParamId::new("color").unwrap(), ParamValue::Float(80.0));
+        let nodes = vec![StyleNode { tool: tool(NOISE_REDUCTION), params: own.clone() }];
+        let mine = tools(&start_recipe(&reg, canon, Some(6400), None, &nodes));
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].1.get(&ParamId::new("color").unwrap()), Some(ParamValue::Float(80.0)));
     }
 
     #[test]
     fn fujifilm_photos_start_with_purple_fringing_removed() {
         let reg = engine::builtin_tools().unwrap();
-        let fuji = start_recipe(&reg, "FUJIFILM GFX100S", None, &[]);
+        let fuji = start_recipe(&reg, "FUJIFILM GFX100S", None, None, &[]);
         assert_eq!(fuji.develop.lens.purple_fringing, FUJIFILM_PURPLE_FRINGING);
         assert_eq!(start_purple_fringing("Fujifilm X100V"), FUJIFILM_PURPLE_FRINGING);
         assert_eq!(start_purple_fringing("Canon EOS R5"), 0.0);

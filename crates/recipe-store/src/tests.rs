@@ -115,7 +115,6 @@ fn every_recipe() -> Recipe {
                 purple_fringing: 0.4,
                 custom: Some("My zoom".to_owned()),
             },
-            demosaic: core_model::Demosaic::XTransFast,
         },
         graph: g,
         geometry: core_model::Geometry {
@@ -127,7 +126,7 @@ fn every_recipe() -> Recipe {
                 core_model::NormPoint::new(0.85, 0.9).unwrap(),
             )),
         },
-        curve: core_model::BaseCurve::FilmExtraShadow,
+        curve: core_model::BaseCurve::Linear,
     }
 }
 
@@ -161,8 +160,7 @@ fn every_edit() -> Vec<Edit> {
         Edit::SetLensCorrection(LensSettings::off()),
         Edit::SetLensCorrection(LensSettings::default()),
         Edit::SetGeometry(core_model::Geometry { angle: 2.0, ..core_model::Geometry::default() }),
-        Edit::SetBaseCurve(core_model::BaseCurve::LinearResponse),
-        Edit::SetDemosaic(core_model::Demosaic::Bilinear),
+        Edit::SetBaseCurve(core_model::BaseCurve::Linear),
         Edit::AddMask { to: n, def: every_mask() },
         Edit::SetMask { node: NodeId::from_raw(5), def: MaskDef::default() },
         Edit::ApplyStyle {
@@ -229,11 +227,15 @@ fn a_variant_without_history_or_layout_round_trips() {
 }
 
 #[test]
-fn a_recipe_from_before_the_demosaic_choice_develops_with_the_best_method() {
-    let text = encode(&every_variant()).replacen(",\"demosaic\":\"xtrans_fast\"", "", 1);
-    assert_ne!(text, encode(&every_variant()), "the field was there to remove");
-    let v = decode(&text).unwrap();
-    assert_eq!(v.recipe.develop.demosaic, core_model::Demosaic::Auto);
+fn a_variant_from_when_the_demosaic_could_be_chosen_still_opens() {
+    let old_step = r#"{"edit":{"op":"set_demosaic","method":"bilinear"},"created":[],"skipped":null},"#;
+    let old_redo = r#"{"op":"set_demosaic","method":"xtrans_fast"},"#;
+    let text = encode(&every_variant())
+        .replacen("\"white_balance\":", "\"demosaic\":\"bilinear\",\"white_balance\":", 1)
+        .replacen("\"steps\":[", &format!("\"steps\":[{old_step}"), 1)
+        .replacen("\"redo\":[", &format!("\"redo\":[{old_redo}"), 1);
+    assert_eq!(text.matches("demosaic").count(), 3, "the old fields were added: {text}");
+    assert_eq!(decode(&text), Ok(every_variant()), "the retired choice is left out");
 }
 
 #[test]

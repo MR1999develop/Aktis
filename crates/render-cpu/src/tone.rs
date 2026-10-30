@@ -31,6 +31,10 @@ pub const SHOULDER_FROM: f32 = 2.0;
 pub const WHITE_FROM: f32 = 1.0;
 /// …and at which it has turned fully white (3 stops over white).
 pub const WHITE_AT: f32 = 8.0;
+/// How much saturation the film curves take from reds (pure red loses this
+/// fraction, orange and skin about half of it, yellow, magenta and greys
+/// nothing): the camera profiles render reds a little strong.
+pub const RED_TRIM: f32 = 0.12;
 /// How much of the shoulder's compression also takes colour away: bright
 /// colours pale towards white as they approach it, as on film and in Capture One,
 /// instead of staying as saturated as in the midtones (exposure would
@@ -65,11 +69,6 @@ impl Shape {
             saturation: FILM_SATURATION,
         };
         match curve.resolved() {
-            BaseCurve::FilmExtraShadow => Self { toe_power: Some(2.5), ..film },
-            BaseCurve::FilmHighContrast => Self { slope: 0.24, shoulder_from: 1.6, saturation: 1.2, ..film },
-            BaseCurve::LinearResponse => {
-                Self { grey: grey_out(), slope: 0.15, shoulder_from: 2.3, toe_power: Some(4.0), saturation: 1.0 }
-            }
             BaseCurve::CameraMatch(fit) => Self {
                 grey: fit.grey(),
                 slope: fit.slope(),
@@ -81,12 +80,6 @@ impl Shape {
             BaseCurve::Auto | BaseCurve::FilmStandard | BaseCurve::Linear => film,
         }
     }
-}
-
-/// Middle grey as displayed: the sRGB encoding of [`GREY`], so midtones
-/// keep their brightness.
-fn grey_out() -> f32 {
-    core_color::srgb_encode(GREY)
 }
 
 /// Film Standard on one value: scene-linear in, display-linear out (to be
@@ -138,9 +131,9 @@ fn encoded(shape: &Shape, e: f32) -> f32 {
 }
 
 /// How much gentler than the camera's own picture the fitted curve is made:
-/// its midtone slope is this fraction of the camera's (compared with
-/// RawTherapee's matched curve, a little less contrast looks better).
-pub const CAMERA_MATCH_SOFTEN: f32 = 0.92;
+/// its midtone slope is this fraction of the camera's (a touch less
+/// contrast than the camera's JPEG; 0.92 looked flat on real photos).
+pub const CAMERA_MATCH_SOFTEN: f32 = 0.97;
 
 /// Toes tried by the fit: Film Standard's, then power laws from steep to gentle.
 const FIT_TOES: [Option<f32>; 5] = [None, Some(1.5), Some(2.5), Some(4.0), Some(6.0)];
@@ -284,6 +277,7 @@ pub fn output_rgb_with(rgb: [f32; 3], to_srgb: &Matrix3, curve: BaseCurve) -> [f
     // none left in the shoulder, where colours pale instead.
     let sat = 1.0 + (Shape::of(curve).saturation - 1.0) * (1.0 - shoulder_compression(curve, n));
     let ky = kept[0] * LUMA[0] + kept[1] * LUMA[1] + kept[2] * LUMA[2];
+    let sat = sat * (1.0 - RED_TRIM * redness(kept));
     let kept = kept.map(|v| ky + (v - ky) * sat);
     // Paler in the shoulder: the other channels rise towards the brightest,
     // so the colour whitens as on film and more light is never darker.
@@ -294,6 +288,18 @@ pub fn output_rgb_with(rgb: [f32; 3], to_srgb: &Matrix3, curve: BaseCurve) -> [f
     let w = smoothstep(WHITE_FROM, WHITE_AT, n);
     let c = paled.map(|v| v + (f - v) * w);
     gamut_map(to_srgb.apply(c))
+}
+
+/// How red a colour is, 0 to 1: 1 when red is the only strong channel, 0
+/// for greys and for colours where green or blue is as strong as red
+/// (yellow, magenta) or stronger.
+fn redness(rgb: [f32; 3]) -> f32 {
+    let lo = rgb[0].min(rgb[1]).min(rgb[2]);
+    let spread = rgb[0] - lo;
+    if spread <= 1e-9 {
+        return 0.0;
+    }
+    ((rgb[0] - rgb[1].max(rgb[2])) / spread).clamp(0.0, 1.0)
 }
 
 /// Brings linear sRGB inside [0, 1] by desaturating towards the grey of the
@@ -423,22 +429,22 @@ mod tests {
     }
 
     #[test]
-    fn the_curves_differ_as_their_names_say() {
-        let at = |c: BaseCurve, stops: f32| core_color::srgb_encode(curve_value(c, GREY * stops.exp2()));
-        let (std, shadow, high, linear) = (
-            BaseCurve::FilmStandard,
-            BaseCurve::FilmExtraShadow,
-            BaseCurve::FilmHighContrast,
-            BaseCurve::LinearResponse,
-        );
-        // Extra Shadow: brighter deep shadows, the same midtones and highlights.
-        assert!(at(shadow, -4.0) > at(std, -4.0) + 0.02);
-        assert!((at(shadow, 1.0) - at(std, 1.0)).abs() < 1e-5);
-        // High Contrast: darker shadows, brighter highlights.
-        assert!(at(high, -2.0) < at(std, -2.0) && at(high, 1.5) > at(std, 1.5));
-        // Linear Response: the flattest midtones, shadows kept, highlights gentler.
-        assert!(at(linear, 1.0) - at(linear, -1.0) < at(std, 1.0) - at(std, -1.0));
-        assert!(at(linear, -4.0) > at(std, -4.0) && at(linear, 2.0) < at(std, 2.0));
+    fn standard_takes_a_little_saturation_from_reds_only() {
+        // Below the shoulder every colour gets the same boost around its
+        // grey, except that reds get RED_TRIM less of it.
+        let spread = |rgb: [f32; 3]| {
+            let out = output_rgb_with(rgb, &ID, BaseCurve::FilmStandard);
+            out[0].max(out[1]).max(out[2]) - out[0].min(out[1]).min(out[2])
+        };
+        let (red, green, blue) = (spread([0.3, 0.06, 0.06]), spread([0.06, 0.3, 0.06]), spread([0.06, 0.06, 0.3]));
+        assert!((red / green - (1.0 - RED_TRIM)).abs() < 1e-3, "{red} {green}");
+        assert!((blue / green - 1.0).abs() < 1e-3, "{blue} {green}");
+        // Yellow and grey are left alone.
+        assert_eq!(redness([0.3, 0.3, 0.05]), 0.0);
+        assert_eq!(redness([0.2, 0.2, 0.2]), 0.0);
+        assert!((redness([0.3, 0.15, 0.05]) - 0.6).abs() < 1e-6, "orange is partly red");
+        let grey = output_rgb_with([0.18; 3], &ID, BaseCurve::FilmStandard);
+        assert!((grey[0] - grey[1]).abs() < 1e-6 && (grey[1] - grey[2]).abs() < 1e-6);
     }
 
     /// Scene luminances spread over 12 stops, and the picture `shape` makes of them.
@@ -487,7 +493,7 @@ mod tests {
         assert_eq!(shoulder_compression(BaseCurve::Linear, 3.0), 0.0);
         assert_eq!(BaseCurve::Auto.for_source(true), BaseCurve::Linear);
         assert_eq!(BaseCurve::Auto.for_source(false), BaseCurve::FilmStandard);
-        assert_eq!(BaseCurve::FilmHighContrast.for_source(true), BaseCurve::FilmHighContrast);
+        assert_eq!(BaseCurve::Linear.for_source(false), BaseCurve::Linear);
     }
 
     #[test]

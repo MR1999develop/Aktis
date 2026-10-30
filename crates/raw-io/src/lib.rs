@@ -171,6 +171,7 @@ pub fn read_raw(path: &Path) -> Result<RawFile, RawIoError> {
     let opcodes = std::fs::File::open(path).map(opcodes::read_opcodes).unwrap_or_default();
     let mut file = convert(&raw, metadata.as_ref(), &opcodes)?;
     file.info = metadata.as_ref().map(info::from_metadata).unwrap_or_default();
+    file.capture.iso = file.info.iso;
     Ok(file)
 }
 
@@ -324,6 +325,8 @@ fn capture_info(raw: &rawler::RawImage, metadata: Option<&RawMetadata>) -> Captu
         focal_length: exif.and_then(|e| e.focal_length.and_then(|r| ratio(r.n, r.d))),
         aperture,
         focus_distance,
+        // Filled from the shooting data with the rest of it (`read_raw`).
+        iso: None,
         color_matrices,
         rendered: false,
     }

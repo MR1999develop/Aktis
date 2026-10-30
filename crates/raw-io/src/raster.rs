@@ -146,6 +146,7 @@ pub(crate) fn read(path: &Path) -> Result<RawFile, RawIoError> {
         focal_length: exif.focal_length,
         aperture: exif.aperture,
         focus_distance: None,
+        iso: exif.iso,
         color_matrices: vec![CalibratedMatrix { illuminant: Illuminant::D65, xyz_to_camera: XYZ_TO_SRGB }],
         rendered: true,
     };

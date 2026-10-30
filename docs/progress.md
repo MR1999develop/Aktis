@@ -561,3 +561,27 @@ Details in `docs/catalog.md`.
   one, say) copied whole to a new named catalog, which is then open
   (`Catalog::save_copy` with `VACUUM INTO`, `Library::save_catalog_copy`);
   the open photo is saved first, the old catalog is left as it was.
+
+## 30 October: demosaic, base curve, colour noise, shooting data
+
+- Demosaic is no longer a choice: RCD for Bayer sensors, LMMSE from ISO
+  3200 (`develop::lmmse`, Zhang and Wu's directional estimate in a 2.2
+  gamma, then the false-colour median; `LMMSE_FROM_ISO`), Markesteijn
+  three-pass for X-Trans with VNG in the flat areas (`develop::vng`, as
+  darktable's dual demosaic: a detail mask from the Sobel gradient of the
+  square-root luminance decides how much of each). The ISO reaches the
+  development through `CaptureInfo::iso`. Recipes and histories saved
+  with a chosen method still open (the choice is ignored).
+- Base curve: only Standard (the old Auto: the camera's look, or Film
+  Standard without a camera picture) and Linear are offered; recipes with
+  the other film curves open as Standard. The camera-matched curve keeps
+  more contrast (`CAMERA_MATCH_SOFTEN` 0.92 → 0.97) and the film curves
+  take saturation from reds (`RED_TRIM`, 12 % for pure red, about half for
+  orange and skin, none for yellow, magenta and greys).
+- A RAW file shot at ISO 400 or more starts with a Noise Reduction node
+  for colour noise only (Luminance 0, Color 50; `start_noise_reduction`),
+  unless its camera's defaults bring their own.
+- Under the image, after the lens: aperture, shutter speed and ISO.
+- Import window: a test draws the real window with the app's theme in
+  three screen sizes and checks that every part stays on screen
+  (`every_part_of_the_window_is_on_screen`).

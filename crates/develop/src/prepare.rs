@@ -34,7 +34,7 @@ pub fn develop_capture(
 ) -> Result<Developed, DevelopError> {
     let profile = choose_profile(info, &settings.profile, library);
     let lens = prepare_lens(db, info, &settings.lens, sensor.width(), sensor.height());
-    let inputs = DevelopInputs { profile: profile.profile.as_ref(), lens: lens.correction.as_ref() };
+    let inputs = DevelopInputs { profile: profile.profile.as_ref(), lens: lens.correction.as_ref(), iso: info.iso };
     let image = crate::develop_with(sensor, settings, space, &inputs)?;
     Ok(Developed { image, profile, lens })
 }
@@ -293,6 +293,7 @@ mod tests {
             focal_length: Some(35.0),
             aperture: Some(4.0),
             focus_distance: None,
+            iso: None,
             color_matrices: Vec::new(),
             rendered: false,
         }

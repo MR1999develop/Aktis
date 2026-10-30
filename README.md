@@ -89,7 +89,7 @@ Monochrom, Pentax K-3 III Monochrome) are not supported yet.
 | Canon | CR3 (C-RAW and dual-pixel included), CR2, CRW | CR2 sRAW/mRAW are developed as linear RGB; CR3 burst rolls open their first frame; CRM movies are not offered. |
 | Nikon | NEF, NRW | High Efficiency and High Efficiency★ NEF (Z 8, Z 9, Z 6III, Zf …) are refused by rawler 0.8.0; lossless, lossy and uncompressed NEF work. |
 | Sony | ARW, SR2, SRF | Uncompressed, compressed and lossless compressed ARW work; the newest compression (TIFF code 32766, "ARW6") has no decoder in rawler 0.8.0. |
-| Fujifilm | RAF | X-Trans and Bayer (GFX) sensors; uncompressed, lossless and lossy compressed RAF. X-Trans sensors use Markesteijn's three-pass demosaic (as RawTherapee and darktable); Bayer sensors, GFX included, use RCD. Base characteristics ▸ Demosaic offers the fast methods too. |
+| Fujifilm | RAF | X-Trans and Bayer (GFX) sensors; uncompressed, lossless and lossy compressed RAF. X-Trans sensors use Markesteijn's three-pass demosaic with VNG in flat areas (darktable's dual demosaic); Bayer sensors, GFX included, use RCD, or LMMSE from ISO 3200. |
 | Apple | DNG (ProRAW) | ProRAW is a linear DNG: no demosaic, white balance and camera matrix only. JPEG XL compressed DNGs decode only with 8- or 16-bit streams. |
 | Google Pixel | DNG | Lens shading stored as DNG GainMap opcodes is applied when the file is opened; other opcodes (for example the WarpRectilinear distortion correction in OpcodeList3) are not, and a note says so when the file marks them as required. |
 | Panasonic | RW2, RAW | |
@@ -104,11 +104,17 @@ offered. DNG opcodes other than GainMap are not applied anywhere.
 
 ## Camera profiles and lens corrections
 
-- **Base curve.** Auto shows a RAW file with the camera's own look: a film
-  curve fitted to the JPEG the camera embedded in the file (Camera Match, a
-  little gentler than the camera), Film Standard when there is none; JPEG
-  and TIFF pictures get no curve. The other film curves can be chosen in
-  Base characteristics.
+- **Base curve.** Standard shows a RAW file with the camera's own look: a
+  film curve fitted to the JPEG the camera embedded in the file (a touch
+  gentler than the camera), a film curve when there is none; JPEG and TIFF
+  pictures get no curve. Linear, the other choice, shows the pixels as they
+  are. The film curves take a little saturation from reds.
+- **Demosaic.** Chosen for each photo, not offered as a setting: RCD for
+  Bayer sensors, LMMSE for Bayer sensors from ISO 3200 (it copes better
+  with noise), Markesteijn three-pass with VNG in the flat areas for X-Trans.
+- **Colour noise.** A RAW file shot at ISO 400 or more starts with a Noise
+  Reduction node for colour noise only (unless its camera's defaults have
+  their own), which can be changed or removed like any node.
 - **Profiles.** By default each camera uses its own calibration matrices
   (illuminant A and D65 for about 740 cameras, from rawler's camera data),
   mixed according to the white balance as the DNG specification describes.

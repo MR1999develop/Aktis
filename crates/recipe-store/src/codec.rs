@@ -7,9 +7,9 @@
 
 use commands::{Edit, SavedHistory, SavedStep};
 use core_model::{
-    AiMask, AiTarget, BaseCurve, BodyPart, BrushMask, BrushStroke, CustomLens, Demosaic, DevelopSettings, Geometry,
-    LensAmounts, LensSettings, LinearGradient, Link, ManualLens, MaskComponent, MaskDef, MaskOp, MaskSource, ModelId,
-    Node, NodeGraph, NodeId, NodeKind, NormPoint, NormRect, ParamId, ParamValue, Params, ProfileChoice, PromptPoint,
+    AiMask, AiTarget, BaseCurve, BodyPart, BrushMask, BrushStroke, CustomLens, DevelopSettings, Geometry, LensAmounts,
+    LensSettings, LinearGradient, Link, ManualLens, MaskComponent, MaskDef, MaskOp, MaskSource, ModelId, Node,
+    NodeGraph, NodeId, NodeKind, NormPoint, NormRect, ParamId, ParamValue, Params, ProfileChoice, PromptPoint,
     RadialGradient, RasterKey, Recipe, Style, StyleNode, ToolId, WhiteBalance,
 };
 
@@ -193,7 +193,6 @@ fn develop(d: &DevelopSettings) -> Value {
         ("white_balance", white_balance(d.white_balance)),
         ("profile", profile(&d.profile)),
         ("lens", lens(&d.lens)),
-        ("demosaic", Value::text(d.demosaic.id())),
     ])
 }
 
@@ -202,18 +201,10 @@ fn read_develop(v: &Value) -> Result<DevelopSettings, String> {
     Ok(DevelopSettings {
         white_balance: read_white_balance(required(f, "white_balance")?)?,
         profile: read_profile(required(f, "profile")?)?,
+        // A "demosaic" key, from when the method could be chosen, is left
+        // alone: every photo is demosaiced with the best method for its sensor.
         lens: read_lens(required(f, "lens")?)?,
-        // Recipes from before the choice existed develop with the best method.
-        demosaic: match optional(f, "demosaic") {
-            Some(v) => read_demosaic(v)?,
-            None => Demosaic::Auto,
-        },
     })
-}
-
-fn read_demosaic(v: &Value) -> Result<Demosaic, String> {
-    let id = v.as_str("demosaic")?;
-    Demosaic::from_id(id).ok_or_else(|| format!("unknown demosaic method \"{id}\""))
 }
 
 fn geometry(g: &Geometry) -> Value {
@@ -670,7 +661,6 @@ pub(crate) fn edit(e: &Edit) -> Value {
         Edit::SetLensCorrection(l) => o("set_lens_correction", vec![kv("lens", lens(l))]),
         Edit::SetGeometry(g) => o("set_geometry", vec![kv("geometry", geometry(g))]),
         Edit::SetBaseCurve(c) => o("set_base_curve", vec![kv("curve", Value::text(c.id()))]),
-        Edit::SetDemosaic(d) => o("set_demosaic", vec![kv("method", Value::text(d.id()))]),
         Edit::AddMask { to, def } => o("add_mask", vec![kv("to", id(*to)), kv("mask", mask_def(def))]),
         Edit::SetMask { node, def } => o("set_mask", vec![kv("node", id(*node)), kv("mask", mask_def(def))]),
         Edit::ApplyStyle { name, style: st } => {
@@ -720,7 +710,6 @@ pub(crate) fn read_edit(v: &Value) -> Result<Edit, String> {
         "set_lens_correction" => Edit::SetLensCorrection(read_lens(required(f, "lens")?)?),
         "set_geometry" => Edit::SetGeometry(read_geometry(required(f, "geometry")?)?),
         "set_base_curve" => Edit::SetBaseCurve(read_curve(required(f, "curve")?)?),
-        "set_demosaic" => Edit::SetDemosaic(read_demosaic(required(f, "method")?)?),
         "add_mask" => Edit::AddMask { to: node("to")?, def: read_mask_def(required(f, "mask")?)? },
         "set_mask" => Edit::SetMask { node: node("node")?, def: read_mask_def(required(f, "mask")?)? },
         "apply_style" => Edit::ApplyStyle {
@@ -764,14 +753,29 @@ pub(crate) fn read_history(v: &Value) -> Result<SavedHistory, String> {
     let mut steps = Vec::new();
     for s in required(f, "steps")?.as_array("steps")? {
         let sf = s.as_object("step")?;
+        if retired(required(sf, "edit")?) {
+            continue;
+        }
         steps.push(SavedStep {
             edit: read_edit(required(sf, "edit")?)?,
             created: read_ids(required(sf, "created")?, "created")?,
             skipped: optional(sf, "skipped").map(|w| w.as_str("skipped").map(str::to_owned)).transpose()?,
         });
     }
-    let redo = required(f, "redo")?.as_array("redo")?.iter().map(read_edit).collect::<Result<_, _>>()?;
+    let redo = required(f, "redo")?
+        .as_array("redo")?
+        .iter()
+        .filter(|e| !retired(e))
+        .map(read_edit)
+        .collect::<Result<_, _>>()?;
     Ok(SavedHistory { base: read_recipe(required(f, "base")?)?, steps, redo })
+}
+
+/// Edits that no longer exist, dropped from saved histories: the choice of
+/// demosaic method (every photo now gets the best method for its sensor).
+fn retired(edit: &Value) -> bool {
+    edit.as_object("edit").ok().and_then(|f| optional(f, "op")).and_then(|op| op.as_str("op").ok())
+        == Some("set_demosaic")
 }
 
 /// Node positions, pan and zoom as a JSON object.

@@ -644,21 +644,6 @@ impl Document {
         Ok(())
     }
 
-    /// Chooses how the sensor's mosaic is demosaiced (an undoable edit; the
-    /// photo is developed again).
-    ///
-    /// # Errors
-    /// [`EditError`] when the document is read-only.
-    pub fn set_demosaic(&mut self, registry: &ToolRegistry, method: core_model::Demosaic) -> Result<(), EditError> {
-        self.writable()?;
-        if self.recipe().develop.demosaic == method {
-            return Ok(());
-        }
-        self.session.apply(registry, Edit::SetDemosaic(method))?;
-        self.generation += 1;
-        Ok(())
-    }
-
     /// The kind of colour filter of the photo's sensor (`None` without RAW data).
     #[must_use]
     pub fn sensor_kind(&self) -> Option<core_model::SensorKind> {

@@ -7,9 +7,11 @@
 //! channel differently), camera profile into the working space, purple
 //! fringing ([`fringe`], in the working space). Bayer
 //! sensors are demosaiced with RCD and a median against false colours
-//! ([`rcd`]), X-Trans sensors with Markesteijn's three-pass algorithm
-//! ([`markesteijn`]; [`xtrans`] for images too small for it) and the same
-//! median ([`chroma`]). This is the reference implementation; the GPU
+//! ([`rcd`]), or from [`LMMSE_FROM_ISO`] with LMMSE and the same median
+//! ([`lmmse`], [`chroma`]), which copes better with noise; X-Trans sensors
+//! with Markesteijn's three-pass algorithm ([`markesteijn`]; [`xtrans`] for
+//! images too small for it), VNG in the flat areas ([`vng`], darktable's
+//! dual demosaic) and the same median. This is the reference implementation; the GPU
 //! engine is tested against it.
 //!
 //! [`prepare`] chooses the profile and the lens correction for an image from
@@ -18,17 +20,17 @@
 mod chroma;
 mod fringe;
 mod lens;
+mod lmmse;
 mod markesteijn;
 pub mod prepare;
 mod rcd;
+mod vng;
 mod xtrans;
 
 use std::fmt;
 
 use core_color::{ColorProfile, ProfileError};
-use core_model::{
-    CfaPattern, Demosaic, DevelopSettings, ImageError, ImageF32, Rgba, SensorImage, WhiteBalance, WorkingSpace,
-};
+use core_model::{CfaPattern, DevelopSettings, ImageError, ImageF32, Rgba, SensorImage, WhiteBalance, WorkingSpace};
 use lens_db::LensCorrection;
 
 /// Why the development stage could not run.
@@ -72,7 +74,15 @@ pub struct DevelopInputs<'a> {
     pub profile: Option<&'a ColorProfile>,
     /// Lens correction prepared for the sensor's size; `None` corrects nothing.
     pub lens: Option<&'a LensCorrection>,
+    /// ISO sensitivity of the shot, which chooses the Bayer demosaic
+    /// ([`LMMSE_FROM_ISO`]); `None` when unknown (as below it).
+    pub iso: Option<u32>,
 }
+
+/// ISO from which Bayer sensors are demosaiced with LMMSE instead of RCD:
+/// below it RCD gives the sharper detail, above it the noise makes RCD
+/// draw mazes and colour speckles.
+pub const LMMSE_FROM_ISO: u32 = 3200;
 
 /// Develops sensor data into a linear image in `space`, with the sensor's
 /// own colour matrix and no lens correction.
@@ -113,16 +123,19 @@ pub fn develop_with(
 
     // Camera RGB, white-balanced.
     let data = sensor.data();
-    let method = settings.demosaic.for_sensor(sensor.cfa().kind());
     let mut camera: Vec<[f32; 3]> = match sensor.cfa() {
         CfaPattern::Bayer(pattern) => {
             // White balance on the mosaic, before interpolation mixes the channels.
             let balanced: Vec<f32> =
                 data.iter().enumerate().map(|(i, v)| v * wb[pattern.channel_at(i % w, i / w)]).collect();
-            if w >= 2 && h >= 2 && method == Demosaic::Rcd {
+            if w >= 2 && h >= 2 && inputs.iso.is_some_and(|iso| iso >= LMMSE_FROM_ISO) {
+                let mut rgb = lmmse::demosaic(&balanced, w, h, *pattern);
+                chroma::suppress_false_colours(&mut rgb, w, h);
+                rgb
+            } else if w >= 2 && h >= 2 {
                 rcd::demosaic(&balanced, w, h, *pattern)
             } else {
-                // Chosen, or a single row or column (no Bayer structure to follow).
+                // A single row or column: no Bayer structure to follow.
                 (0..w * h)
                     .map(|i| demosaic_bilinear_at(&balanced, w, h, i % w, i / w, |x, y| pattern.channel_at(x, y)))
                     .collect()
@@ -133,8 +146,14 @@ pub fn develop_with(
             // White balance on the mosaic here too; the 6×6 tile starts at the image's corner.
             let channel = |x: usize, y: usize| usize::from(pattern[y % 6][x % 6]);
             let balanced: Vec<f32> = data.iter().enumerate().map(|(i, v)| v * wb[channel(i % w, i / w)]).collect();
-            let quality = (method == Demosaic::Markesteijn).then(|| markesteijn::demosaic(&balanced, w, h, pattern));
-            let mut rgb = quality.flatten().unwrap_or_else(|| xtrans::demosaic(&balanced, w, h, pattern));
+            // Markesteijn for the detail, VNG in the flat areas.
+            let mut rgb = match markesteijn::demosaic(&balanced, w, h, pattern) {
+                Some(mut sharp) => {
+                    vng::dual(&balanced, w, h, pattern, &mut sharp);
+                    sharp
+                }
+                None => xtrans::demosaic(&balanced, w, h, pattern),
+            };
             chroma::suppress_false_colours(&mut rgb, w, h);
             rgb
         }
@@ -441,7 +460,7 @@ mod tests {
         let db = vignetting_lens();
         let s = sensor(30, 20, BayerPattern::Rggb, [0.3, 0.3, 0.3], [1.0; 3]);
         let c = lens_db::LensCorrection::new(&db.lenses()[0], &request(30, 20)).expect("correction");
-        let inputs = DevelopInputs { profile: None, lens: Some(&c) };
+        let inputs = DevelopInputs { profile: None, lens: Some(&c), iso: None };
         let img =
             develop_with(&s, &DevelopSettings::default(), WorkingSpace::LinearRec2020, &inputs).expect("develops");
         let centre = img.get(15, 10).expect("pixel")[1];
@@ -455,7 +474,7 @@ mod tests {
         let db = vignetting_lens();
         let s = sensor(30, 20, BayerPattern::Rggb, [0.3, 0.3, 0.3], [1.0; 3]);
         let c = lens_db::LensCorrection::new(&db.lenses()[0], &request(31, 20)).expect("correction");
-        let inputs = DevelopInputs { profile: None, lens: Some(&c) };
+        let inputs = DevelopInputs { profile: None, lens: Some(&c), iso: None };
         let r = develop_with(&s, &DevelopSettings::default(), WorkingSpace::LinearRec2020, &inputs);
         assert_eq!(r.map(|_| ()), Err(DevelopError::LensSizeMismatch));
     }
@@ -470,7 +489,7 @@ mod tests {
         .expect("profile");
         // The camera saw a grey card as R 0.25, G 0.5, B 1.0 and recorded multipliers 2, 1, 0.5.
         let s = sensor(6, 6, BayerPattern::Rggb, [0.25, 0.5, 1.0], [2.0, 1.0, 0.5]);
-        let inputs = DevelopInputs { profile: Some(&profile), lens: None };
+        let inputs = DevelopInputs { profile: Some(&profile), lens: None, iso: None };
         let img =
             develop_with(&s, &DevelopSettings::default(), WorkingSpace::LinearRec2020, &inputs).expect("develops");
         assert_all_close(&img, [0.5; 3], 1e-3);
