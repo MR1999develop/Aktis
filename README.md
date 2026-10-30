@@ -233,8 +233,8 @@ a photo viewer (several selected photos show as tiles in the viewer); keys:
 arrows previous/next, 0–5 rating, 6–9 colour label (on the selection), F2
 rename, Delete to the Trash, Ctrl+A select all, Escape back to one photo;
 drag photos onto an album; Ctrl+Z over the Library undoes its last move to
-the Trash or album merge. Photos come in through File ▸ Import Images…
-and live in a catalog (`Name.rnecatalog`): see `docs/catalog.md`.
+the Trash or album merge. Photos come in through File ▸ Import Images… (or the Import… button,
+left of Undo on the bar under the menu) and live in a catalog (`Name.rnecatalog`): see `docs/catalog.md`.
 
 ## Status
 

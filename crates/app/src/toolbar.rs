@@ -1,4 +1,4 @@
-//! The bar under the menu: Undo and Redo on the left, the tools that act
+//! The bar under the menu: Import, Undo and Redo on the left, the tools that act
 //! on the photo in the middle, Export on the right.
 
 use eframe::egui::{self, Align, Button, FontId, Key, Layout, RichText};
@@ -112,7 +112,7 @@ pub struct BarState {
 /// What the user did on the bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarAction {
-    /// A menu command (Undo, Redo, Export).
+    /// A menu command (Import, Undo, Redo, Export).
     Command(Command),
     /// A tool was switched on (`Some`) or off (`None`).
     Tool(Option<ViewerTool>),
@@ -134,7 +134,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &BarState) -> Vec<BarAction> {
     ui.horizontal(|ui| {
         let left = ui.cursor().left();
         let full = ui.available_width();
-        // Left: Undo, Redo.
+        // Left: Import, then Undo, Redo.
+        let shortcut = ui.ctx().format_shortcut(&Command::Import.shortcuts()[0]);
+        if ui.button("Import\u{2026}").on_hover_text(format!("Import images into the catalog ({shortcut})")).clicked() {
+            actions.push(BarAction::Command(Command::Import));
+        }
+        ui.separator();
         for (command, label, what) in
             [(Command::Undo, "Undo", state.undo.as_deref()), (Command::Redo, "Redo", state.redo.as_deref())]
         {

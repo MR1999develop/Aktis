@@ -552,3 +552,5 @@ Details in `docs/catalog.md`.
   than the window minus a margin; `import_window::fitted`); the source
   column scrolls, so on small screens (a 1280 × 960 virtual machine) the
   buttons stay visible.
+- Import… button on the bar under the menu, left of Undo (Ctrl+Shift+I as
+  before).
