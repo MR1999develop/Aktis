@@ -26,6 +26,14 @@ How the editor keeps photos, as in Capture One's catalogs. Code:
   Edits are saved 30 s after the last change, and also when another photo,
   variant or catalog is opened and when the window closes. There is no Save
   command (Save Catalog As makes a copy under another name).
+- Variants in the filmstrip, as in Capture One: a photo with several
+  variants has a card for each, in number order, right after each other;
+  each shows the preview stored for that variant (the photo's thumbnail
+  while there is none) and its number after the file name. A click opens
+  that variant (the open photo switches to it). Rating, colour label,
+  keywords and selection belong to the photo, so they are shared by its
+  variants (`Catalog::multi_variants`, `Catalog::variant_preview`,
+  `editor::library::strip_cards`).
 
 ## Import
 

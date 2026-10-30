@@ -21,6 +21,11 @@
   of the tool alone); only a saved node replaces it.
 - Base curve "Standard" on a JPEG or TIFF shows the picture without a curve
   (as Linear): the menu says Standard either way.
+- Variants in the filmstrip: rating, colour label, keywords, selection and
+  album membership belong to the photo (Capture One keeps them per
+  variant); the arrow keys move from photo to photo, not from variant to
+  variant; variant previews are decoded on the interface thread (small
+  JPEGs, once each).
 - RCD on a 50 MP file takes about 1.3× the old bilinear demosaic; SIMD or
   the GPU if opening large files feels slow.
 - Camera Match: the fit compares luminance only; the camera's saturation

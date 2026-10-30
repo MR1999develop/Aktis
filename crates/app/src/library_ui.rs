@@ -6,7 +6,7 @@
 //! the window does (opening, exporting, a rename of the open file) is
 //! handed to it as a [`LibraryAction`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -65,6 +65,8 @@ struct Counts {
 pub enum LibraryAction {
     /// Open this photo in the editor.
     Open(PathBuf),
+    /// Open variant `.1` of this photo (its card in the filmstrip was clicked).
+    OpenVariant(PathBuf, u32),
     /// Open the export window for these photos.
     Export(Vec<PathBuf>),
     /// Export these photos with the previous settings, without the window.
@@ -140,7 +142,7 @@ pub struct VariantBlocks {
 /// What a click in a card or its menu asked for.
 #[derive(Debug, Clone, PartialEq)]
 enum CardAction {
-    Click { path: PathBuf, ctrl: bool, shift: bool },
+    Click { path: PathBuf, ctrl: bool, shift: bool, variant: Option<u32> },
     Rate(PathBuf, u8),
     Label(PathBuf, Option<ColorLabel>),
     Rename(PathBuf),
@@ -227,6 +229,23 @@ pub struct Library {
     last_undo: Option<collections::LibraryUndo>,
     /// Names of the presets offered in the card menu ("Group / Name").
     presets: Vec<String>,
+    /// The variants of the photos that have several (a card each), as last read.
+    variant_lists: HashMap<PathBuf, Vec<VariantInfo>>,
+    /// The lists must be read again (a variant stored or deleted, another strip).
+    variant_lists_stale: bool,
+    /// Thumbnails of single variants, from their stored previews (`None`:
+    /// none stored, the photo's thumbnail stands in).
+    variant_thumbs: HashMap<(PathBuf, u32), Option<TextureHandle>>,
+}
+
+/// The variant open in the editor and the open photo's variants (an
+/// unsaved new one included), for the filmstrip's cards.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenVariants<'a> {
+    /// Number of the open variant.
+    pub number: Option<u32>,
+    /// The open photo's variants.
+    pub list: &'a [VariantInfo],
 }
 
 impl std::fmt::Debug for Library {
@@ -287,6 +306,9 @@ impl Library {
             explorer_hovered: false,
             last_undo: None,
             presets: Vec::new(),
+            variant_lists: HashMap::new(),
+            variant_lists_stale: true,
+            variant_thumbs: HashMap::new(),
         };
         library.refresh_collections();
         library
@@ -328,6 +350,8 @@ impl Library {
         self.catalog_dir = dir.to_owned();
         self.thumbs.clear();
         self.previews.clear();
+        self.variant_thumbs.clear();
+        self.variant_lists_stale = true;
         self.strip = Filmstrip::default();
         self.loading = None;
         self.refresh_collections();
@@ -429,6 +453,7 @@ impl Library {
         self.loading = None;
         // The filmstrip names what it shows after its "folder": the collection's name.
         self.strip.set_folder(self.catalog_dir.join(collection.label()), paths.into_iter().zip(metas).collect());
+        self.variant_lists_stale = true;
         self.collection = Some(collection);
     }
 
@@ -523,6 +548,7 @@ impl Library {
                         self.strip.filter.tags.clear();
                     }
                     self.strip.set_folder(dir, listing.photos.into_iter().zip(metas).collect());
+                    self.variant_lists_stale = true;
                     self.refresh_collections();
                 }
                 None
@@ -627,6 +653,21 @@ impl Library {
     pub fn forget_thumbnail(&mut self, path: &Path) {
         self.thumbs.forget(path);
         self.previews.forget(path);
+        self.variant_thumbs.retain(|(p, _), _| p != path);
+    }
+
+    /// Reads again which photos have several variants, when that may have changed.
+    fn reload_variant_lists(&mut self) {
+        if !self.variant_lists_stale {
+            return;
+        }
+        self.variant_lists_stale = false;
+        self.variant_lists = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.multi_variants().ok())
+            .map(|list| list.into_iter().collect())
+            .unwrap_or_default();
     }
 
     // ----- edits -----
@@ -683,6 +724,8 @@ impl Library {
             (None, None) => return Ok(()),
         }
         .map_err(|e| e.to_string())?;
+        // A new variant may now be stored: the filmstrip shows it as a card.
+        self.variant_lists_stale |= save.data.is_some();
         if save.preview.is_some() {
             self.forget_thumbnail(path);
         }
@@ -730,7 +773,10 @@ impl Library {
     /// A message when the catalog refused.
     pub fn delete_variant(&mut self, path: &Path, number: u32) -> Result<(), String> {
         let Some(c) = &mut self.catalog else { return Ok(()) };
-        c.delete_variant(path, number).map_err(|e| e.to_string())
+        c.delete_variant(path, number).map_err(|e| e.to_string())?;
+        self.variant_lists_stale = true;
+        self.variant_thumbs.remove(&(path.to_owned(), number));
+        Ok(())
     }
 
     fn metas(&self, photos: &[PathBuf]) -> Vec<PhotoMeta> {
@@ -1154,11 +1200,13 @@ impl Library {
 
     // ----- filmstrip -----
 
-    /// The filmstrip: one card per photo that passes the filters.
+    /// The filmstrip: one card per photo that passes the filters, or one
+    /// per variant, right after each other, for a photo that has several.
     pub fn filmstrip(
         &mut self,
         ui: &mut egui::Ui,
         current: Option<&Path>,
+        open: OpenVariants<'_>,
         variant_blocks: VariantBlocks,
         actions: &mut Vec<LibraryAction>,
     ) {
@@ -1198,9 +1246,18 @@ impl Library {
         let card_h = CARD_PAD + thumb_h + 4.0 + 2.0 * CARD_LINE + CARD_PAD;
         let row_step = card_h + ui.spacing().item_spacing.y;
 
+        self.reload_variant_lists();
+        let cards = editor::library::strip_cards(&visible, &self.strip.photos, |p| {
+            // The open photo's list has its unsaved new variant too.
+            if current == Some(p) && !open.list.is_empty() {
+                Some(open.list)
+            } else {
+                self.variant_lists.get(p).map(Vec::as_slice)
+            }
+        });
         let mut area = egui::ScrollArea::vertical().id_salt("filmstrip").auto_shrink([false, false]);
         if let Some(target) = self.scroll_to.take()
-            && let Some(pos) = visible.iter().position(|&i| self.strip.photos[i].path == target)
+            && let Some(pos) = cards.iter().position(|c| self.strip.photos[c.index].path == target)
             && !(self.shown_rows.start < pos / columns && pos / columns + 1 < self.shown_rows.end)
         {
             // One card above the target stays in view.
@@ -1211,29 +1268,41 @@ impl Library {
 
         let mut card_actions = Vec::new();
         let several = self.strip.selection().len() > 1;
-        let Self { strip, thumbs, wanted, shown_rows, presets, albums, collection, .. } = self;
+        let Self { strip, thumbs, wanted, shown_rows, presets, albums, collection, catalog, variant_thumbs, .. } = self;
         let presets: &[String] = presets;
         let (albums, collection): (&[Album], Option<&Collection>) = (albums, collection.as_ref());
-        let row_count = visible.len().div_ceil(columns);
+        let row_count = cards.len().div_ceil(columns);
         area.show_rows(ui, card_h, row_count, |ui, rows| {
             let first = rows.start.saturating_sub(PREFETCH_ROWS) * columns;
-            let last = ((rows.end + PREFETCH_ROWS) * columns).min(visible.len());
-            wanted.extend(visible[first..last].iter().map(|&i| strip.photos[i].path.clone()));
+            let last = ((rows.end + PREFETCH_ROWS) * columns).min(cards.len());
+            for c in &cards[first..last] {
+                let path = &strip.photos[c.index].path;
+                if wanted.last() != Some(path) {
+                    wanted.push(path.clone());
+                }
+            }
             *shown_rows = rows.clone();
             for row in rows {
                 ui.horizontal(|ui| {
-                    for &index in visible.iter().skip(row * columns).take(columns) {
-                        let photo = &strip.photos[index];
+                    for c in cards.iter().skip(row * columns).take(columns) {
+                        let photo = &strip.photos[c.index];
+                        let is_current = current == Some(photo.path.as_path());
                         let state = CardState {
-                            open: current == Some(photo.path.as_path()),
+                            open: is_current && c.variant.as_ref().is_none_or(|v| Some(v.number) == open.number),
                             selected: strip.is_selected(&photo.path),
                             several,
                             variants: variant_blocks,
                             presets,
                             albums,
                             collection,
+                            variant: c.variant.as_ref(),
                         };
-                        let thumb = thumbs.get(&photo.path);
+                        // A variant shows its own stored preview when there is one.
+                        let own = c.variant.as_ref().and_then(|v| {
+                            variant_thumb(ui.ctx(), catalog.as_ref(), variant_thumbs, &photo.path, v.number)
+                        });
+                        let own = own.map(ThumbState::Ready);
+                        let thumb = own.as_ref().or_else(|| thumbs.get(&photo.path));
                         card(ui, &t, photo, thumb, state, [card_w, card_h], &mut card_actions);
                     }
                 });
@@ -1247,9 +1316,12 @@ impl Library {
 
         for action in card_actions {
             match action {
-                CardAction::Click { path, ctrl, shift } => {
+                CardAction::Click { path, ctrl, shift, variant } => {
                     if let Some(open) = self.strip.click(&path, ctrl, shift, current) {
-                        actions.push(LibraryAction::Open(open));
+                        actions.push(match variant {
+                            Some(number) if open == path => LibraryAction::OpenVariant(open, number),
+                            _ => LibraryAction::Open(open),
+                        });
                     }
                 }
                 CardAction::Export(p) => actions.push(LibraryAction::Export(self.strip.targets(&p))),
@@ -1559,6 +1631,32 @@ struct CardState<'a> {
     /// What the filmstrip shows: in the Trash photos are restored, in an
     /// album taken out of it.
     collection: Option<&'a Collection>,
+    /// The variant the card shows, for a photo with several.
+    variant: Option<&'a VariantInfo>,
+}
+
+/// The thumbnail of variant `number` of `path`, decoded once from the
+/// preview the catalog keeps for it; `None` when there is none.
+fn variant_thumb(
+    ctx: &egui::Context,
+    catalog: Option<&Catalog>,
+    cache: &mut HashMap<(PathBuf, u32), Option<TextureHandle>>,
+    path: &Path,
+    number: u32,
+) -> Option<TextureHandle> {
+    cache
+        .entry((path.to_owned(), number))
+        .or_insert_with(|| {
+            let jpeg = catalog?.variant_preview(path, number).ok()??;
+            let t = raw_io::decode_jpeg(&jpeg, editor::worker::THUMBNAIL_SIDE).ok()?;
+            let image = egui::ColorImage::from_rgb([t.width as usize, t.height as usize], &t.rgb);
+            Some(ctx.load_texture(
+                format!("variant:{}:{number}", path.display()),
+                image,
+                crate::photo_texture::smooth(),
+            ))
+        })
+        .clone()
 }
 
 /// One filmstrip card: thumbnail with badges, name, stars, context menu.
@@ -1576,10 +1674,13 @@ fn card(
     // Dragged onto an album to put it there (with the selection it is in).
     let (rect, response) = ui.allocate_exact_size(vec2(size[0], height), Sense::click_and_drag());
     response.dnd_set_drag_payload(collections::DraggedPhoto(photo.path.clone()));
-    let hover = match thumb {
+    let mut hover = match thumb {
         Some(ThumbState::Failed(why)) => format!("{}\nNo preview: {why}", photo.path.display()),
         _ => photo.path.display().to_string(),
     };
+    if let Some(v) = state.variant {
+        hover = format!("{hover}\n{}", v.name);
+    }
     let response = response.on_hover_text(hover);
     let painter = ui.painter_at(rect);
     let fill = if is_open || state.selected {
@@ -1635,10 +1736,12 @@ fn card(
     // Name and stars.
     let name_rect = Rect::from_min_size(pos2(frame.left(), frame.bottom() + 4.0), vec2(frame.width(), CARD_LINE));
     let name_color = if is_open { t.text_strong } else { t.text_weak };
-    ui.put(
-        name_rect,
-        Label::new(RichText::new(photo.name.as_str()).size(FONT[0]).color(name_color)).truncate().selectable(false),
-    );
+    // A variant's card adds its number: "IMG_0001.CR3 (2)".
+    let name = match state.variant {
+        Some(v) => format!("{} ({})", photo.name, v.number),
+        None => photo.name.clone(),
+    };
+    ui.put(name_rect, Label::new(RichText::new(name).size(FONT[0]).color(name_color)).truncate().selectable(false));
     let stars_top = name_rect.bottom();
     let star_rect = |i: u8| {
         Rect::from_min_size(pos2(frame.left() + f32::from(i) * STAR_CELL, stars_top), vec2(STAR_CELL, CARD_LINE))
@@ -1669,7 +1772,12 @@ fn card(
             }
             None => {
                 let m = ui.input(|i| i.modifiers);
-                actions.push(CardAction::Click { path: photo.path.clone(), ctrl: m.command, shift: m.shift });
+                actions.push(CardAction::Click {
+                    path: photo.path.clone(),
+                    ctrl: m.command,
+                    shift: m.shift,
+                    variant: state.variant.map(|v| v.number),
+                });
             }
         }
     }

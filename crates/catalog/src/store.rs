@@ -1030,6 +1030,49 @@ impl Catalog {
         }
         Ok(out)
     }
+
+    /// The preview stored for variant `number` of `path`, if any.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn variant_preview(&self, path: &Path, number: u32) -> Result<Option<Vec<u8>>, CatalogError> {
+        let preview: Option<Option<Vec<u8>>> = self
+            .conn
+            .query_row(
+                "SELECT preview FROM variants WHERE path = ?1 AND number = ?2",
+                params![key(path), number],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(preview.flatten())
+    }
+
+    /// The variants of every photo that has more than one, by number: the
+    /// filmstrip shows each of them as a card of its own.
+    ///
+    /// # Errors
+    /// [`CatalogError::Sqlite`] when the database cannot be read.
+    pub fn multi_variants(&self) -> Result<Vec<(PathBuf, Vec<VariantInfo>)>, CatalogError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path, number, name, format FROM variants
+             WHERE path IN (SELECT path FROM variants GROUP BY path HAVING COUNT(*) > 1)
+             ORDER BY path, number",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                let path: String = r.get(0)?;
+                Ok((PathBuf::from(path), VariantInfo { number: r.get(1)?, name: r.get(2)?, format: r.get(3)? }))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut out: Vec<(PathBuf, Vec<VariantInfo>)> = Vec::new();
+        for (path, info) in rows {
+            match out.last_mut() {
+                Some((last, list)) if *last == path => list.push(info),
+                _ => out.push((path, vec![info])),
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// `ORDER BY` term putting first the variant chosen for the photo `?1`.
@@ -1382,6 +1425,21 @@ mod tests {
         assert_eq!(c.current_variant(&a).unwrap(), Some(1), "the chosen one is gone: the lowest");
         assert_eq!(c.previews(std::slice::from_ref(&a)).unwrap(), vec![Some(b"jpeg-1".to_vec())]);
         assert_eq!(c.meta(&a).unwrap(), PhotoMeta::default(), "choosing a variant leaves rating and label alone");
+    }
+
+    #[test]
+    fn photos_with_several_variants_are_listed_with_each_preview() {
+        let mut c = Catalog::open_in_memory().unwrap();
+        let (a, b) = (p("a.NEF"), p("b.NEF"));
+        c.save_variant(&a, &info(1), "1", Some(b"jpeg-a1".as_slice())).unwrap();
+        c.save_variant(&b, &info(1), "1", None).unwrap();
+        assert!(c.multi_variants().unwrap().is_empty(), "one variant each");
+        c.save_variant(&a, &info(3), "3", Some(b"jpeg-a3".as_slice())).unwrap();
+        c.save_variant(&a, &info(2), "2", None).unwrap();
+        assert_eq!(c.multi_variants().unwrap(), vec![(a.clone(), vec![info(1), info(2), info(3)])]);
+        assert_eq!(c.variant_preview(&a, 3).unwrap(), Some(b"jpeg-a3".to_vec()));
+        assert_eq!(c.variant_preview(&a, 2).unwrap(), None);
+        assert_eq!(c.variant_preview(&b, 9).unwrap(), None);
     }
 
     #[test]

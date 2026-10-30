@@ -585,3 +585,13 @@ Details in `docs/catalog.md`.
 - Import window: a test draws the real window with the app's theme in
   three screen sizes and checks that every part stays on screen
   (`every_part_of_the_window_is_on_screen`).
+
+## 30 October: variants in the filmstrip
+
+- Each variant of a photo with several is a card of its own, right after
+  the one before, as in Capture One: its stored preview (decoded once on
+  the interface thread, the photo's thumbnail while there is none), the
+  file name with the variant number, a click that opens it (switching
+  variant when the photo is open). The open photo's list includes a new
+  variant not stored yet. Rating, label, keywords and selection stay the
+  photo's, shared by its variants.

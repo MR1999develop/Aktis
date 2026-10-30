@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use catalog::{Filter, PhotoMeta};
+use catalog::{Filter, PhotoMeta, VariantInfo};
 
 /// One folder in the Explorer tree.
 #[derive(Debug, Clone, PartialEq)]
@@ -517,6 +517,37 @@ pub fn filmstrip_columns(width: f32, gap: f32) -> (usize, f32) {
     (columns, card)
 }
 
+/// One card of the filmstrip: a photo, or one of its variants when it has
+/// several (each variant is a card of its own, right after the one before,
+/// as in Capture One).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StripCard {
+    /// Index of the photo in [`Filmstrip::photos`].
+    pub index: usize,
+    /// The variant the card shows; `None` for a photo with one variant (or
+    /// none stored), shown as the photo itself.
+    pub variant: Option<VariantInfo>,
+}
+
+/// The cards for the `visible` photos (indices into `photos`), in order:
+/// one per photo, or one per variant, in number order, for a photo whose
+/// `variants_of` lists more than one.
+#[must_use]
+pub fn strip_cards<'a>(
+    visible: &[usize],
+    photos: &[StripPhoto],
+    variants_of: impl Fn(&Path) -> Option<&'a [VariantInfo]>,
+) -> Vec<StripCard> {
+    let mut cards = Vec::with_capacity(visible.len());
+    for &index in visible {
+        match variants_of(&photos[index].path).filter(|v| v.len() > 1) {
+            Some(list) => cards.extend(list.iter().map(|v| StripCard { index, variant: Some(v.clone()) })),
+            None => cards.push(StripCard { index, variant: None }),
+        }
+    }
+    cards
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -532,6 +563,28 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_photo_with_several_variants_gets_a_card_for_each_right_after_the_one_before() {
+        let photos: Vec<StripPhoto> = ["a.NEF", "b.NEF", "c.NEF"]
+            .iter()
+            .map(|n| StripPhoto { path: PathBuf::from(n), name: (*n).to_owned(), meta: PhotoMeta::default() })
+            .collect();
+        let info = |n: u32| VariantInfo { number: n, name: format!("Variant {n}"), format: 1 };
+        let b = vec![info(1), info(3)];
+        let c = vec![info(1)];
+        let lists = |p: &Path| match p.to_str() {
+            Some("b.NEF") => Some(b.as_slice()),
+            Some("c.NEF") => Some(c.as_slice()),
+            _ => None,
+        };
+        let cards = strip_cards(&[0, 1, 2], &photos, lists);
+        let shown: Vec<(usize, Option<u32>)> =
+            cards.iter().map(|c| (c.index, c.variant.as_ref().map(|v| v.number))).collect();
+        assert_eq!(shown, vec![(0, None), (1, Some(1)), (1, Some(3)), (2, None)]);
+        // A filtered-out photo has no card, whatever its variants.
+        assert_eq!(strip_cards(&[0, 2], &photos, lists).len(), 2);
+    }
     use catalog::ColorLabel;
 
     #[test]

@@ -46,7 +46,7 @@ use crate::graph_ui::{GraphAction, GraphUi};
 use crate::history_ui::{LeftTab, TabAction, Tabs};
 use crate::import_window::ImportWindow;
 use crate::inspector::{self, Drag, UiEdit};
-use crate::library_ui::{Library, LibraryAction, TaggingProgress, VariantBlocks};
+use crate::library_ui::{Library, LibraryAction, OpenVariants, TaggingProgress, VariantBlocks};
 use crate::mask_ui::{MaskEdit, MaskUi};
 use crate::models_ui::ModelsUi;
 use crate::photo_texture::PhotoTexture;
@@ -1167,6 +1167,18 @@ impl EditorApp {
                     let already = self.doc.as_ref().is_some_and(|d| d.path() == path);
                     let pending = self.opening_path.as_ref() == Some(&path);
                     if !already && !pending {
+                        self.open(path);
+                    }
+                }
+                LibraryAction::OpenVariant(path, number) => {
+                    let already = self.doc.as_ref().is_some_and(|d| d.path() == path);
+                    if already {
+                        self.switch_variant(number);
+                    } else if self.opening_path.as_ref() != Some(&path) {
+                        // Chosen first: the photo opens on the variant shown last.
+                        if let Err(e) = self.library.set_current_variant(&path, number) {
+                            self.toast = Some(error_toast(format!("The variant could not be chosen: {e}")));
+                        }
                         self.open(path);
                     }
                 }
@@ -3348,7 +3360,9 @@ impl eframe::App for EditorApp {
             .frame(Frame::NONE.fill(t.bar).inner_margin(Margin::symmetric(6, 6)))
             .show(ui, |ui| {
                 let current = self.doc.as_ref().map(|d| d.path().to_owned());
-                self.library.filmstrip(ui, current.as_deref(), blocks, &mut library);
+                let list = self.variant_list();
+                let open = OpenVariants { number: self.variant.as_ref().map(|s| s.info.number), list: &list };
+                self.library.filmstrip(ui, current.as_deref(), open, blocks, &mut library);
             });
         self.settings.layout.filmstrip_width = Some(strip.response.rect.width());
         let inspector = egui::Panel::right(panel("inspector"))
