@@ -13,6 +13,11 @@ How the editor keeps photos, as in Capture One's catalogs. Code:
   (Preferences ▸ Catalogs; by default `Catalogs` in the editor's data
   folder). File ▸ Open Catalog… (Ctrl+O) and Open Recent Catalog switch
   catalogs: the open photo is saved and closed first.
+- File ▸ Save Catalog As… (Ctrl+Shift+S) saves a copy of the open catalog
+  (photos, edits, ratings, keywords, albums, Trash) under a new name and
+  folder, then opens the copy; the old catalog stays as it was. Use it to
+  give the photos imported into `Default` a catalog of their own. The copy
+  is made by SQLite (`VACUUM INTO`), consistent while the catalog is open.
 - At start the catalog open when the editor was closed opens again. The first
   time, `Default.rnecatalog` is made and takes over the single catalog of
   earlier versions (ratings, keywords, edits; every photo it knew counts as
@@ -20,7 +25,7 @@ How the editor keeps photos, as in Capture One's catalogs. Code:
 - Saving: ratings, labels, keywords, albums and the Trash are written at once.
   Edits are saved 30 s after the last change, and also when another photo,
   variant or catalog is opened and when the window closes. There is no Save
-  command.
+  command (Save Catalog As makes a copy under another name).
 
 ## Import
 

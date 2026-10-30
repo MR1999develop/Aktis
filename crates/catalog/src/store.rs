@@ -158,6 +158,25 @@ impl Catalog {
         Self::init(Connection::open(path)?)
     }
 
+    /// Writes a complete copy of the catalog to the new file `file` (its
+    /// folder must exist), consistent even while the catalog is in use:
+    /// SQLite's `VACUUM INTO`.
+    ///
+    /// # Errors
+    /// [`CatalogError::Refused`] when `file` exists; [`CatalogError::Sqlite`]
+    /// when it cannot be written (a partial file is removed).
+    pub fn save_copy(&self, file: &Path) -> Result<(), CatalogError> {
+        if file.exists() {
+            return Err(CatalogError::Refused(format!("{} exists already", file.display())));
+        }
+        let target = file.to_string_lossy().into_owned();
+        if let Err(e) = self.conn.execute("VACUUM INTO ?1", params![target]) {
+            let _ = std::fs::remove_file(file);
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
     /// A catalog that lives in memory only (tests, or when the file cannot be opened).
     ///
     /// # Errors
@@ -1116,6 +1135,29 @@ mod tests {
         c.trash(std::slice::from_ref(&a)).unwrap();
         assert_eq!(c.empty_trash().unwrap(), std::slice::from_ref(&a));
         assert!(!c.is_imported(&a).unwrap() && c.collection(&Collection::Trash).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_copy_of_the_catalog_has_everything_and_is_separate() {
+        let dir = std::env::temp_dir().join(format!("rne-catalog-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = Catalog::open(&dir.join("a.sqlite")).unwrap();
+        let a = p("d/a.NEF");
+        c.import(std::slice::from_ref(&a)).unwrap();
+        c.set_rating(std::slice::from_ref(&a), 3).unwrap();
+        let album = c.create_album("Best", None).unwrap();
+        c.add_to_album(album, std::slice::from_ref(&a)).unwrap();
+        let copy = dir.join("b.sqlite");
+        c.save_copy(&copy).unwrap();
+        assert!(matches!(c.save_copy(&copy), Err(CatalogError::Refused(_))), "never over a file");
+        let mut b = Catalog::open(&copy).unwrap();
+        assert_eq!(b.meta(&a).unwrap().rating, 3);
+        assert_eq!(b.collection(&Collection::Album(album)).unwrap(), std::slice::from_ref(&a));
+        b.set_rating(std::slice::from_ref(&a), 5).unwrap();
+        assert_eq!(c.meta(&a).unwrap().rating, 3, "the copy is a catalog of its own");
+        drop((b, c));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

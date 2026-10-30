@@ -12,6 +12,9 @@ pub enum Command {
     Open,
     /// File ▸ New Catalog…
     NewCatalog,
+    /// File ▸ Save Catalog As…: a copy of the open catalog (the Default one,
+    /// say) under a name and folder, which is then the one open.
+    SaveCatalogAs,
     /// File ▸ Import Images…: photos are imported into the catalog, never opened from the disk.
     Import,
     /// File ▸ Export…: the export window.
@@ -52,6 +55,7 @@ const fn k(modifiers: Modifiers, key: Key) -> KeyboardShortcut {
 
 const OPEN: &[KeyboardShortcut] = &[k(CMD, Key::O)];
 const NEW_CATALOG: &[KeyboardShortcut] = &[k(CMD, Key::N)];
+const SAVE_CATALOG_AS: &[KeyboardShortcut] = &[k(CMD_SHIFT, Key::S)];
 // Ctrl+Shift+I as Capture One's Import Images.
 const IMPORT: &[KeyboardShortcut] = &[k(CMD_SHIFT, Key::I)];
 // Ctrl+D as Capture One's Process; Ctrl+E is the exposure warning there and here.
@@ -77,6 +81,7 @@ impl Command {
         match self {
             Self::Open => "Open Catalog\u{2026}",
             Self::NewCatalog => "New Catalog\u{2026}",
+            Self::SaveCatalogAs => "Save Catalog As\u{2026}",
             Self::Import => "Import Images\u{2026}",
             Self::Export => "Export\u{2026}",
             Self::ExportAgain => "Export with previous settings",
@@ -100,6 +105,7 @@ impl Command {
         match self {
             Self::Open => OPEN,
             Self::NewCatalog => NEW_CATALOG,
+            Self::SaveCatalogAs => SAVE_CATALOG_AS,
             Self::Import => IMPORT,
             Self::Export => EXPORT,
             Self::ExportAgain => EXPORT_AGAIN,
@@ -126,9 +132,10 @@ impl Command {
     }
 
     /// Every command.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Open,
         Self::NewCatalog,
+        Self::SaveCatalogAs,
         Self::Import,
         Self::Export,
         Self::ExportAgain,

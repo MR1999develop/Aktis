@@ -554,3 +554,7 @@ Details in `docs/catalog.md`.
   buttons stay visible.
 - Import… button on the bar under the menu, left of Undo (Ctrl+Shift+I as
   before).
+- File ▸ Save Catalog As… (Ctrl+Shift+S): the open catalog (the Default
+  one, say) copied whole to a new named catalog, which is then open
+  (`Catalog::save_copy` with `VACUUM INTO`, `Library::save_catalog_copy`);
+  the open photo is saved first, the old catalog is left as it was.

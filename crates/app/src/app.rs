@@ -439,6 +439,31 @@ impl EditorApp {
         }
     }
 
+    /// Save Catalog As: the open photo is saved, the open catalog copied
+    /// whole to the new folder `dir`, which is then opened. The old catalog
+    /// stays as it was.
+    fn save_catalog_as(&mut self, dir: PathBuf) {
+        if !self.save_edit(true) {
+            return; // the reason was told; the window stays open
+        }
+        let from = editor::catalogs::name(self.library.catalog_dir());
+        match self.library.save_catalog_copy(&dir) {
+            Ok(()) => {
+                self.new_catalog = None;
+                self.open_catalog(dir.clone());
+                let to = editor::catalogs::name(&dir);
+                self.toast = Some(info_toast(format!(
+                    "Catalog saved as \u{201c}{to}\u{201d}, now open; \u{201c}{from}\u{201d} keeps its photos too"
+                )));
+            }
+            Err(e) => {
+                if let Some(form) = &mut self.new_catalog {
+                    form.error = Some(e);
+                }
+            }
+        }
+    }
+
     /// Opens the catalog in folder `dir` in place of the open one; the open
     /// photo is saved and closed first.
     fn open_catalog(&mut self, dir: PathBuf) {
@@ -587,6 +612,7 @@ impl EditorApp {
                 self.new_catalog = None;
                 self.open_catalog(dir);
             }
+            Outcome::SaveAs(dir) => self.save_catalog_as(dir),
             Outcome::Import(photos) => {
                 if let Some(form) = self.import.take() {
                     self.settings.import_dir = Some(form.folder().to_owned());
@@ -722,6 +748,11 @@ impl EditorApp {
                 let folder = self.settings.catalogs_folder().unwrap_or_else(|| ai_models::data_dir().join("Catalogs"));
                 self.import = None;
                 self.new_catalog = Some(NewCatalog::new(folder));
+            }
+            Command::SaveCatalogAs => {
+                let folder = self.settings.catalogs_folder().unwrap_or_else(|| ai_models::data_dir().join("Catalogs"));
+                self.import = None;
+                self.new_catalog = Some(NewCatalog::save_as(folder));
             }
             Command::Import => {
                 // The folder of the last import, else one chosen now.
@@ -1698,6 +1729,7 @@ impl EditorApp {
             ui.menu_button("File", |ui| {
                 menu_item(ui, Command::NewCatalog, None, None, commands);
                 menu_item(ui, Command::Open, None, None, commands);
+                menu_item(ui, Command::SaveCatalogAs, None, None, commands);
                 ui.menu_button("Open Recent Catalog", |ui| {
                     let open = self.library.catalog_dir();
                     let others: Vec<&PathBuf> = self.settings.recent_catalogs.iter().filter(|c| *c != open).collect();

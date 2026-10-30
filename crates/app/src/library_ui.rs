@@ -298,6 +298,25 @@ impl Library {
         &self.catalog_dir
     }
 
+    /// Saves a copy of the open catalog as the new catalog folder `dir`
+    /// (everything in it: photos, edits, ratings, keywords, albums, the
+    /// Trash). The open catalog does not change.
+    ///
+    /// # Errors
+    /// A message when there is no catalog open or the copy cannot be
+    /// written; nothing is left behind then.
+    pub fn save_catalog_copy(&self, dir: &Path) -> Result<(), String> {
+        let catalog = self.catalog.as_ref().ok_or("no catalog is open")?;
+        if dir.exists() {
+            return Err(format!("{} exists already", dir.display()));
+        }
+        std::fs::create_dir_all(dir).map_err(|e| format!("{} cannot be made: {e}", dir.display()))?;
+        catalog.save_copy(&editor::catalogs::database(dir)).map_err(|e| {
+            let _ = std::fs::remove_dir_all(dir);
+            e.to_string()
+        })
+    }
+
     /// Opens the catalog in folder `dir` (made when it is new) in place of
     /// the open one; the filmstrip shows its photos.
     ///

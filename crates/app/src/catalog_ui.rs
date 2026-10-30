@@ -1,4 +1,5 @@
-//! The New Catalog window (a name and the folder it goes in), the catalog
+//! The New Catalog and Save Catalog As windows (a name and the folder it
+//! goes in), the catalog
 //! opened at start-up, and the messages of an import (the Import Images
 //! window is `import_window`).
 
@@ -45,13 +46,23 @@ pub struct NewCatalog {
     pub folder: PathBuf,
     /// Why the last Create failed, shown until the fields change.
     pub error: Option<String>,
+    /// Save Catalog As: a copy of the open catalog, not an empty one.
+    pub save_as: bool,
+    /// The name has not been touched yet (it is selected for typing over).
+    fresh: bool,
 }
 
 impl NewCatalog {
     /// A form for a catalog in `folder`, with a name to replace.
     #[must_use]
     pub fn new(folder: PathBuf) -> Self {
-        Self { name: "New Catalog".to_owned(), folder, error: None }
+        Self { name: "New Catalog".to_owned(), folder, error: None, save_as: false, fresh: true }
+    }
+
+    /// A form for Save Catalog As, in `folder`.
+    #[must_use]
+    pub fn save_as(folder: PathBuf) -> Self {
+        Self { name: "My Catalog".to_owned(), save_as: true, ..Self::new(folder) }
     }
 
     /// The catalog folder that would be made, or why it cannot be.
@@ -82,6 +93,8 @@ pub enum Outcome {
     Cancelled,
     /// Open this catalog (just made).
     Catalog(PathBuf),
+    /// Save a copy of the open catalog as this new catalog folder, then open it.
+    SaveAs(PathBuf),
     /// Import these photos.
     Import(Vec<PathBuf>),
 }
@@ -91,20 +104,28 @@ pub fn new_catalog_dialog(ctx: &egui::Context, form: &mut NewCatalog) -> Outcome
     let t = Tokens::of(ctx.theme());
     let mut choice = None;
     let target = form.target();
+    let (title, intro, verb) = if form.save_as {
+        (
+            "Save Catalog As",
+            "A copy of the open catalog, with all its photos, edits, ratings, keywords and albums, under a new \
+             name; the copy is then the open catalog. The photo files stay where they are.",
+            "Save",
+        )
+    } else {
+        ("New Catalog", "A catalog keeps the ratings, keywords and edits of the photos imported into it.", "Create")
+    };
     dialog(ctx, "rne-new-catalog", |ui| {
-        ui.label(RichText::new("New Catalog").size(FONT[4]).strong());
+        ui.label(RichText::new(title).size(FONT[4]).strong());
         ui.add_space(SPACE[1]);
-        ui.label(
-            RichText::new("A catalog keeps the ratings, keywords and edits of the photos imported into it.")
-                .color(t.text_weak),
-        );
+        ui.label(RichText::new(intro).color(t.text_weak));
         ui.add_space(SPACE[2]);
         ui.label("Name");
         let field = ui.add(egui::TextEdit::singleline(&mut form.name).desired_width(f32::INFINITY));
         if field.changed() {
             form.error = None;
+            form.fresh = false;
         }
-        if !field.has_focus() && form.name == "New Catalog" {
+        if !field.has_focus() && form.fresh {
             field.request_focus();
         }
         ui.add_space(SPACE[1]);
@@ -123,9 +144,17 @@ pub fn new_catalog_dialog(ctx: &egui::Context, form: &mut NewCatalog) -> Outcome
             ui.label(RichText::new(capitalized(why)).color(t.warning));
         }
         ui.add_space(SPACE[2]);
-        choice = dialog_buttons(ui, &t, target.is_ok().then_some("Create"), "Cancel", |_| {});
+        choice = dialog_buttons(ui, &t, target.is_ok().then_some(verb), "Cancel", |_| {});
     });
     match choice {
+        // The app makes the copy (it saves the open photo first).
+        Some(Choice::Action) if form.save_as => match form.target() {
+            Ok(path) => Outcome::SaveAs(path),
+            Err(e) => {
+                form.error = Some(e);
+                Outcome::Open
+            }
+        },
         Some(Choice::Action) => match form.create() {
             Ok(path) => Outcome::Catalog(path),
             // Shown under the fields at the next frame (the folder exists now, say).
@@ -196,6 +225,8 @@ mod tests {
         let made = form.create().unwrap();
         assert!(catalogs::is_catalog(&made));
         assert!(form.target().is_err(), "the name is taken now");
+        let copy = NewCatalog::save_as(dir.clone());
+        assert!(copy.save_as && copy.target().is_ok_and(|p| p.ends_with("My Catalog.rnecatalog")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
