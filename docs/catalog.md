@@ -34,6 +34,12 @@ How the editor keeps photos, as in Capture One's catalogs. Code:
   keywords and selection belong to the photo, so they are shared by its
   variants (`Catalog::multi_variants`, `Catalog::variant_preview`,
   `editor::library::strip_cards`).
+- Deleting a variant (its card's menu ▸ Delete Variant N…, or Delete over
+  the filmstrip while the open photo has several) removes only that
+  variant, after a confirmation: the photo and its other variants stay,
+  the first variant included when another is deleted, and the other way
+  round. Move Photo to Trash in the same menu takes the photo with all its
+  variants.
 
 ## Import
 

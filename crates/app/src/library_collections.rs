@@ -4,11 +4,11 @@
 //! back; albums made, renamed and deleted, and photos put in them by
 //! dragging them onto an album or from the card menu.
 
-use super::CardAction;
 use super::{
     Album, Button, Choice, Collection, FONT, FolderNode, Library, LibraryAction, Path, PathBuf, Rect, RichText, SPACE,
     Sense, Stroke, StrokeKind, TREE_INDENT, TextEdit, Tokens, dialog, dialog_buttons, egui, icons, vec2,
 };
+use super::{CardAction, CardState};
 
 /// What a filmstrip card carries while it is dragged: the photo (the
 /// selection it belongs to goes with it).
@@ -624,10 +624,10 @@ pub(super) fn card_menu_items(
     ui: &mut egui::Ui,
     path: &Path,
     group: &str,
-    albums: &[Album],
-    collection: Option<&Collection>,
+    state: CardState<'_>,
     actions: &mut Vec<CardAction>,
 ) {
+    let (albums, collection) = (state.albums, state.collection);
     let Some(collection) = collection else { return };
     if collection.is_trash() {
         if ui.button(format!("Restore{group}")).on_hover_text("Back where it was in the catalog").clicked() {
@@ -656,6 +656,20 @@ pub(super) fn card_menu_items(
     {
         actions.push(CardAction::RemoveFromAlbum(path.to_owned(), *id));
         ui.close();
+    }
+    // A variant's card deletes that variant; the photo and the others stay.
+    if let Some(variant) = state.variant {
+        let delete = Button::new(format!("Delete {}\u{2026}", variant.name));
+        let delete = if state.open { delete.shortcut_text("Delete") } else { delete };
+        if ui.add(delete).on_hover_text("Only this variant: the photo and its other variants stay").clicked() {
+            actions.push(CardAction::DeleteVariant(path.to_owned(), variant.clone()));
+            ui.close();
+        }
+        if ui.button(format!("Move Photo to Trash{group}")).on_hover_text("The photo with all its variants").clicked() {
+            actions.push(CardAction::Trash(path.to_owned()));
+            ui.close();
+        }
+        return;
     }
     if ui.add(Button::new(format!("Move to Trash{group}")).shortcut_text("Delete")).clicked() {
         actions.push(CardAction::Trash(path.to_owned()));

@@ -238,8 +238,8 @@ pub struct EditorApp {
     variants: Vec<VariantInfo>,
     /// When the open variant first differed from what is saved.
     dirty_since: Option<Instant>,
-    /// The variant whose deletion waits for confirmation.
-    confirm_delete: Option<VariantInfo>,
+    /// The variant (of that photo) whose deletion waits for confirmation.
+    confirm_delete: Option<(PathBuf, VariantInfo)>,
     /// Presets and style brushes, and the Save Preset window.
     presets: PresetsUi,
     /// Closing was refused once because the edit could not be saved.
@@ -1195,6 +1195,7 @@ impl EditorApp {
                     follow_rename(&mut self.settings.recent, &from, &to);
                 }
                 LibraryAction::Command(command) => self.run(command, ctx),
+                LibraryAction::DeleteVariant(path, info) => self.ask_delete_card_variant(path, info),
                 LibraryAction::ApplyPreset(photos, index) => self.apply_preset(index, &photos),
                 LibraryAction::SavePreset(photo) => {
                     // A photo never edited opens the window too (its white balance can be saved).
@@ -1645,11 +1646,48 @@ impl EditorApp {
             self.toast = Some(info_toast(why.to_owned()));
             return;
         }
-        self.confirm_delete = self.variant.as_ref().map(|s| s.info.clone());
+        let path = self.doc.as_ref().map(|d| d.path().to_owned());
+        self.confirm_delete = path.zip(self.variant.as_ref().map(|s| s.info.clone()));
+    }
+
+    /// Delete variant from its filmstrip card: asks for confirmation first.
+    /// The photo and its other variants stay, the first variant included.
+    fn ask_delete_card_variant(&mut self, path: PathBuf, info: VariantInfo) {
+        let open = self.doc.as_ref().is_some_and(|d| d.path() == path);
+        let count = if open { self.variant_list().len() } else { self.library.variants(&path).len() };
+        if count < 2 {
+            self.toast = Some(info_toast("A photo keeps at least one variant".to_owned()));
+            return;
+        }
+        if open && self.variant.as_ref().is_some_and(|s| s.info.number == info.number && s.read_only.is_some()) {
+            self.toast = Some(info_toast("A read-only variant cannot be deleted".to_owned()));
+            return;
+        }
+        self.confirm_delete = Some((path, info));
+    }
+
+    /// Deletes variant `deleted` of `path` (confirmed): the open one is
+    /// replaced by a neighbour; any other is only removed from the catalog.
+    fn delete_variant(&mut self, path: &Path, deleted: &VariantInfo) {
+        let open_photo = self.doc.as_ref().is_some_and(|d| d.path() == path);
+        let open_variant = open_photo && self.variant.as_ref().is_some_and(|s| s.info.number == deleted.number);
+        if open_variant {
+            self.delete_open_variant(deleted);
+            return;
+        }
+        if let Err(e) = self.library.delete_variant(path, deleted.number) {
+            self.toast = Some(error_toast(format!("The variant could not be deleted: {e}")));
+            return;
+        }
+        if open_photo {
+            self.variants = self.library.variants(path);
+        }
+        self.library.forget_thumbnail(path);
+        self.toast = Some(info_toast(format!("Deleted {}", deleted.name)));
     }
 
     /// Deletes the open variant (confirmed) and opens a neighbour.
-    fn delete_variant(&mut self, deleted: &VariantInfo) {
+    fn delete_open_variant(&mut self, deleted: &VariantInfo) {
         let Some(path) = self.doc.as_ref().map(|d| d.path().to_owned()) else { return };
         if self.variant.as_ref().is_none_or(|s| s.info.number != deleted.number) {
             return; // another variant is open now
@@ -1681,7 +1719,7 @@ impl EditorApp {
 
     /// The "Delete variant" confirmation, when asked.
     fn delete_dialog(&mut self, ctx: &egui::Context) {
-        let Some(target) = self.confirm_delete.clone() else { return };
+        let Some((path, target)) = self.confirm_delete.clone() else { return };
         let t = Tokens::of(ctx.theme());
         let mut choice = None;
         dialog(ctx, "rne-delete-variant", |ui| {
@@ -1700,7 +1738,7 @@ impl EditorApp {
         match choice {
             Some(Choice::Action) => {
                 self.confirm_delete = None;
-                self.delete_variant(&target);
+                self.delete_variant(&path, &target);
             }
             Some(Choice::Cancel) => self.confirm_delete = None,
             None => {}

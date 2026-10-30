@@ -243,7 +243,8 @@ the Trash or album merge. Photos come in through File ▸ Import Images… (or t
 left of Undo on the bar under the menu) and live in a catalog (`Name.rnecatalog`): see `docs/catalog.md`.
 A photo with several variants shows each as a card of its own in the
 filmstrip, right after the one before ("IMG_0001.CR3 (2)"), with its own
-preview; a click opens that variant.
+preview; a click opens that variant. Deleting a variant, the first one
+included, leaves the photo and its other variants.
 
 ## Status
 

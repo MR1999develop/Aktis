@@ -67,6 +67,9 @@ pub enum LibraryAction {
     Open(PathBuf),
     /// Open variant `.1` of this photo (its card in the filmstrip was clicked).
     OpenVariant(PathBuf, u32),
+    /// Delete this variant of this photo (asks first); the photo and its
+    /// other variants stay.
+    DeleteVariant(PathBuf, VariantInfo),
     /// Open the export window for these photos.
     Export(Vec<PathBuf>),
     /// Export these photos with the previous settings, without the window.
@@ -154,6 +157,7 @@ enum CardAction {
     ApplyPreset(PathBuf, usize),
     SavePreset(PathBuf),
     Trash(PathBuf),
+    DeleteVariant(PathBuf, VariantInfo),
     Restore(PathBuf),
     AddToAlbum(PathBuf, i64),
     NewAlbum(PathBuf),
@@ -965,7 +969,14 @@ impl Library {
         // Delete moves to the Trash, as in Capture One (not from a disk folder),
         // with the pointer over the filmstrip: elsewhere it deletes a node or a spot.
         if self.strip_hovered && self.collection.as_ref().is_some_and(|c| !c.is_trash()) && pressed(Key::Delete) {
-            self.trash(&targets, current, actions);
+            // The open photo alone, with several variants: only its open
+            // variant goes (asked first), as in Capture One.
+            let several = current.and_then(|p| self.variant_lists.get(p)).is_some_and(|v| v.len() > 1);
+            if several && targets.len() == 1 && current == Some(targets[0].as_path()) {
+                actions.push(LibraryAction::Command(Command::DeleteVariant));
+            } else {
+                self.trash(&targets, current, actions);
+            }
         }
     }
 
@@ -1343,6 +1354,7 @@ impl Library {
                     }
                 }
                 CardAction::Rename(p) => self.begin_rename(p),
+                CardAction::DeleteVariant(p, info) => actions.push(LibraryAction::DeleteVariant(p, info)),
                 CardAction::Trash(p) => {
                     let targets = self.strip.targets(&p);
                     self.trash(&targets, current, actions);
@@ -1917,7 +1929,7 @@ fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState<'_>, action
         }
     });
     ui.separator();
-    collections::card_menu_items(ui, path, group, state.albums, state.collection, actions);
+    collections::card_menu_items(ui, path, group, state, actions);
     ui.separator();
     variant_item(ui, Command::DeleteVariant, "Delete Variant\u{2026}", why(state.variants.delete), actions);
 }

@@ -595,3 +595,7 @@ Details in `docs/catalog.md`.
   variant when the photo is open). The open photo's list includes a new
   variant not stored yet. Rating, label, keywords and selection stay the
   photo's, shared by its variants.
+- Deleting the first variant keeps the others: a variant's card menu has
+  Delete Variant N… (only that one, asked first) and Move Photo to Trash
+  (the photo with every variant); Delete over the filmstrip, with the open
+  photo alone selected and several variants, deletes the open variant.
