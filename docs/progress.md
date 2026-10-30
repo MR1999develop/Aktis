@@ -548,3 +548,7 @@ Details in `docs/catalog.md`.
   elsewhere Ctrl+Z stays the photo's undo.
 - Photos are dragged onto albums from the overview tiles (several photos
   selected) too.
+- Import Images window: sized to the app window (92 % × 86 %, never more
+  than the window minus a margin; `import_window::fitted`); the source
+  column scrolls, so on small screens (a 1280 × 960 virtual machine) the
+  buttons stay visible.

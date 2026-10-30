@@ -33,6 +33,26 @@ const OPTIONS_WIDTH: f32 = 320.0;
 const CELL_WIDTH: f32 = 150.0;
 /// Height of the strip under the large preview.
 const STRIP_HEIGHT: f32 = 96.0;
+/// What the window needs besides the three columns: its margins, the
+/// title, the line under the columns and the buttons.
+const CHROME_HEIGHT: f32 = 150.0;
+/// The columns' height on the smallest screens.
+const MIN_BODY: f32 = 200.0;
+/// The photos column's width on the smallest screens.
+const MIN_MIDDLE: f32 = 180.0;
+/// Room left around the window, each way.
+const SCREEN_MARGIN: f32 = 48.0;
+
+/// The window's width and height for an app window of `screen_w` × `screen_h`
+/// points: 92 % × 86 %, always leaving [`SCREEN_MARGIN`] around it, and
+/// never smaller than the three columns need when the screen has room.
+fn fitted(screen_w: f32, screen_h: f32) -> (f32, f32) {
+    let wanted_w = SOURCE_WIDTH + OPTIONS_WIDTH + 4.0 * CELL_WIDTH + 40.0;
+    let wanted_h = CHROME_HEIGHT + 3.0 * STRIP_HEIGHT + 120.0;
+    let room_w = (screen_w - SCREEN_MARGIN).max(1.0);
+    let room_h = (screen_h - SCREEN_MARGIN).max(1.0);
+    ((screen_w * 0.92).max(wanted_w).min(room_w), (screen_h * 0.86).max(wanted_h).min(room_h))
+}
 /// Thumbnails kept on the GPU.
 const THUMB_CACHE: usize = 400;
 /// Thumbnails asked for around the current photo in the strip.
@@ -288,9 +308,10 @@ impl ImportWindow {
         self.poll(ctx);
         self.wanted.clear();
         let t = Tokens::of(ctx.theme());
+        // As large as the window allows, never larger: on a small screen
+        // the columns shrink and scroll instead of going off the edges.
         let screen = ctx.content_rect();
-        let width = (screen.width() * 0.92).max(900.0);
-        let height = (screen.height() * 0.86).max(560.0);
+        let (width, height) = fitted(screen.width(), screen.height());
         let mut choice = None;
         let mut rescan = false;
         let mut files = Vec::new();
@@ -300,14 +321,16 @@ impl ImportWindow {
                 ui.label(RichText::new(format!("into the catalog \u{201c}{catalog}\u{201d}")).color(t.text_weak));
             });
             ui.add_space(SPACE[1]);
-            let body = height - 110.0;
+            let body = (height - CHROME_HEIGHT).max(MIN_BODY);
             ui.horizontal_top(|ui| {
                 ui.allocate_ui_with_layout(vec2(SOURCE_WIDTH, body), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(SOURCE_WIDTH);
-                    rescan = self.source_column(ui, &t, options);
+                    egui::ScrollArea::vertical().id_salt("rne-import-source").max_height(body).show(ui, |ui| {
+                        rescan = self.source_column(ui, &t, options);
+                    });
                 });
                 ui.separator();
-                let middle = (ui.available_width() - OPTIONS_WIDTH - 20.0).max(300.0);
+                let middle = (ui.available_width() - OPTIONS_WIDTH - 20.0).max(MIN_MIDDLE);
                 ui.allocate_ui_with_layout(vec2(middle, body), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(middle);
                     ui.set_height(body);
@@ -808,6 +831,18 @@ fn stars(ui: &mut egui::Ui, t: &Tokens, rating: &mut u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_never_leaves_the_screen() {
+        for (w, h) in [(1269.0, 951.0), (1024.0, 700.0), (800.0, 500.0), (2560.0, 1440.0), (300.0, 200.0)] {
+            let (fw, fh) = fitted(w, h);
+            assert!(fw <= w - SCREEN_MARGIN + 1.0 && fh <= h - SCREEN_MARGIN + 1.0, "{w}×{h} → {fw}×{fh}");
+            assert!(fw > 0.0 && fh > 0.0);
+        }
+        // With room, it keeps the size of the earlier window.
+        let (fw, fh) = fitted(2560.0, 1440.0);
+        assert!((fw - 2560.0 * 0.92).abs() < 0.5 && (fh - 1440.0 * 0.86).abs() < 0.5);
+    }
 
     fn picker() -> Picker {
         let known: HashSet<ShotKey> =
