@@ -322,7 +322,11 @@ impl ImportWindow {
             });
             ui.add_space(SPACE[1]);
             let body = (height - CHROME_HEIGHT).max(MIN_BODY);
-            ui.horizontal_top(|ui| {
+            // A row exactly `body` high: the vertical separators fill the
+            // height they are given, which in a modal is the whole screen.
+            let row = vec2(ui.available_width(), body);
+            ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Min), |ui| {
+                ui.set_height(body);
                 ui.allocate_ui_with_layout(vec2(SOURCE_WIDTH, body), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(SOURCE_WIDTH);
                     egui::ScrollArea::vertical().id_salt("rne-import-source").max_height(body).show(ui, |ui| {

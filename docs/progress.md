@@ -551,7 +551,10 @@ Details in `docs/catalog.md`.
 - Import Images window: sized to the app window (92 % × 86 %, never more
   than the window minus a margin; `import_window::fitted`); the source
   column scrolls, so on small screens (a 1280 × 960 virtual machine) the
-  buttons stay visible.
+  buttons stay visible. The three columns sit in a row exactly as high as
+  the space left for them: the vertical separators between them took the
+  whole screen height inside the modal and pushed title and buttons off
+  the screen.
 - Import… button on the bar under the menu, left of Undo (Ctrl+Shift+I as
   before).
 - File ▸ Save Catalog As… (Ctrl+Shift+S): the open catalog (the Default
