@@ -570,11 +570,14 @@ impl Catalog {
                     .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().contains(&text)))
                     .collect()
             }
-            Collection::Album(id) => rows(
-                "SELECT a.path FROM album_photos a JOIN imported i ON i.path = a.path
-                 WHERE i.trashed IS NULL AND a.album = ?1",
-                Some(Value::Integer(*id)),
-            )?,
+            Collection::Album(id) => {
+                // In the order they were put there: not sorted by name.
+                return rows(
+                    "SELECT a.path FROM album_photos a JOIN imported i ON i.path = a.path
+                     WHERE i.trashed IS NULL AND a.album = ?1 ORDER BY a.added, a.rowid",
+                    Some(Value::Integer(*id)),
+                );
+            }
         };
         crate::model::sort_by_name(&mut paths);
         Ok(paths)
@@ -610,17 +613,28 @@ impl Catalog {
     /// # Errors
     /// [`CatalogError::Sqlite`] when the database cannot be read.
     pub fn recent_imports(&self, limit: usize) -> Result<Vec<ImportBatch>, CatalogError> {
+        // SQLite knows the computer's time zone: the local offset at the
+        // time of each import (summer time included).
         let mut stmt = self.conn.prepare(
-            "SELECT batch, MAX(imported), COUNT(*) FROM imported WHERE trashed IS NULL
+            "SELECT batch, MAX(imported), COUNT(*),
+                    CAST(strftime('%s', MAX(imported), 'unixepoch', 'localtime') AS INTEGER) - MAX(imported)
+             FROM imported WHERE trashed IS NULL
              GROUP BY batch ORDER BY batch DESC LIMIT ?1",
         )?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let rows = stmt
-            .query_map(params![limit], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+            .query_map(params![limit], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<i64>>(3)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows
             .into_iter()
-            .map(|(number, when, count)| ImportBatch { number, when, count: usize::try_from(count).unwrap_or(0) })
+            .map(|(number, when, count, offset)| ImportBatch {
+                number,
+                when,
+                offset: offset.unwrap_or(0),
+                count: usize::try_from(count).unwrap_or(0),
+            })
             .collect())
     }
 
@@ -772,7 +786,7 @@ impl Catalog {
 
     /// The photos put in album `id` (the Trash included).
     fn album_paths(&self, id: i64) -> Result<Vec<PathBuf>, CatalogError> {
-        let mut stmt = self.conn.prepare("SELECT path FROM album_photos WHERE album = ?1")?;
+        let mut stmt = self.conn.prepare("SELECT path FROM album_photos WHERE album = ?1 ORDER BY added, rowid")?;
         let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows.into_iter().map(PathBuf::from).collect())
     }
@@ -1117,7 +1131,9 @@ mod tests {
         let other = c.create_album("Another", None).unwrap();
         assert_eq!(c.add_to_album(best, &[x.clone(), a.clone()]).unwrap(), 2);
         assert_eq!(c.add_to_album(best, std::slice::from_ref(&a)).unwrap(), 0);
-        assert_eq!(c.collection(&Collection::Album(best)).unwrap(), [a.clone(), x.clone()]);
+        assert_eq!(c.collection(&Collection::Album(best)).unwrap(), [x.clone(), a.clone()], "in the order added");
+        let offset = imports[0].offset;
+        assert!(offset.abs() <= 14 * 3600 && offset % 900 == 0, "a time zone offset: {offset}");
         let names: Vec<(String, usize)> = c.albums().unwrap().into_iter().map(|al| (al.name, al.count)).collect();
         assert_eq!(names, [("Another".to_owned(), 0), ("Best".to_owned(), 2)]);
         c.trash(std::slice::from_ref(&x)).unwrap();

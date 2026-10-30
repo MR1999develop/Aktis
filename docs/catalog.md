@@ -61,7 +61,7 @@ The left panel, from the top:
 - **Search**: type part of a file name to see the matching photos of the
   whole catalog (the Trash apart); Escape or another collection ends it.
 - **Catalog Collections**: All Images; Recent Imports (the last 10 imports,
-  by day and number of photos); Recent Edits (edited in the last 30 days,
+  by local date and time, with their number of photos); Recent Edits (edited in the last 30 days,
   latest first); Trash. Right-click the Trash for Empty Trash…. Every row
   shows its number of photos on the right.
 - **Albums**: photos put together by hand, in a tree of sub-albums. "+"
@@ -69,8 +69,9 @@ The left panel, from the top:
   Right-click an album: New Sub-album…, Rename Album…, Merge Into ▸ (its
   photos and sub-albums go into the other album; the message offers Undo),
   Delete Album… (its photos stay in the catalog, its sub-albums move up).
-  Drag photos from the filmstrip onto an album, or use the card menu: Add to
-  Album ▸, Remove from Album.
+  Drag photos from the filmstrip (or the tiles shown when several are
+  selected) onto an album, or use the card menu: Add to Album ▸, Remove
+  from Album. An album lists its photos in the order they were put there.
 - **Folders**: the folders photos were imported from, as a tree with counts
   (folders without photos of their own that lead to one sub-folder are
   shown as one line). A folder shows its own photos.
@@ -87,3 +88,9 @@ every other collection but keep their edits. When the open photo goes, the
 next one in the filmstrip opens (the one before when it was the last).
 Restore takes them back; Empty Trash… removes them from the catalog (the
 files stay on the disk).
+
+Undo in the Library: the last move to the Trash or album merge can be
+taken back with Ctrl+Z while the pointer is over the Library (Explorer or
+filmstrip), with Edit ▸ Undo move to Trash / Undo album merge, or with the
+message's Undo button. Elsewhere Ctrl+Z undoes the photo's edits. Emptying
+the Trash ends the undo of a move to the Trash.

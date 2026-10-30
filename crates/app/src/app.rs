@@ -116,15 +116,15 @@ enum ToastKind {
 #[derive(Debug, Clone)]
 enum ToastAction {
     ShowInFolder(PathBuf),
-    /// Takes back a merge of albums.
-    UndoMerge(Box<catalog::MergeUndo>),
+    /// Takes back the Library's last change (an album merge, a move to the Trash).
+    UndoLibrary,
 }
 
 impl ToastAction {
     fn label(&self) -> &'static str {
         match self {
             Self::ShowInFolder(_) => "Show in folder",
-            Self::UndoMerge(_) => "Undo",
+            Self::UndoLibrary => "Undo",
         }
     }
 }
@@ -747,7 +747,10 @@ impl EditorApp {
             Command::CloneVariant => self.add_variant(true),
             Command::DeleteVariant => self.ask_delete_variant(),
             Command::Undo => {
-                if let Some(doc) = &mut self.doc {
+                // Over the Library, its last change; elsewhere the photo's edits.
+                if self.library.hovered() && self.library.undo_label().is_some() {
+                    self.undo_library();
+                } else if let Some(doc) = &mut self.doc {
                     doc.undo();
                 }
             }
@@ -1095,11 +1098,15 @@ impl EditorApp {
                     }
                     let n = photos.len();
                     let text = if n == 1 { "1 photo".to_owned() } else { format!("{n} photos") };
-                    self.toast = Some(info_toast(if emptied {
+                    let mut toast = info_toast(if emptied {
                         format!("{text} removed from the catalog; the files stay on the disk")
                     } else {
                         format!("{text} moved to the Trash (Catalog Collections)")
-                    }));
+                    });
+                    if !emptied {
+                        toast.action = Some(ToastAction::UndoLibrary);
+                    }
+                    self.toast = Some(toast);
                 }
                 LibraryAction::ImportFolder(folder) => {
                     self.new_catalog = None;
@@ -1121,9 +1128,9 @@ impl EditorApp {
                         *dir = to.join(rest);
                     }
                 }
-                LibraryAction::Merged { text, undo } => {
+                LibraryAction::Merged { text } => {
                     let mut toast = info_toast(text);
-                    toast.action = Some(ToastAction::UndoMerge(Box::new(undo)));
+                    toast.action = Some(ToastAction::UndoLibrary);
                     self.toast = Some(toast);
                 }
                 LibraryAction::Open(path) => {
@@ -1412,6 +1419,15 @@ impl EditorApp {
     /// Saves the open variant before the window closes. When the catalog
     /// refuses, the window stays open the first time (the error is shown)
     /// and closes without saving if the user asks again.
+    /// Takes back the Library's last change and says so.
+    fn undo_library(&mut self) {
+        match self.library.undo() {
+            Ok(Some(what)) => self.toast = Some(info_toast(format!("Undone: {what}"))),
+            Ok(None) => {}
+            Err(e) => self.toast = Some(error_toast(format!("It could not be undone: {e}"))),
+        }
+    }
+
     fn save_before_closing(&mut self) -> bool {
         if self.save_edit(true) || self.close_refused {
             return true;
@@ -1654,6 +1670,8 @@ impl EditorApp {
         let has_doc = self.doc.is_some();
         let undo = self.doc.as_ref().and_then(Document::undo_label);
         let redo = self.doc.as_ref().and_then(Document::redo_label);
+        let library_undo = self.library.undo_label();
+        let mut undo_library = false;
         let exporting = self.exporting.is_some();
         let export_count = self.export_targets().len();
         let mut open_recent = None;
@@ -1713,6 +1731,17 @@ impl EditorApp {
                 menu_item(ui, Command::Undo, undo_label, undo.is_none().then_some("Nothing to undo"), commands);
                 let redo_label = redo.as_ref().map(|l| format!("Redo {}", lowercase_first(l)));
                 menu_item(ui, Command::Redo, redo_label, redo.is_none().then_some("Nothing to redo"), commands);
+                // The Library's own undo (Ctrl+Z with the pointer over the Library).
+                let label = library_undo.map_or_else(|| "Undo in the Library".to_owned(), |l| format!("Undo {l}"));
+                if ui
+                    .add_enabled(library_undo.is_some(), Button::new(label))
+                    .on_hover_text("The Library's last change; Ctrl+Z over the Library does it too")
+                    .on_disabled_hover_text("Nothing to undo in the Library")
+                    .clicked()
+                {
+                    undo_library = true;
+                    ui.close();
+                }
                 ui.separator();
                 let why = "Select a node in the graph first";
                 let bypass_label = if editable_node.is_some_and(|(_, on)| !on) { "Enable node" } else { "Bypass node" };
@@ -1860,6 +1889,9 @@ impl EditorApp {
         }
         for action in preset_actions {
             self.preset_action(action);
+        }
+        if undo_library {
+            self.undo_library();
         }
         if open_prefs {
             self.prefs.open(&self.settings);
@@ -2466,10 +2498,7 @@ impl EditorApp {
                     self.toast = Some(error_toast(format!("Cannot open the folder: {e}")));
                 }
             }
-            Some(ToastAction::UndoMerge(undo)) => match self.library.undo_merge(&undo) {
-                Ok(()) => self.toast = Some(info_toast("Merge undone".to_owned())),
-                Err(e) => self.toast = Some(error_toast(format!("The merge could not be undone: {e}"))),
-            },
+            Some(ToastAction::UndoLibrary) => self.undo_library(),
             None => {}
         }
     }

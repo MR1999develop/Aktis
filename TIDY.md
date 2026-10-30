@@ -238,16 +238,13 @@
   lens database or custom lenses, but the camera defaults of its camera
   model (tuned for RAW files) still apply to it. The thumbnail decodes
   the whole picture (no embedded preview used).
-- Library collections: Recent Imports shows the day in UTC (no local
-  time zone yet, so no time of day); a catalog folder shows its own photos,
-  not those of its sub-folders; moving to the Trash has no undo (Restore in
-  the Trash); photos are dragged onto albums only from the filmstrip (not
-  from the overview tiles); album photos are listed by name, not in the
-  order they were added; smart albums, projects and groups were left out
-  by choice.
+- Library collections: a catalog folder shows its own photos, not those of
+  its sub-folders; the Library undoes only its last change (one step, move
+  to Trash or album merge; adding to or removing from an album, renaming
+  and deleting albums have no undo); smart albums, projects and groups were
+  left out by choice.
 - Disk folders: Cut/Paste moves on the same drive only (another drive needs
   a copy and a delete); Delete uses PowerShell on Windows (`platform::
-  move_to_trash`), slow to start. Album merges are undone from the message's
-  Undo button only (not Ctrl+Z); the import window keeps no thumbnails
+  move_to_trash`), slow to start. The import window keeps no thumbnails
   between openings; folders can be deleted only from the Disk tree, not
   from the catalog's Folders.

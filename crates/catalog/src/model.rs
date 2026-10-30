@@ -70,18 +70,22 @@ pub struct ImportBatch {
     pub number: i64,
     /// When it was made, in seconds since 1970 (UTC).
     pub when: i64,
+    /// The computer's time zone then, in seconds east of UTC.
+    pub offset: i64,
     /// Photos it added that are still in the catalog (the Trash apart).
     pub count: usize,
 }
 
 impl ImportBatch {
-    /// "29 Oct 2026", the day of the import (UTC).
+    /// "29 Oct 2026, 14:05": the day and time of the import, local time.
     #[must_use]
-    pub fn day_text(&self) -> String {
+    pub fn when_text(&self) -> String {
         const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-        let d = crate::import::Day::from_unix(self.when);
+        let local = self.when.saturating_add(self.offset);
+        let d = crate::import::Day::from_unix(local);
         let month = MONTHS.get(usize::try_from(d.month).unwrap_or(1).saturating_sub(1)).copied().unwrap_or("");
-        format!("{} {month} {}", d.day, d.year)
+        let minutes = local.rem_euclid(86_400) / 60;
+        format!("{} {month} {}, {:02}:{:02}", d.day, d.year, minutes / 60, minutes % 60)
     }
 }
 
@@ -570,8 +574,12 @@ mod tests {
     #[test]
     fn collections_have_names_and_paths_sort_by_file_name() {
         assert!(Collection::Trash.is_trash() && !Collection::All.is_trash());
-        let batch = ImportBatch { number: 3, when: 1_793_268_000, count: 4 };
-        assert_eq!(batch.day_text(), "29 Oct 2026");
+        // 29 Oct 2026, 10:00 UTC.
+        let batch = ImportBatch { number: 3, when: 1_793_268_000, offset: 0, count: 4 };
+        assert_eq!(batch.when_text(), "29 Oct 2026, 10:00");
+        // An hour east of UTC, and a time that passes midnight there.
+        assert_eq!(ImportBatch { offset: 3600, ..batch.clone() }.when_text(), "29 Oct 2026, 11:00");
+        assert_eq!(ImportBatch { when: 1_793_314_800, offset: 3600, ..batch }.when_text(), "30 Oct 2026, 00:00");
         assert_eq!(Collection::All.label(), "All Images");
         assert_eq!(Collection::Folder(PathBuf::from("D:/Photos/Trip")).label(), "Trip");
         let mut paths = vec![PathBuf::from("b/A2.NEF"), PathBuf::from("a/a1.NEF"), PathBuf::from("a/A2.NEF")];

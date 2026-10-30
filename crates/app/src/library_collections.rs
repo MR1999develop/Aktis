@@ -15,6 +15,28 @@ use super::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DraggedPhoto(pub(super) PathBuf);
 
+/// A change of the Library that can be undone (the last one only), with
+/// Ctrl+Z over the Library, Edit ▸ Undo … in the Library or the message's
+/// Undo button.
+#[derive(Debug, Clone)]
+pub enum LibraryUndo {
+    /// Photos moved to the Trash: they come back.
+    Trash(Vec<PathBuf>),
+    /// Two albums merged: they come apart again.
+    Merge(Box<catalog::MergeUndo>),
+}
+
+impl LibraryUndo {
+    /// What it undoes, for menus ("move to Trash").
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Trash(_) => "move to Trash",
+            Self::Merge(_) => "album merge",
+        }
+    }
+}
+
 /// The New Album / Rename Album window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AlbumDialog {
@@ -96,8 +118,9 @@ impl Library {
             }
             for batch in &self.imports {
                 let c = Collection::Import(batch.number);
-                let r = count_row(ui, t, on(&c), &batch.day_text(), batch.count)
-                    .on_hover_text(format!("Import {}", batch.number));
+                let photos = if batch.count == 1 { "1 photo".to_owned() } else { format!("{} photos", batch.count) };
+                let r = count_row(ui, t, on(&c), &batch.when_text(), batch.count)
+                    .on_hover_text(format!("Import {}: {photos}", batch.number));
                 if r.clicked() {
                     chosen = Some(c);
                 }
@@ -316,6 +339,7 @@ impl Library {
         let next = current.and_then(|cur| self.strip.after_removing(paths, cur));
         match c.trash(paths) {
             Ok(()) => {
+                self.last_undo = Some(LibraryUndo::Trash(paths.to_vec()));
                 self.reshow();
                 if let Some(n) = &next {
                     self.strip.select_only(n);
@@ -339,18 +363,45 @@ impl Library {
                 }
                 self.reshow();
                 let text = format!("\u{201c}{from_name}\u{201d} merged into \u{201c}{into_name}\u{201d}");
-                actions.push(LibraryAction::Merged { text, undo });
+                self.last_undo = Some(LibraryUndo::Merge(Box::new(undo)));
+                actions.push(LibraryAction::Merged { text });
             }
             Err(e) => actions.push(LibraryAction::Error(format!("The albums could not be merged: {e}"))),
         }
     }
 
-    /// Undoes a merge of albums.
-    pub fn undo_merge(&mut self, undo: &catalog::MergeUndo) -> Result<(), String> {
+    /// What Undo would take back in the Library ("move to Trash"), if anything.
+    #[must_use]
+    pub fn undo_label(&self) -> Option<&'static str> {
+        self.last_undo.as_ref().map(LibraryUndo::label)
+    }
+
+    /// The pointer is over the Library (Explorer or filmstrip): Ctrl+Z is
+    /// the Library's there.
+    #[must_use]
+    pub fn hovered(&self) -> bool {
+        self.explorer_hovered || self.strip_hovered
+    }
+
+    /// Takes back the Library's last change; returns what was undone, for
+    /// the message (`None` when there was nothing).
+    ///
+    /// # Errors
+    /// A message when the catalog refuses; the change stays undoable.
+    pub fn undo(&mut self) -> Result<Option<&'static str>, String> {
+        let Some(undo) = self.last_undo.take() else { return Ok(None) };
         let c = self.catalog.as_mut().ok_or("there is no catalog")?;
-        c.undo_merge(undo).map_err(|e| e.to_string())?;
+        let done = match &undo {
+            LibraryUndo::Trash(paths) => c.restore(paths),
+            LibraryUndo::Merge(m) => c.undo_merge(m),
+        };
+        if let Err(e) = done {
+            let text = e.to_string();
+            self.last_undo = Some(undo);
+            return Err(text);
+        }
         self.reshow();
-        Ok(())
+        Ok(Some(undo.label()))
     }
 
     /// Takes `paths` out of the Trash.
@@ -486,6 +537,10 @@ impl Library {
                     if let Some(c) = self.catalog.as_mut() {
                         match c.empty_trash() {
                             Ok(gone) => {
+                                // What was in the Trash cannot come back now.
+                                if matches!(self.last_undo, Some(LibraryUndo::Trash(_))) {
+                                    self.last_undo = None;
+                                }
                                 for p in &gone {
                                     self.forget_thumbnail(p);
                                 }

@@ -109,12 +109,10 @@ pub enum LibraryAction {
         /// Where it is.
         to: PathBuf,
     },
-    /// Two albums were merged (`text` says which); `undo` takes it back.
+    /// Two albums were merged (`text` says which); the Library can undo it.
     Merged {
         /// What happened, for the message.
         text: String,
-        /// What undoes it.
-        undo: catalog::MergeUndo,
     },
 }
 
@@ -222,6 +220,11 @@ pub struct Library {
     shown_rows: std::ops::Range<usize>,
     /// The pointer was over the filmstrip at the last frame (Delete trashes then).
     strip_hovered: bool,
+    /// The pointer was over the Explorer at the last frame (Ctrl+Z undoes
+    /// the Library's last change then).
+    explorer_hovered: bool,
+    /// The Library's last change that can be undone.
+    last_undo: Option<collections::LibraryUndo>,
     /// Names of the presets offered in the card menu ("Group / Name").
     presets: Vec<String>,
 }
@@ -281,6 +284,8 @@ impl Library {
             scroll_to: None,
             shown_rows: 0..0,
             strip_hovered: false,
+            explorer_hovered: false,
+            last_undo: None,
             presets: Vec::new(),
         };
         library.refresh_collections();
@@ -433,7 +438,7 @@ impl Library {
                 self.imports
                     .iter()
                     .find(|i| i.number == *n)
-                    .map_or_else(|| Collection::Import(*n).label(), |i| format!("Import of {}", i.day_text())),
+                    .map_or_else(|| Collection::Import(*n).label(), |i| format!("Import of {}", i.when_text())),
             ),
             Some(Collection::Album(id)) => Some(
                 self.albums
@@ -910,6 +915,7 @@ impl Library {
         actions: &mut Vec<LibraryAction>,
     ) {
         let t = Tokens::of(ui.ctx().theme());
+        self.explorer_hovered = ui.rect_contains_pointer(ui.max_rect());
         ui.add_space(SPACE[1]);
         ui.label(
             RichText::new(format!("Catalog \u{b7} {}", editor::catalogs::name(&self.catalog_dir)))
@@ -1304,9 +1310,11 @@ impl Library {
         for (i, path) in selection.iter().take(layout.shown).enumerate() {
             let [x, y] = layout.slot(i);
             let tile = Rect::from_min_size(grid.min + vec2(x, y), vec2(layout.tile[0], layout.tile[1]));
-            let response = ui
-                .interact(tile, egui::Id::unique(("rne-overview", path)), Sense::click())
-                .on_hover_text(format!("{}\nClick to open this photo alone", path.display()));
+            let response = ui.interact(tile, egui::Id::unique(("rne-overview", path)), Sense::click_and_drag());
+            // Dragged onto an album, as from the filmstrip (with the whole selection).
+            response.dnd_set_drag_payload(collections::DraggedPhoto(path.clone()));
+            let response = response
+                .on_hover_text(format!("{}\nClick to open this photo alone, drag it onto an album", path.display()));
             let is_active = current == Some(path.as_path());
             // The photos sit on the viewer's background, as in Capture One;
             // the tile shows only under the pointer.

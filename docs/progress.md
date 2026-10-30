@@ -534,3 +534,17 @@ Details in `docs/catalog.md`.
 - `tools/adjust/src/filters.rs`: exact small Gaussian, à trous wavelet
   streamed one level at a time with reused buffers (allocating fresh
   buffers per level made it 6 times slower), noise estimate.
+
+## 30 October: phase 2 (Library) closed
+
+- Recent Imports shows each import's local date and time ("29 Oct 2026,
+  14:05"): the catalog asks SQLite for the computer's time-zone offset at
+  the time of the import (`ImportBatch::offset`, `when_text`).
+- Albums list their photos in the order they were added
+  (`album_photos.added`, then insertion order).
+- Library undo: the last move to the Trash or album merge
+  (`library_collections::LibraryUndo`) is undone with Ctrl+Z while the
+  pointer is over the Library, Edit ▸ Undo … or the message's Undo button;
+  elsewhere Ctrl+Z stays the photo's undo.
+- Photos are dragged onto albums from the overview tiles (several photos
+  selected) too.
