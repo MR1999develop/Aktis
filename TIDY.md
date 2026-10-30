@@ -9,10 +9,22 @@
 - Markesteijn on a 26 MP X-Trans file is about 4× the simple demosaic
   (CIELab of eight candidates per photosite); SIMD or the GPU if opening
   Fujifilm files feels slow.
+- LMMSE (`develop::lmmse`, Bayer from ISO 3200) is plain scalar code with
+  clamped reads in every window: likely 2–3 s on a 24 MP file; precompute
+  the windows' running sums, SIMD or the GPU.
+- X-Trans dual demosaic (`develop::vng`): the detail thresholds (`FLAT`,
+  `DETAIL`, on the square-root luminance gradient) are first guesses; tune
+  them on real noisy Fujifilm files, perhaps from the measured noise.
+- The colour noise reduction a high-ISO RAW starts with
+  (`camera_defaults::start_noise_reduction`) uses fixed values, not the
+  Noise Reduction values saved as the camera's defaults (Save as Defaults
+  of the tool alone); only a saved node replaces it.
+- Base curve "Standard" on a JPEG or TIFF shows the picture without a curve
+  (as Linear): the menu says Standard either way.
 - RCD on a 50 MP file takes about 1.3× the old bilinear demosaic; SIMD or
   the GPU if opening large files feels slow.
 - Camera Match: the fit compares luminance only; the camera's saturation
-  (Fujifilm film simulations) is not matched yet. The softening (8 %) is
+  (Fujifilm film simulations) is not matched yet. The softening (3 %) is
   fixed; a control would let the user choose.
 - Camera Match is fitted when the photo opens (about 0.1 s); the export of
   a photo not open fits it again from the full development.
