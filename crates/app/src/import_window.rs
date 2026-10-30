@@ -204,6 +204,9 @@ pub struct ImportWindow {
     preview: Option<(PathBuf, ThumbState<TextureHandle>)>,
     asked_preview: Option<PathBuf>,
     problem: Option<String>,
+    /// Where the window's parts were drawn last, for the layout test.
+    #[cfg(test)]
+    drawn: Vec<(&'static str, Rect)>,
 }
 
 impl std::fmt::Debug for ImportWindow {
@@ -233,6 +236,8 @@ impl ImportWindow {
             preview: None,
             asked_preview: None,
             problem: None,
+            #[cfg(test)]
+            drawn: Vec::new(),
         };
         w.rescan(ctx);
         w
@@ -315,40 +320,46 @@ impl ImportWindow {
         let mut choice = None;
         let mut rescan = false;
         let mut files = Vec::new();
+        let mut drawn: Vec<(&'static str, Rect)> = Vec::new();
         dialog_with_width(ctx, "rne-import", width, |ui| {
-            ui.horizontal(|ui| {
+            let r = ui.horizontal(|ui| {
                 ui.label(RichText::new("Import Images").size(FONT[4]).strong());
                 ui.label(RichText::new(format!("into the catalog \u{201c}{catalog}\u{201d}")).color(t.text_weak));
             });
+            drawn.push(("title", r.response.rect));
             ui.add_space(SPACE[1]);
             let body = (height - CHROME_HEIGHT).max(MIN_BODY);
             // A row exactly `body` high: the vertical separators fill the
             // height they are given, which in a modal is the whole screen.
             let row = vec2(ui.available_width(), body);
-            ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Min), |ui| {
+            let r = ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Min), |ui| {
                 ui.set_height(body);
-                ui.allocate_ui_with_layout(vec2(SOURCE_WIDTH, body), Layout::top_down(Align::Min), |ui| {
+                let r = ui.allocate_ui_with_layout(vec2(SOURCE_WIDTH, body), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(SOURCE_WIDTH);
                     egui::ScrollArea::vertical().id_salt("rne-import-source").max_height(body).show(ui, |ui| {
                         rescan = self.source_column(ui, &t, options);
                     });
                 });
-                ui.separator();
+                drawn.push(("source", r.response.rect));
+                drawn.push(("separator", ui.separator().rect));
                 let middle = (ui.available_width() - OPTIONS_WIDTH - 20.0).max(MIN_MIDDLE);
-                ui.allocate_ui_with_layout(vec2(middle, body), Layout::top_down(Align::Min), |ui| {
+                let r = ui.allocate_ui_with_layout(vec2(middle, body), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(middle);
                     ui.set_height(body);
                     self.photos_column(ui, &t, options);
                 });
+                drawn.push(("photos", r.response.rect));
                 ui.separator();
-                ui.allocate_ui_with_layout(vec2(OPTIONS_WIDTH, body), Layout::top_down(Align::Min), |ui| {
+                let r = ui.allocate_ui_with_layout(vec2(OPTIONS_WIDTH, body), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(OPTIONS_WIDTH);
                     egui::ScrollArea::vertical().id_salt("rne-import-options").max_height(body).show(ui, |ui| {
                         destination_section(ui, &t, options);
                         options_section(ui, &t, options, presets);
                     });
                 });
+                drawn.push(("options", r.response.rect));
             });
+            drawn.push(("columns", r.response.rect));
             ui.separator();
             files = options.files(&self.picker.to_import(options.skip_duplicates));
             let n = files.len();
@@ -361,7 +372,12 @@ impl ImportWindow {
             }
             let action = if n == 1 { "Import 1 photo".to_owned() } else { format!("Import {n} photos") };
             choice = dialog_buttons(ui, &t, problem.is_none().then_some(action.as_str()), "Cancel", |_| {});
+            drawn.push(("window", ui.min_rect()));
         });
+        #[cfg(test)]
+        {
+            self.drawn = drawn;
+        }
         if rescan {
             self.rescan(ctx);
         }
@@ -846,6 +862,58 @@ mod tests {
         // With room, it keeps the size of the earlier window.
         let (fw, fh) = fitted(2560.0, 1440.0);
         assert!((fw - 2560.0 * 0.92).abs() < 0.5 && (fh - 1440.0 * 0.86).abs() < 0.5);
+    }
+
+    /// Draws the real window, with the app's theme and a folder of photos,
+    /// in screens of several sizes and checks that every part stays inside,
+    /// in both views of the photos.
+    #[test]
+    fn every_part_of_the_window_is_on_screen() {
+        let dir = std::env::temp_dir().join(format!("rne-import-fit-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).expect("temp folder");
+        for i in 0..40 {
+            let name = if i % 2 == 0 { format!("DSC_{i:04}.NEF") } else { format!("sub/IMG_{i:04}.RAF") };
+            std::fs::write(dir.join(name), b"not a raw file").expect("fake photo");
+        }
+        let mut log = String::new();
+        for large_preview in [false, true] {
+            for (w, h) in [(1269.0, 900.0), (1024.0, 640.0), (1920.0, 1040.0)] {
+                let window =
+                    ImportWindow::new(&egui::Context::default(), dir.clone(), true, HashSet::new(), HashSet::new());
+                let mut harness = egui_kittest::Harness::builder()
+                    .with_size([w, h])
+                    .with_accessibility_check(false)
+                    .with_context_setup(crate::theme::install)
+                    .build_ui_state(
+                        move |ui, window: &mut ImportWindow| {
+                            let mut options = ImportSettings { large_preview, ..ImportSettings::default() };
+                            let _ = window.show(ui.ctx(), &mut options, &[], "Default");
+                        },
+                        window,
+                    );
+                for _ in 0..30 {
+                    harness.step();
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                let screen = harness.ctx.content_rect();
+                let area = harness.ctx.memory(|m| m.area_rect(egui::Id::unique("rne-import")));
+                let drawn = harness.state().drawn.clone();
+                let report = format!(
+                    "{w}×{h} preview {large_preview}: {} photos, screen {screen:?}, area {area:?}, parts {drawn:?}",
+                    harness.state().picker.photos().len()
+                );
+                log.push_str(&report);
+                log.push('\n');
+                assert!(drawn.iter().any(|(name, _)| *name == "window"), "{report}");
+                assert!(area.is_some_and(|a| screen.expand(0.5).contains_rect(a)), "area off screen: {report}");
+                for (name, rect) in &drawn {
+                    assert!(screen.expand(0.5).contains_rect(*rect), "{name} off screen: {report}");
+                }
+            }
+        }
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp/import-layout.txt");
+        let _ = std::fs::write(out, &log);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn picker() -> Picker {
