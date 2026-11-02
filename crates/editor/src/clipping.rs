@@ -51,7 +51,7 @@ pub fn classify(rgb: [u8; 3], t: Thresholds) -> Clip {
 #[must_use]
 pub fn overlay(rgb: &[u8], t: Thresholds, highlight: [u8; 4], shadow: [u8; 4]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb.len() / 3 * 4);
-    for p in rgb.chunks_exact(3) {
+    for p in rgb.as_chunks::<3>().0 {
         let colour = match classify([p[0], p[1], p[2]], t) {
             Clip::Highlight => highlight,
             Clip::Shadow => shadow,

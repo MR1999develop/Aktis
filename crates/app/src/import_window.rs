@@ -321,7 +321,7 @@ impl ImportWindow {
         let mut rescan = false;
         let mut files = Vec::new();
         let mut drawn: Vec<(&'static str, Rect)> = Vec::new();
-        dialog_with_width(ctx, "rne-import", width, |ui| {
+        dialog_with_width(ctx, "aktis-import", width, |ui| {
             let r = ui.horizontal(|ui| {
                 ui.label(RichText::new("Import Images").size(FONT[4]).strong());
                 ui.label(RichText::new(format!("into the catalog \u{201c}{catalog}\u{201d}")).color(t.text_weak));
@@ -336,7 +336,7 @@ impl ImportWindow {
                 ui.set_height(body);
                 let r = ui.allocate_ui_with_layout(vec2(SOURCE_WIDTH, body), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(SOURCE_WIDTH);
-                    egui::ScrollArea::vertical().id_salt("rne-import-source").max_height(body).show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt("aktis-import-source").max_height(body).show(ui, |ui| {
                         rescan = self.source_column(ui, &t, options);
                     });
                 });
@@ -352,7 +352,7 @@ impl ImportWindow {
                 ui.separator();
                 let r = ui.allocate_ui_with_layout(vec2(OPTIONS_WIDTH, body), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(OPTIONS_WIDTH);
-                    egui::ScrollArea::vertical().id_salt("rne-import-options").max_height(body).show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt("aktis-import-options").max_height(body).show(ui, |ui| {
                         destination_section(ui, &t, options);
                         options_section(ui, &t, options, presets);
                     });
@@ -468,7 +468,7 @@ impl ImportWindow {
         let cell_h = CELL_WIDTH / 1.5 + 22.0;
         let rows = shown.len().div_ceil(columns);
         let mut open = None;
-        egui::ScrollArea::vertical().id_salt("rne-import-grid").auto_shrink([false, false]).show_rows(
+        egui::ScrollArea::vertical().id_salt("aktis-import-grid").auto_shrink([false, false]).show_rows(
             ui,
             cell_h,
             rows,
@@ -559,7 +559,7 @@ impl ImportWindow {
         let around = at.saturating_sub(STRIP_AROUND)..(at + STRIP_AROUND).min(shown.len());
         self.wanted.extend(shown[around].iter().map(|p| p.path.clone()));
         let mut chosen = None;
-        egui::ScrollArea::horizontal().id_salt("rne-import-strip").max_height(STRIP_HEIGHT).show(ui, |ui| {
+        egui::ScrollArea::horizontal().id_salt("aktis-import-strip").max_height(STRIP_HEIGHT).show(ui, |ui| {
             ui.horizontal(|ui| {
                 for photo in &shown {
                     let size = vec2((STRIP_HEIGHT - 8.0) * 1.5, STRIP_HEIGHT - 8.0);
@@ -753,7 +753,7 @@ fn destination_section(ui: &mut egui::Ui, t: &Tokens, o: &mut ImportSettings) {
     ui.radio_value(&mut o.copy, false, "Add to the catalog: the files stay where they are");
     ui.radio_value(&mut o.copy, true, "Copy to a folder");
     if o.copy {
-        ui.indent("rne-import-copy", |ui| {
+        ui.indent("aktis-import-copy", |ui| {
             if let Some(dir) = folder_row(ui, t, o.copy_dir.as_deref(), "Folder for the copies") {
                 o.copy_dir = Some(dir);
             }
@@ -776,7 +776,7 @@ fn destination_section(ui: &mut egui::Ui, t: &Tokens, o: &mut ImportSettings) {
     }
     ui.checkbox(&mut o.backup, "Back up the originals to a second folder");
     if o.backup {
-        ui.indent("rne-import-backup", |ui| {
+        ui.indent("aktis-import-backup", |ui| {
             if let Some(dir) = folder_row(ui, t, o.backup_dir.as_deref(), "Backup folder") {
                 o.backup_dir = Some(dir);
             }
@@ -796,7 +796,7 @@ fn options_section(ui: &mut egui::Ui, t: &Tokens, o: &mut ImportSettings, preset
     ui.horizontal(|ui| {
         ui.label("Preset");
         let shown = o.preset.clone().unwrap_or_else(|| "None".to_owned());
-        egui::ComboBox::from_id_salt("rne-import-preset").selected_text(shown).width(220.0).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("aktis-import-preset").selected_text(shown).width(220.0).show_ui(ui, |ui| {
             ui.selectable_value(&mut o.preset, None, "None");
             for name in presets {
                 ui.selectable_value(&mut o.preset, Some(name.clone()), name.as_str());
@@ -804,7 +804,7 @@ fn options_section(ui: &mut egui::Ui, t: &Tokens, o: &mut ImportSettings, preset
         });
     });
     heading(ui, t, "Metadata");
-    egui::Grid::new("rne-import-metadata").num_columns(2).spacing([SPACE[2], SPACE[1]]).show(ui, |ui| {
+    egui::Grid::new("aktis-import-metadata").num_columns(2).spacing([SPACE[2], SPACE[1]]).show(ui, |ui| {
         ui.label("Photographer");
         ui.add(egui::TextEdit::singleline(&mut o.artist).desired_width(200.0));
         ui.end_row();
@@ -869,7 +869,7 @@ mod tests {
     /// in both views of the photos.
     #[test]
     fn every_part_of_the_window_is_on_screen() {
-        let dir = std::env::temp_dir().join(format!("rne-import-fit-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-import-fit-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).expect("temp folder");
         for i in 0..40 {
             let name = if i % 2 == 0 { format!("DSC_{i:04}.NEF") } else { format!("sub/IMG_{i:04}.RAF") };
@@ -896,7 +896,7 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 let screen = harness.ctx.content_rect();
-                let area = harness.ctx.memory(|m| m.area_rect(egui::Id::unique("rne-import")));
+                let area = harness.ctx.memory(|m| m.area_rect(egui::Id::unique("aktis-import")));
                 let drawn = harness.state().drawn.clone();
                 let report = format!(
                     "{w}×{h} preview {large_preview}: {} photos, screen {screen:?}, area {area:?}, parts {drawn:?}",

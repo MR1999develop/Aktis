@@ -300,7 +300,7 @@ pub struct Settings {
     /// The node selected in the photo open when the editor was closed (the
     /// first of `recent`), selected again when it reopens.
     pub last_node: Option<u32>,
-    /// The catalog folder (`*.rnecatalog`) open when the editor was closed.
+    /// The catalog folder (`*.aktiscatalog`) open when the editor was closed.
     pub catalog: Option<PathBuf>,
     /// Folder where new catalogs are made (Preferences ▸ Catalog); `None`:
     /// `Catalogs` in the editor's data folder.
@@ -342,6 +342,24 @@ impl Settings {
     /// Removes a catalog from the recent list (it could not be opened).
     pub fn forget_catalog(&mut self, catalog: &Path) {
         self.recent_catalogs.retain(|p| p != catalog);
+    }
+
+    /// Points every remembered path inside `old` to the same place inside
+    /// `new`, after that folder was moved there.
+    pub fn follow_moved_folder(&mut self, old: &Path, new: &Path) {
+        let follow = |p: &mut PathBuf| {
+            if let Ok(rest) = p.strip_prefix(old) {
+                *p = new.join(rest);
+            }
+        };
+        let import = &mut self.import;
+        [&mut self.open_dir, &mut self.export_dir, &mut self.presets_dir, &mut self.catalog]
+            .into_iter()
+            .chain([&mut self.catalogs_dir, &mut self.import_dir, &mut import.copy_dir, &mut import.backup_dir])
+            .flatten()
+            .chain(self.recent.iter_mut())
+            .chain(self.recent_catalogs.iter_mut())
+            .for_each(follow);
     }
 
     /// The folder where new catalogs are made.
@@ -588,23 +606,42 @@ mod tests {
         assert_eq!(o.files(&found).len(), 2);
         o.jpeg_twins = false;
         assert_eq!(o.files(&found), [PathBuf::from("d/a.NEF")]);
-        o.artist = "  Ann ".into();
+        o.artist = "  Ada ".into();
         o.keywords = "sea, boat".into();
         o.rating = 9;
         let m = o.metadata();
-        assert_eq!((m.artist.as_deref(), m.copyright, m.keywords.len(), m.rating), (Some("Ann"), None, 2, 5));
+        assert_eq!((m.artist.as_deref(), m.copyright, m.keywords.len(), m.rating), (Some("Ada"), None, 2, 5));
     }
 
     #[test]
     fn recent_catalogs_are_newest_first_unique_and_the_last_is_reopened() {
         let mut s = Settings::default();
-        s.catalog_opened(Path::new("a.rnecatalog"));
-        s.catalog_opened(Path::new("b.rnecatalog"));
-        s.catalog_opened(Path::new("a.rnecatalog"));
-        assert_eq!(s.recent_catalogs, [PathBuf::from("a.rnecatalog"), PathBuf::from("b.rnecatalog")]);
-        assert_eq!(s.catalog.as_deref(), Some(Path::new("a.rnecatalog")));
-        s.forget_catalog(Path::new("b.rnecatalog"));
+        s.catalog_opened(Path::new("a.aktiscatalog"));
+        s.catalog_opened(Path::new("b.aktiscatalog"));
+        s.catalog_opened(Path::new("a.aktiscatalog"));
+        assert_eq!(s.recent_catalogs, [PathBuf::from("a.aktiscatalog"), PathBuf::from("b.aktiscatalog")]);
+        assert_eq!(s.catalog.as_deref(), Some(Path::new("a.aktiscatalog")));
+        s.forget_catalog(Path::new("b.aktiscatalog"));
         assert_eq!(s.recent_catalogs.len(), 1);
+    }
+
+    #[test]
+    fn paths_inside_a_moved_folder_follow_it() {
+        let (old, new) = (Path::new("data/raw-node-editor"), Path::new("data/aktis"));
+        let mut s = Settings::default();
+        s.catalog_opened(&old.join("Catalogs/Catalog.rnecatalog"));
+        s.catalog_opened(Path::new("photos/Travel.aktiscatalog"));
+        s.presets_dir = Some(old.join("Presets"));
+        s.import.backup_dir = Some(old.to_path_buf());
+        s.opened(Path::new("photos/a.NEF"));
+        s.follow_moved_folder(old, new);
+        assert_eq!(
+            s.recent_catalogs,
+            [PathBuf::from("photos/Travel.aktiscatalog"), new.join("Catalogs/Catalog.rnecatalog")]
+        );
+        assert_eq!(s.presets_dir, Some(new.join("Presets")));
+        assert_eq!(s.import.backup_dir.as_deref(), Some(new));
+        assert_eq!(s.recent, [PathBuf::from("photos/a.NEF")], "paths elsewhere stay");
     }
 
     #[test]

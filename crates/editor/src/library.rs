@@ -348,7 +348,7 @@ impl Filmstrip {
         }
     }
 
-    // ----- selection, as in a photo viewer -----
+    // ----- selection -----
 
     /// A click on a filmstrip card, with Ctrl (Cmd on macOS) and Shift as
     /// held. Returns the photo to open, if the click opens one:
@@ -677,7 +677,7 @@ mod tests {
 
     #[test]
     fn listing_a_folder_finds_photos_and_visible_subfolders() {
-        let dir = std::env::temp_dir().join(format!("rne-library-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-library-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("Sub 2")).unwrap();
         std::fs::create_dir_all(dir.join("sub 10")).unwrap();

@@ -1,4 +1,4 @@
-"""Converts the KAIR SCUNet weights (.pth) into the ONNX model used by an earlier denoiser.
+"""Converts the KAIR SCUNet weights (.pth) into the ONNX model of the AI denoise tool.
 
 Only Python and NumPy are needed (no PyTorch, no onnx package): the
 checkpoint is read by `pth_weights.py`, the network is built by
@@ -9,7 +9,7 @@ checkpoint is read by `pth_weights.py`, the network is built by
 
 The weights come from https://github.com/cszn/KAIR/releases/tag/v1.0
 (SHA-256 fa78899b…809c2e). The graph has a fixed 1×3×N×N input (default
-448): an earlier denoiser processes tiles of this size with a 64 px overlap. Larger
+448): the tool processes tiles of this size with a 64 px overlap. Larger
 tiles (--tile, a multiple of 64) waste less work on the overlap and can be
 faster on a GPU; name the file scunet_color_real_<tile>.onnx.
 

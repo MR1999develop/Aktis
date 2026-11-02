@@ -250,7 +250,7 @@ pub(crate) fn number(ui: &mut egui::Ui, node: NodeId, id: &str, value: f32, rang
 pub fn levels(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
     let node = row.node;
-    let tab_id = Id::unique(("rne-levels-tab", node));
+    let tab_id = Id::unique(("aktis-levels-tab", node));
     let names: Vec<&str> = CHANNELS.iter().map(|c| c.1).collect();
     let c = tabs(ui, &names, remembered::<usize>(ui, tab_id)).min(CHANNELS.len() - 1);
     remember(ui, tab_id, c);
@@ -295,7 +295,7 @@ pub fn levels(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mu
         .line_segment([pos2(plot.left(), plot.bottom()), pos2(plot.right(), plot.bottom())], Stroke::new(1.0, color));
 
     // Dragging the handle nearest to where the drag started: 0 black, 1 white, 2 midtone.
-    let drag_id = Id::unique(("rne-levels-handle", node));
+    let drag_id = Id::unique(("aktis-levels-handle", node));
     if response.drag_started()
         && let Some(p) = response.interact_pointer_pos()
     {
@@ -341,7 +341,7 @@ pub fn levels(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mu
     let ox = |v: f32| bar.left() + v / 255.0 * bar.width();
     handle(&out_painter, ox(set.out_black), bar.bottom() + 2.0, Color32::BLACK, t.text_strong);
     handle(&out_painter, ox(set.out_white), bar.bottom() + 2.0, Color32::WHITE, t.stroke_strong);
-    let out_drag = Id::unique(("rne-levels-out", node));
+    let out_drag = Id::unique(("aktis-levels-out", node));
     if out_response.drag_started()
         && let Some(p) = out_response.interact_pointer_pos()
     {
@@ -432,7 +432,7 @@ struct CurveDrag {
 pub fn curve(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
     let node = row.node;
-    let tab_id = Id::unique(("rne-curve-tab", node));
+    let tab_id = Id::unique(("aktis-curve-tab", node));
     let names: Vec<&str> = CURVES.iter().map(|c| c.1).collect();
     let c = tabs(ui, &names, remembered::<usize>(ui, tab_id)).min(CURVES.len() - 1);
     remember(ui, tab_id, c);
@@ -497,7 +497,7 @@ pub fn curve(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut
         painter.circle_stroke(at, 4.0, Stroke::new(1.5, t.text_strong));
     }
 
-    let drag_id = Id::unique(("rne-curve-drag", node, c));
+    let drag_id = Id::unique(("aktis-curve-drag", node, c));
     let dragging = remembered::<CurveDrag>(ui, drag_id).index;
     let radius = 8.0 / inner.width();
     let hovered = response.hover_pos().map(to_curve).and_then(|p| adjust::nearest_point(&pts, p, radius));

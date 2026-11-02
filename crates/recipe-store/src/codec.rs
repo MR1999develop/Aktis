@@ -376,7 +376,7 @@ fn read_stroke(v: &Value) -> Result<BrushStroke, String> {
         return Err("stroke points: an odd count of numbers".to_owned());
     }
     let mut points = Vec::with_capacity(flat.len() / 2);
-    for pair in flat.chunks_exact(2) {
+    for pair in flat.as_chunks::<2>().0 {
         let p = NormPoint::new(pair[0].as_f32("stroke point")?, pair[1].as_f32("stroke point")?)
             .ok_or_else(|| "stroke point: not finite".to_owned())?;
         points.push(p);

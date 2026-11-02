@@ -394,7 +394,7 @@ pub fn variant_name(number: u32) -> String {
     format!("Variant {number}")
 }
 
-/// A set of ratings to show, as in a photo viewer's "Rating (multi-select)":
+/// A set of ratings to show ("Rating", a multi-select):
 /// any mix of 0 (unrated) to 5 stars; empty means all.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct RatingSet(u8);

@@ -141,7 +141,9 @@ pub fn develop_with(
                     .collect()
             }
         }
-        CfaPattern::LinearRgb => data.chunks_exact(3).map(|c| [c[0] * wb[0], c[1] * wb[1], c[2] * wb[2]]).collect(),
+        CfaPattern::LinearRgb => {
+            data.as_chunks::<3>().0.iter().map(|c| [c[0] * wb[0], c[1] * wb[1], c[2] * wb[2]]).collect()
+        }
         CfaPattern::XTrans(pattern) => {
             // White balance on the mosaic here too; the 6×6 tile starts at the image's corner.
             let channel = |x: usize, y: usize| usize::from(pattern[y % 6][x % 6]);

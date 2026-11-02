@@ -381,7 +381,7 @@ impl GraphUi {
         };
         let t = Tokens::of(ctx.theme());
         let mut chosen = None;
-        let shown = egui::Area::new(Id::unique("rne-add-node"))
+        let shown = egui::Area::new(Id::unique("aktis-add-node"))
             .fixed_pos(menu.at + vec2(10.0, -10.0))
             .order(Order::Foreground)
             .constrain(true)

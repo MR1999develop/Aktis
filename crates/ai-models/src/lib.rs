@@ -6,8 +6,8 @@
 //! [`missing`] which of them are not on disk yet, so the window (or the
 //! command line) can offer to download them, with [`download`].
 //!
-//! Everything goes into one folder, [`models_dir`]: `$RNE_MODELS_DIR`, else
-//! `models` in the editor's data folder (`%LOCALAPPDATA%\raw-node-editor`
+//! Everything goes into one folder, [`models_dir`]: `$AKTIS_MODELS_DIR`, else
+//! `models` in the editor's data folder (`%LOCALAPPDATA%\aktis`
 //! on Windows).
 
 mod download;
@@ -151,7 +151,7 @@ impl Feature {
         }
     }
 
-    /// Name used on the command line (`rne models --download denoise`).
+    /// Name used on the command line (`aktis-cli models --download denoise`).
     #[must_use]
     pub fn cli_name(self) -> &'static str {
         match self {
@@ -344,10 +344,10 @@ fn runtime_pack() -> Pack {
     }
 }
 
-/// The editor's data folder ([`platform::editor_data_dir`], `.rne` if the system has none).
+/// The editor's data folder ([`platform::editor_data_dir`], `.aktis` if the system has none).
 #[must_use]
 pub fn data_dir() -> PathBuf {
-    platform::editor_data_dir().unwrap_or_else(|| PathBuf::from(".rne"))
+    platform::editor_data_dir().unwrap_or_else(|| PathBuf::from(".aktis"))
 }
 
 /// The models folder ([`platform::editor_models_dir`]).
@@ -416,7 +416,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rne-ai-models-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-ai-models-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
         dir

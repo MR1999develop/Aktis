@@ -1,4 +1,4 @@
-//! Looking closely at the image on screen, as in a photo viewer: the
+//! Looking closely at the image on screen: the
 //! eyedropper (hold the right button: the colour under the pointer) and the
 //! loupe (hold the middle button: a magnified circle). Both read the 8-bit
 //! image on screen.

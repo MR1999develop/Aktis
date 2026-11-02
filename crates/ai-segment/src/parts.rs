@@ -51,7 +51,7 @@ fn classes(segmenter: &mut dyn Model, image: &Planes, sq: Square) -> Result<Clas
         return Err(AiError::UnexpectedOutput(format!("segmenter output of shape {:?}", logits.shape)));
     }
     let mut probs = vec![vec![0.0_f32; n]; CLASSES];
-    for (i, px) in logits.data.chunks_exact(CLASSES).enumerate() {
+    for (i, px) in logits.data.as_chunks::<CLASSES>().0.iter().enumerate() {
         let max = px.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         let e: Vec<f32> = px.iter().map(|v| (v - max).exp()).collect();
         let sum: f32 = e.iter().sum();

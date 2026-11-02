@@ -1,5 +1,4 @@
-//! AI denoise: noise reduction with the SCUNet neural network, ported from
-//! an earlier denoiser.
+//! AI denoise: noise reduction with the SCUNet neural network.
 //!
 //! SCUNet (K. Zhang et al., "Practical Blind Image Denoising via Swin-Conv-UNet
 //! and Data Synthesis", 2023, Apache-2.0) is trained on real camera noise and
@@ -44,7 +43,7 @@ pub const GRAIN: &str = "grain";
 /// Id of the colour-blotch amount, in percent.
 pub const COLOR: &str = "color";
 
-/// an earlier denoiser's recommended "Medium" preset.
+/// The recommended amounts (a medium strength).
 const DEFAULT_GRAIN: f32 = 80.0;
 const DEFAULT_COLOR: f32 = 100.0;
 
@@ -114,7 +113,7 @@ impl std::fmt::Debug for AiDenoise {
 impl AiDenoise {
     /// The tool, looking for models in the usual folders ([`models::search_dirs`],
     /// [`models::MODELS_ENV`] first)
-    /// and on the device named by `RNE_DENOISE_DEVICE` (default: the fastest).
+    /// and on the device named by `AKTIS_DENOISE_DEVICE` (default: the fastest).
     #[must_use]
     pub fn from_environment() -> Arc<Self> {
         let exe = std::env::current_exe().ok();

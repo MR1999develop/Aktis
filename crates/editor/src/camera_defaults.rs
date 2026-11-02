@@ -1,5 +1,5 @@
 //! Tool defaults per camera model, as Capture One's Save as Defaults: one
-//! `.rnedefaults` file per camera in the editor's `Defaults` folder. A photo
+//! `.aktisdefaults` file per camera in the editor's `Defaults` folder. A photo
 //! of that camera never edited starts with the saved nodes; a node of a
 //! saved tool starts with the saved values; resetting goes back to them.
 
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn defaults_are_saved_per_camera_found_again_and_removed() {
-        let dir = std::env::temp_dir().join(format!("rne-camera-defaults-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-camera-defaults-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut all = AllCameraDefaults::load(Some(dir.clone()));
         let exposure = ParamId::new("exposure").unwrap();
@@ -310,7 +310,7 @@ mod tests {
         assert!(all.of("Canon EOS R5").is_none(), "an empty camera goes");
         all.remove("Sony ILCE-7M3", &tool("dehaze")).unwrap();
         assert_eq!(AllCameraDefaults::load(Some(dir.clone())).start_nodes("Sony ILCE-7M3").len(), 1);
-        std::fs::write(dir.join("broken.rnedefaults"), "{").unwrap();
+        std::fs::write(dir.join("broken.aktisdefaults"), "{").unwrap();
         assert_eq!(AllCameraDefaults::load(Some(dir.clone())).problems().len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }

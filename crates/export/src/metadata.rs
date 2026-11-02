@@ -326,9 +326,9 @@ mod tests {
             gps: Some((45.986, -9.258)),
             rating: Some(4),
             keywords: vec!["lake".into(), "Como & co".into()],
-            artist: Some("Ann".into()),
-            copyright: Some("\u{a9} 2026 Ann".into()),
-            software: Some("RAW Node Editor 0.1".into()),
+            artist: Some("Ada".into()),
+            copyright: Some("\u{a9} 2026 Ada".into()),
+            software: Some("Aktis 0.1".into()),
         }
     }
 
@@ -339,8 +339,8 @@ mod tests {
         assert_eq!(ascii(&d, tag::MAKE), "NIKON CORPORATION");
         assert_eq!(ascii(&d, tag::MODEL), "NIKON D3S");
         assert_eq!(number(&d, tag::ORIENTATION), 1);
-        assert_eq!(ascii(&d, tag::COPYRIGHT), "\u{a9} 2026 Ann");
-        assert_eq!(ascii(&d, tag::ARTIST), "Ann");
+        assert_eq!(ascii(&d, tag::COPYRIGHT), "\u{a9} 2026 Ada");
+        assert_eq!(ascii(&d, tag::ARTIST), "Ada");
         assert_eq!(number(&d, tag::RATING), 4);
         let xp = &d[&tag::XP_KEYWORDS].2;
         let units: Vec<u16> = xp.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
@@ -386,7 +386,7 @@ mod tests {
         let x = xmp_packet(&sample()).expect("packet");
         assert!(x.contains("xmp:Rating=\"4\""));
         assert!(x.contains("<rdf:li>lake</rdf:li><rdf:li>Como &amp; co</rdf:li>"));
-        assert!(x.contains("\u{a9} 2026 Ann"));
+        assert!(x.contains("\u{a9} 2026 Ada"));
         assert!(x.starts_with("<?xpacket begin=\"\u{feff}\""));
         assert!(x.ends_with("<?xpacket end=\"w\"?>"));
     }

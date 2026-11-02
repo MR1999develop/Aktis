@@ -1,4 +1,4 @@
-//! The desktop window of the RAW node editor, built with egui.
+//! The desktop window of Aktis, built with egui.
 //!
 //! This crate only draws and turns gestures into calls: documents, edits,
 //! background jobs, the folder tree, the filmstrip model and viewer geometry
@@ -43,10 +43,10 @@ mod toolbar;
 pub use app::{EditorApp, Status};
 
 /// Name shown in the title bar and the About text.
-pub const APP_NAME: &str = "RAW Node Editor";
+pub const APP_NAME: &str = "Aktis";
 
 /// Application id (Wayland app id, settings folder name).
-pub const APP_ID: &str = "raw-node-editor";
+pub const APP_ID: &str = "aktis";
 
 /// Version of this build.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

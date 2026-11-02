@@ -1145,7 +1145,7 @@ mod tests {
         assert!(known.contains(&ShotKey::new(Path::new("card/img_1.cr3"), Some("2026:10:29 10:00:00")).unwrap()));
         assert_eq!(known.len(), 1, "a photo without a capture time is never a duplicate");
         let metadata = ImportMetadata {
-            artist: Some("Ann".into()),
+            artist: Some("Ada".into()),
             copyright: Some(" ".into()),
             keywords: vec!["sea".into(), "boat".into()],
             rating: 4,
@@ -1155,9 +1155,9 @@ mod tests {
         let meta = c.meta(&shot.path).unwrap();
         assert_eq!(meta.rating, 4);
         assert_eq!(meta.tags.len(), 2);
-        assert_eq!(c.credits(&shot.path).unwrap(), (Some("Ann".into()), None), "a blank copyright is not kept");
+        assert_eq!(c.credits(&shot.path).unwrap(), (Some("Ada".into()), None), "a blank copyright is not kept");
         c.rename(&shot.path, &p("D/2026/IMG_1b.CR3")).unwrap();
-        assert_eq!(c.credits(&p("D/2026/IMG_1b.CR3")).unwrap().0.as_deref(), Some("Ann"));
+        assert_eq!(c.credits(&p("D/2026/IMG_1b.CR3")).unwrap().0.as_deref(), Some("Ada"));
     }
 
     #[test]
@@ -1182,7 +1182,7 @@ mod tests {
 
     #[test]
     fn a_copy_of_the_catalog_has_everything_and_is_separate() {
-        let dir = std::env::temp_dir().join(format!("rne-catalog-copy-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-catalog-copy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut c = Catalog::open(&dir.join("a.sqlite")).unwrap();
@@ -1482,7 +1482,7 @@ mod tests {
 
     #[test]
     fn the_catalog_survives_closing_and_reopening() {
-        let dir = std::env::temp_dir().join(format!("rne-catalog-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-catalog-{}", std::process::id()));
         let file = dir.join("sub").join("catalog.sqlite");
         {
             let mut c = Catalog::open(&file).unwrap();

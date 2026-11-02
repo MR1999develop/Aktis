@@ -107,7 +107,7 @@ impl GpuContext {
     /// forced with the `WGPU_BACKEND` environment variable (`vulkan`, `dx12`, `metal`).
     /// Software renderers (Microsoft Basic Render Driver, llvmpipe: the only
     /// "GPU" of a virtual machine) are refused: they are slower than the CPU
-    /// engine and give wrong results or fail to read back. `RNE_SOFTWARE_GPU=1`
+    /// engine and give wrong results or fail to read back. `AKTIS_SOFTWARE_GPU=1`
     /// accepts them, for debugging.
     ///
     /// # Errors
@@ -123,7 +123,7 @@ impl GpuContext {
         let adapter =
             pollster::block_on(instance.request_adapter(&options)).map_err(|e| GpuError::NoAdapter(e.to_string()))?;
         let info = adapter.get_info();
-        if info.device_type == wgpu::DeviceType::Cpu && std::env::var_os("RNE_SOFTWARE_GPU").is_none() {
+        if info.device_type == wgpu::DeviceType::Cpu && std::env::var_os("AKTIS_SOFTWARE_GPU").is_none() {
             return Err(GpuError::NoAdapter(format!("{} is a software renderer", info.name)));
         }
         if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS) {
@@ -131,7 +131,7 @@ impl GpuContext {
         }
         let limits = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("raw-node-editor"),
+            label: Some("aktis"),
             required_features: wgpu::Features::empty(),
             required_limits: limits.clone(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),

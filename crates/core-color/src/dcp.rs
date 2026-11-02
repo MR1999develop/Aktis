@@ -254,7 +254,7 @@ pub fn read_dcp(bytes: &[u8], source: ProfileSource) -> Result<ColorProfile, Dcp
 
     let look_table = table(floats(LOOK_TABLE_DATA)?, dims(LOOK_TABLE_DIMS)?, encoding_is_srgb(LOOK_TABLE_ENCODING)?)?;
     let tone_curve = match floats(TONE_CURVE)? {
-        Some(v) if v.len() >= 4 && v.len() % 2 == 0 => Some(v.chunks_exact(2).map(|p| [p[0], p[1]]).collect()),
+        Some(v) if v.len() >= 4 && v.len() % 2 == 0 => Some(v.as_chunks::<2>().0.to_vec()),
         _ => None,
     };
 

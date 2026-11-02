@@ -24,4 +24,4 @@ pub use gradient::{linear, radial};
 pub use key::{fingerprint, raster_key};
 pub use refine::{Guide, refine};
 pub use resample::{fit_within, resize_plane};
-pub use store::{DiskRasters, MemoryRasters, NoRasters, RasterSource, RasterStore};
+pub use store::{DiskRasters, MemoryRasters, NoRasters, RASTER_EXTENSION, RasterSource, RasterStore};

@@ -110,7 +110,9 @@ impl<R: Read + Seek> TiffReader<R> {
         let count = self.u16([count[0], count[1]]);
         let table = self.read_at(u64::from(offset) + 2, u64::from(count) * 12 + 4)?;
         let entries = table
-            .chunks_exact(12)
+            .as_chunks::<12>()
+            .0
+            .iter()
             .map(|e| Entry {
                 tag: self.u16([e[0], e[1]]),
                 kind: self.u16([e[2], e[3]]),
@@ -183,8 +185,8 @@ impl<R: Read + Seek> TiffReader<R> {
         let bytes = self.value_bytes(entry)?;
         match entry.kind {
             1 => Some(bytes.iter().map(|b| u32::from(*b)).collect()),
-            3 => Some(bytes.chunks_exact(2).map(|b| u32::from(self.u16([b[0], b[1]]))).collect()),
-            4 | 13 => Some(bytes.chunks_exact(4).map(|b| self.u32([b[0], b[1], b[2], b[3]])).collect()),
+            3 => Some(bytes.as_chunks::<2>().0.iter().map(|b| u32::from(self.u16([b[0], b[1]]))).collect()),
+            4 | 13 => Some(bytes.as_chunks::<4>().0.iter().map(|b| self.u32([b[0], b[1], b[2], b[3]])).collect()),
             _ => None,
         }
     }

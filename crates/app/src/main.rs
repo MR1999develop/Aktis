@@ -9,9 +9,15 @@ use std::path::PathBuf;
 
 fn main() -> eframe::Result {
     let open = std::env::args_os().nth(1).map(PathBuf::from);
+    // Before eframe reads the window settings from the settings folder.
+    let problems = platform::move_legacy_dirs();
     eframe::run_native(
         app::APP_ID,
         app::native_options(),
-        Box::new(move |cc| Ok(Box::new(app::EditorApp::new(cc, open)))),
+        Box::new(move |cc| {
+            let mut app = app::EditorApp::new(cc, open);
+            app.report_startup_problems(&problems);
+            Ok(Box::new(app))
+        }),
     )
 }

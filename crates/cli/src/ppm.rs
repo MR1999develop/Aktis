@@ -1,4 +1,4 @@
-//! Binary PPM (P6, 8 bits) input: lets `rne mask` be tried on any photo
+//! Binary PPM (P6, 8 bits) input: lets `aktis-cli mask` be tried on any photo
 //! converted with `jpegtopnm` or `convert`, without a RAW file.
 
 use core_model::{ImageF32, Rgba, WorkingSpace};
@@ -47,7 +47,9 @@ pub fn decode(bytes: &[u8]) -> Result<ImageF32, String> {
     let to_rec2020 = core_color::rgb_to_rgb(WorkingSpace::LinearSrgb, WorkingSpace::LinearRec2020);
     let scale = 1.0 / max as f32;
     let pixels: Vec<Rgba> = data[..n * 3]
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| {
             let lin = [c[0], c[1], c[2]].map(|v| core_color::srgb_decode(f32::from(v) * scale));
             let [r, g, b] = to_rec2020.apply(lin);

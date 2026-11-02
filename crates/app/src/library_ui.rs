@@ -522,7 +522,7 @@ impl Library {
     /// Brings `path` into view in the filmstrip (it was opened from elsewhere).
     pub fn reveal_photo(&mut self, path: &Path) {
         self.scroll_to = Some(path.to_owned());
-        // As in a photo viewer: opening a photo outside the selection selects it alone.
+        // Opening a photo outside the selection selects it alone.
         if self.strip.index_of(path).is_some() && !self.strip.is_selected(path) {
             self.strip.select_only(path);
         }
@@ -658,6 +658,20 @@ impl Library {
         self.thumbs.forget(path);
         self.previews.forget(path);
         self.variant_thumbs.retain(|(p, _), _| p != path);
+    }
+
+    /// Shows `image`, the photo `path` as its variant `number` is now
+    /// edited, as its filmstrip thumbnail at once (the catalog's preview is
+    /// written later, with the edit).
+    pub fn show_live_thumbnail(&mut self, ctx: &egui::Context, path: &Path, number: u32, image: &engine::Rgb8Image) {
+        if self.strip.index_of(path).is_none() {
+            return;
+        }
+        let small = shrink_rgb(image, editor::worker::THUMBNAIL_SIDE);
+        let texture =
+            ctx.load_texture(format!("live:{}:{number}", path.display()), small, crate::photo_texture::smooth());
+        self.variant_thumbs.insert((path.to_owned(), number), Some(texture.clone()));
+        self.thumbs.insert(path.to_owned(), ThumbState::Ready(texture));
     }
 
     /// Reads again which photos have several variants, when that may have changed.
@@ -1389,8 +1403,8 @@ impl Library {
         }
     }
 
-    /// The viewer while several photos are selected, as in
-    /// a photo viewer: one tile per photo; a click on a tile opens that
+    /// The viewer while several photos are selected: one
+    /// tile per photo; a click on a tile opens that
     /// photo alone.
     pub fn overview(&mut self, ui: &mut egui::Ui, current: Option<&Path>, actions: &mut Vec<LibraryAction>) {
         let t = Tokens::of(ui.ctx().theme());
@@ -1413,7 +1427,7 @@ impl Library {
         for (i, path) in selection.iter().take(layout.shown).enumerate() {
             let [x, y] = layout.slot(i);
             let tile = Rect::from_min_size(grid.min + vec2(x, y), vec2(layout.tile[0], layout.tile[1]));
-            let response = ui.interact(tile, egui::Id::unique(("rne-overview", path)), Sense::click_and_drag());
+            let response = ui.interact(tile, egui::Id::unique(("aktis-overview", path)), Sense::click_and_drag());
             // Dragged onto an album, as from the filmstrip (with the whole selection).
             response.dnd_set_drag_payload(collections::DraggedPhoto(path.clone()));
             let response = response
@@ -1511,7 +1525,7 @@ impl Library {
         let t = Tokens::of(ctx.theme());
         let (mut confirm, mut cancel) = (false, false);
         let extension = d.path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-        dialog(ctx, "rne-rename", |ui| {
+        dialog(ctx, "aktis-rename", |ui| {
             ui.label(RichText::new("Rename").size(FONT[4]).strong());
             ui.add_space(SPACE[1]);
             ui.label(RichText::new(editor::library::folder_name(&d.path)).color(t.text_weak));
@@ -1645,6 +1659,34 @@ struct CardState<'a> {
     collection: Option<&'a Collection>,
     /// The variant the card shows, for a photo with several.
     variant: Option<&'a VariantInfo>,
+}
+
+/// `image` reduced so that its longer side is at most `side`, each pixel
+/// the mean of the block it covers.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // pixel counts
+fn shrink_rgb(image: &engine::Rgb8Image, side: u32) -> egui::ColorImage {
+    let (w, h) = (image.width.max(1) as usize, image.height.max(1) as usize);
+    let scale = (side.max(1) as f32 / w.max(h) as f32).min(1.0);
+    let (ow, oh) = (((w as f32 * scale).round() as usize).max(1), ((h as f32 * scale).round() as usize).max(1));
+    let mut out = Vec::with_capacity(ow * oh * 3);
+    for oy in 0..oh {
+        let (y0, y1) = (oy * h / oh, ((oy + 1) * h / oh).max(oy * h / oh + 1));
+        for ox in 0..ow {
+            let (x0, x1) = (ox * w / ow, ((ox + 1) * w / ow).max(ox * w / ow + 1));
+            let mut sum = [0_u32; 3];
+            for y in y0..y1 {
+                let row = &image.pixels[(y * w + x0) * 3..(y * w + x1) * 3];
+                for px in row.as_chunks::<3>().0 {
+                    for (total, v) in sum.iter_mut().zip(px) {
+                        *total += u32::from(*v);
+                    }
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)) as u32;
+            out.extend(sum.map(|v| ((v + n / 2) / n) as u8));
+        }
+    }
+    egui::ColorImage::from_rgb([ow, oh], &out)
 }
 
 /// The thumbnail of variant `number` of `path`, decoded once from the
@@ -1947,5 +1989,30 @@ fn variant_item(
     if ui.add_enabled(why.is_none(), button).on_disabled_hover_text(why.unwrap_or_default()).clicked() {
         actions.push(CardAction::Command(command));
         ui.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_live_thumbnail_is_the_photo_reduced_by_block_means() {
+        let image = engine::Rgb8Image {
+            width: 4,
+            height: 2,
+            pixels: [[0, 0, 0], [100, 50, 10], [200, 200, 200], [255, 255, 255]]
+                .iter()
+                .cycle()
+                .take(8)
+                .flatten()
+                .copied()
+                .collect(),
+        };
+        let small = shrink_rgb(&image, 2);
+        assert_eq!(small.size, [2, 1]);
+        assert_eq!(small.pixels[0], egui::Color32::from_rgb(50, 25, 5));
+        assert_eq!(small.pixels[1], egui::Color32::from_rgb(228, 228, 228));
+        assert_eq!(shrink_rgb(&image, 320).size, [4, 2], "never enlarged");
     }
 }

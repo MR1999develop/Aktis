@@ -153,7 +153,7 @@ impl ModelsUi {
         let missing = self.missing_for(feature);
         let (mut close, mut download, mut stop, mut decline) = (false, false, false, false);
         let this = &*self;
-        dialog(ctx, "rne-model-prompt", |ui| {
+        dialog(ctx, "aktis-model-prompt", |ui| {
             ui.label(RichText::new(format!("{} needs a download", feature.label())).size(FONT[4]).strong());
             ui.add_space(SPACE[1]);
             ui.label(
@@ -216,7 +216,7 @@ impl ModelsUi {
         let mut folder_error = None;
         let busy = self.job.is_some();
         let this = &*self;
-        dialog(ctx, "rne-model-manager", |ui| {
+        dialog(ctx, "aktis-model-manager", |ui| {
             ui.label(RichText::new("AI models").size(FONT[4]).strong());
             ui.add_space(SPACE[1]);
             ui.label("Downloaded on demand, kept on this computer. Optional packs only make a tool faster.");

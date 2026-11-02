@@ -224,7 +224,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rne-export-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("aktis-export-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).expect("create temp dir");
         d
@@ -252,7 +252,7 @@ mod tests {
             captured: Some("2026:08:14 18:42:07".into()),
             rating: Some(3),
             keywords: vec!["lake".into()],
-            copyright: Some("Ann".into()),
+            copyright: Some("Ada".into()),
             ..PhotoMetadata::default()
         }
     }
@@ -290,7 +290,7 @@ mod tests {
         let file = encode(&small_image(), &png_format, &metadata()).expect("encodes");
         let chunks = png::tests::chunks(&file);
         let exif = chunks.iter().find(|(k, _)| k == b"eXIf").expect("eXIf");
-        assert_eq!(tiff::read::ascii(&tiff::read::ifd0(&exif.1), 0x8298), "Ann");
+        assert_eq!(tiff::read::ascii(&tiff::read::ifd0(&exif.1), 0x8298), "Ada");
         assert!(chunks.iter().any(|(k, _)| k == b"iCCP"));
         assert!(chunks.iter().any(|(k, _)| k == b"iTXt"));
 

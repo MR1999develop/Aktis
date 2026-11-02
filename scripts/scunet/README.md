@@ -2,7 +2,7 @@
 
 The `denoise_ai` tool (`tools/denoise-ai`) runs the SCUNet network from
 ONNX files that are generated, not stored in the repository. These scripts
-come from an earlier denoiser and need only Python 3 and NumPy (no PyTorch, no
+need only Python 3 and NumPy (no PyTorch, no
 `onnx` package): `pth_weights.py` reads the checkpoint safely (tensors only),
 `scunet_graph.py` builds the network and `onnxproto.py` writes the file.
 
@@ -31,11 +31,9 @@ a change to the graph is made in both.
    ```
 
 Where the editor looks for them, in order: the folder (or file) in
-`RNE_DENOISE_MODELS`; a `models` folder next to the program or up to three
-folders above it; the editor's `raw-node-editor/models` (in `%LOCALAPPDATA%`
-on Windows, `~/.local/share` on Linux), shared with the AI selection models;
-then an earlier denoiser's `Denoiser/models` (in `%APPDATA%` on Windows). The
-models already installed for an earlier denoiser are therefore used as they are.
+`AKTIS_DENOISE_MODELS`; a `models` folder next to the program or up to three
+folders above it; the editor's `aktis/models` (in `%LOCALAPPDATA%`
+on Windows, `~/.local/share` on Linux), shared with the AI selection models.
 
 `--verify` needs `onnxruntime` for Python and checks that the new model
 reduces the noise of a test tile.

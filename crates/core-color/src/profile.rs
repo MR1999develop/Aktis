@@ -79,7 +79,7 @@ impl HsvTable {
         if values.iter().any(|x| !x.is_finite()) {
             return None;
         }
-        let data = values.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+        let data = values.as_chunks::<3>().0.to_vec();
         Some(Self { hue_divisions: h, sat_divisions: s, val_divisions: v, srgb_value, data })
     }
 

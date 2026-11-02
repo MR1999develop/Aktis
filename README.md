@@ -1,4 +1,4 @@
-# RAW node editor (working name)
+# Aktis
 
 Non-destructive RAW photo editor with a catalog and a DaVinci Resolve–style
 node graph, written in Rust, GPU-accelerated on any vendor.
@@ -25,9 +25,9 @@ AI (denoise, selection, tagging): the program ships without ONNX Runtime and
 the models. The first time a tool needs them, the editor shows what is needed
 (size, licence) and downloads it on request; *Tools → AI models* lists every
 pack. On the command line the AI commands ask the same way, and
-`rne models --download <tool|all>` installs ahead of time;
+`aktis-cli models --download <tool|all>` installs ahead of time;
 `scripts\get-ai.bat` does that for everything. All of it goes into
-`%LOCALAPPDATA%\raw-node-editor\models` (crate `ai-models` keeps the list,
+`%LOCALAPPDATA%\aktis\models` (crate `ai-models` keeps the list,
 with sizes and SHA-256; `onnx-env` loads the one runtime the three AI modules
 share). Then drop a RAW file on `scripts\ai-check.bat` to see subject, people,
 person parts, subtract and brush selections in `target\ai-check\`.
@@ -40,7 +40,21 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-`rust-toolchain.toml` pins the compiler (Rust 1.97); rustup installs it on first use.
+`rust-toolchain.toml` pins the compiler (Rust 1.99.1); rustup installs it on first use.
+
+The scripts build through `scripts\build-env.ps1`, which takes this
+computer's paths (user folder, Cargo's folder, project folder) out of the
+programs with `--remap-path-prefix`; the `.bat` files call cargo through
+`scripts\cargo.ps1` for that. Its flags differ from a plain `cargo` run, so
+switching between the two rebuilds the workspace once.
+
+The window is `aktis`, the command line `aktis-cli`; environment variables
+start with `AKTIS_`. Settings, data and caches live in an `aktis` folder of
+the system's usual places. Folders of the editor's old name
+(`raw-node-editor`) are renamed at the first start, with the files inside
+given the new extensions (`.aktispreset`, `.aktisbrush`, `.aktisdefaults`,
+`.aktislens`, `.aktismask`); catalogs made as `*.rnecatalog` keep their name
+and still open.
 
 ## Layout
 
@@ -54,7 +68,7 @@ cargo fmt --all --check
 | `crates/render-cpu` | Reference renderer: evaluates the graph with each tool's CPU code. |
 | `crates/platform` | The single place where Windows, Ubuntu and macOS differ. |
 | `crates/raw-io` | RAW/DNG → sensor data with rawler; levels, valid area, CFA, DNG gain maps, colour matrices, lens and shooting data. |
-| `crates/gpu` | GPU engine on wgpu (Vulkan, DirectX 12, Metal); must match `render-cpu`. Software renderers (a virtual machine's) are refused, so the CPU engine runs instead; `RNE_SOFTWARE_GPU=1` accepts them. |
+| `crates/gpu` | GPU engine on wgpu (Vulkan, DirectX 12, Metal); must match `render-cpu`. Software renderers (a virtual machine's) are refused, so the CPU engine runs instead; `AKTIS_SOFTWARE_GPU=1` accepts them. |
 | `crates/export` | JPEG with an embedded sRGB profile, atomic writes, non-destructive names. |
 | `crates/engine` | Shared by window and command line: built-in tools, GPU render with CPU fallback, preview copy, display pixels, JPEG export. |
 | `crates/editor` | The editor without the window: documents and undo, background jobs (open, preview, export, folder listings, thumbnails), viewer zoom and pan, folder tree and filmstrip model, graph layout, histogram. |
@@ -63,11 +77,11 @@ cargo fmt --all --check
 | `crates/lens-db` | Lensfun database reader, camera/lens lookup, distortion/TCA/vignetting maths. |
 | `crates/masks` | Mask nodes → mask images: AI rasters refined by colour, brush strokes, add/subtract/intersect, feather, raster cache. |
 | `crates/ai-segment` | AI selection (subject, objects, people, hair/skin/clothes/face features) with ONNX Runtime loaded at run time; model catalog. |
-| `crates/cli` | `rne` command: develop a RAW file to JPEG without the window. |
+| `crates/cli` | `aktis-cli` command: develop a RAW file to JPEG without the window. |
 | `crates/tagging` | AI tagging logic: keyword list, embeddings, zero-shot scores, learning from decisions, suggestions. |
 | `crates/tagging-onnx` | SigLIP 2 image/text encoders on ONNX Runtime (local, offline). |
 | `tools/exposure` | First tool: exposure in stops, CPU reference + WGSL kernel. |
-| `tools/denoise-ai` | AI denoise: the SCUNet network on ONNX Runtime (TensorRT for RTX, DirectML, CPU), ported from an earlier denoiser. A host tool: runs outside the WGSL kernels. |
+| `tools/denoise-ai` | AI denoise: the SCUNet network on ONNX Runtime (TensorRT for RTX, DirectML, CPU). A host tool: runs outside the WGSL kernels. |
 | `scripts/scunet` | Python + NumPy reference for `scunet-onnx`, which makes the SCUNet ONNX models from the original weights. |
 
 Pixel data inside the editor are linear, scene-referred `f32` in Rec.2020;
@@ -119,7 +133,7 @@ offered. DNG opcodes other than GainMap are not applied anywhere.
   (illuminant A and D65 for about 740 cameras, from rawler's camera data),
   mixed according to the white balance as the DNG specification describes.
   DCP profiles copied into the editor's own `profiles` folder can be chosen
-  by name (`rne profiles photo.ARW` lists them); other programs' folders are
+  by name (`aktis-cli profiles photo.ARW` lists them); other programs' folders are
   not searched. Matrices, forward
   matrices, hue/saturation maps and look tables are applied; profile tone
   curves wait for tone mapping (phase 4).
@@ -129,7 +143,7 @@ offered. DNG opcodes other than GainMap are not applied anywhere.
   aberration and vignetting are corrected in camera RGB between demosaicing
   and the profile, with lensfun's own interpolation and maths. Newer lensfun
   XML files dropped in the editor's `lensfun` folder override the built-in
-  data. `rne info` shows what would be corrected; `rne lenses <words>` searches
+  data. `aktis-cli info` shows what would be corrected; `aktis-cli lenses <words>` searches
   the database.
 - **Purple fringing.** Lens corrections ▸ Purple fringing (0–100) removes
   the violet halo along bright, high-contrast edges, also for lenses the
@@ -173,7 +187,7 @@ has the shared Gaussian, wavelet and noise estimate.
 ## AI denoise
 
 The `denoise_ai` node removes noise with the SCUNet neural network (trained
-on real camera noise, Apache-2.0), as an earlier denoiser does. The network runs
+on real camera noise, Apache-2.0). The network runs
 once per input image; its two parameters, *Grain (luminance)* and *Colour
 blotches*, only decide how much of its correction is applied, so moving them
 is instant. Place it after the exposure: the network judges the noise at the
@@ -183,17 +197,16 @@ final brightness.
   the original SCUNet weights from their authors (KAIR, 72 MB) and makes
   `scunet_color_real_448.onnx` (and on request the faster 960 px one) from
   them on this computer, with the `scunet-onnx` crate (`scripts/scunet` is
-  the Python reference it is tested against); an earlier denoiser's are used too. They are looked for in
-  `RNE_DENOISE_MODELS`, a `models` folder next to the program (or up to
+  the Python reference it is tested against). They are looked for in
+  `AKTIS_DENOISE_MODELS`, a `models` folder next to the program (or up to
   three folders above it), then the editor's models folder
-  (`%LOCALAPPDATA%\raw-node-editor\models`) and an earlier denoiser's
-  (`%APPDATA%\Denoiser\models`). Without a model the node passes the
+  (`%LOCALAPPDATA%\aktis\models`). Without a model the node passes the
   image through and says why.
 - **GPU**: on Windows TensorRT for RTX (RTX 30xx and later, with
-  `tensorrt_rtx_1_4.dll` and `tensorrt_onnxparser_rtx_1_4.dll` next to `rne`;
+  `tensorrt_rtx_1_4.dll` and `tensorrt_onnxparser_rtx_1_4.dll` next to `aktis-cli`;
   uses the `_fp16` models) or DirectML (any DirectX 12 card); elsewhere the
   CPU, which is slow (about 17 s per megapixel on 12 threads).
-  `RNE_DENOISE_DEVICE=cpu|directml|rtx` forces a device. With several tile
+  `AKTIS_DENOISE_DEVICE=cpu|directml|rtx` forces a device. With several tile
   sizes installed, the fastest for the GPU is measured once per run.
 - ONNX Runtime is loaded at run time, shared with AI selection and tagging
   (see above; `ORT_DYLIB_PATH` points to another build, for example one with
@@ -234,17 +247,22 @@ filmstrip side by side, History and Metadata tabs below. Centre: the
 photo above the node graph (a new photo has only the Source: click a
 node's output port to add a tool after it; drag nodes, drag the background
 to pan). Right: histogram and the settings of the node selected in the
-graph. Filmstrip: click, Ctrl+click and Shift+click select as in
-a photo viewer (several selected photos show as tiles in the viewer); keys:
+graph. Filmstrip: click, Ctrl+click and Shift+click select as in a
+file manager (several selected photos show as tiles in the viewer); keys:
 arrows previous/next, 0–5 rating, 6–9 colour label (on the selection), F2
 rename, Delete to the Trash, Ctrl+A select all, Escape back to one photo;
 drag photos onto an album; Ctrl+Z over the Library undoes its last move to
 the Trash or album merge. Photos come in through File ▸ Import Images… (or the Import… button,
-left of Undo on the bar under the menu) and live in a catalog (`Name.rnecatalog`): see `docs/catalog.md`.
+left of Undo on the bar under the menu) and live in a catalog (`Name.aktiscatalog`): see `docs/catalog.md`.
 A photo with several variants shows each as a card of its own in the
 filmstrip, right after the one before ("IMG_0001.CR3 (2)"), with its own
 preview; a click opens that variant. Deleting a variant, the first one
 included, leaves the photo and its other variants.
+
+## Licence
+
+Copyright (C) 2026 MR. Aktis is free software under the GNU General Public
+License, version 3 only (`GPL-3.0-only`); the full text is in `LICENSE`.
 
 ## Status
 

@@ -1,5 +1,5 @@
 //! Custom lenses: lens-correction settings saved under a name for the lens
-//! that took a photo, one `.rnelens` file each in the editor's `Lenses`
+//! that took a photo, one `.aktislens` file each in the editor's `Lenses`
 //! folder. They are offered in the lens chooser, can be saved again with
 //! new values, and a photo never edited starts with the one saved last for
 //! its lens.
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn custom_lenses_are_saved_replaced_found_by_lens_and_deleted() {
-        let dir = std::env::temp_dir().join(format!("rne-custom-lenses-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-custom-lenses-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut all = CustomLenses::load(Some(dir.clone()));
         assert!(all.by_name().is_empty());
@@ -194,7 +194,7 @@ mod tests {
         assert!(all.named("Prime").is_none());
         assert_eq!(CustomLenses::load(Some(dir.clone())).by_name().len(), 2);
         assert!(all.save(lens(" ", "x", 0.0)).is_err());
-        std::fs::write(dir.join("broken.rnelens"), "{").unwrap();
+        std::fs::write(dir.join("broken.aktislens"), "{").unwrap();
         assert_eq!(CustomLenses::load(Some(dir.clone())).problems().len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }

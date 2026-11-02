@@ -24,6 +24,7 @@ $log.AutoFlush = $true
 $summary = [System.Collections.Generic.List[string]]::new()
 $started = Get-Date
 $env:RUST_BACKTRACE = '1'   # panics in tests show where they happened
+. "$PSScriptRoot\build-env.ps1"   # no local paths in the programs built
 
 function Say([string]$text, [string]$color = '') {
     if ($color) { Write-Host $text -ForegroundColor $color } else { Write-Host $text }
@@ -54,8 +55,8 @@ try {
     $gpus = (Get-CimInstance Win32_VideoController | ForEach-Object { "$($_.Name) (driver $($_.DriverVersion))" }) -join '; '
     Note "gpu:      $gpus"
 } catch { Note 'gpu:      unknown' }
-$dataDir = if ($env:RNE_DATA_DIR) { $env:RNE_DATA_DIR } else { Join-Path $env:LOCALAPPDATA 'raw-node-editor' }
-$modelsDir = if ($env:RNE_MODELS_DIR) { $env:RNE_MODELS_DIR } else { Join-Path $dataDir 'models' }
+$dataDir = if ($env:AKTIS_DATA_DIR) { $env:AKTIS_DATA_DIR } else { Join-Path $env:LOCALAPPDATA 'aktis' }
+$modelsDir = if ($env:AKTIS_MODELS_DIR) { $env:AKTIS_MODELS_DIR } else { Join-Path $dataDir 'models' }
 $ortCandidates = @($env:ORT_DYLIB_PATH, 'target\release\onnxruntime.dll', 'target\debug\onnxruntime.dll',
     (Join-Path $modelsDir 'onnxruntime.dll'), (Join-Path $dataDir 'onnxruntime.dll')) | Where-Object { $_ }
 $ort = $ortCandidates | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1

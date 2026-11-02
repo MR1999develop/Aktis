@@ -1,6 +1,6 @@
 # AI tagging (semi-automatic keywords)
 
-Status: the tagging engine, the model integration and `rne tag` are in place;
+Status: the tagging engine, the model integration and `aktis-cli tag` are in place;
 the catalogue (DAM) that stores embeddings and decisions and the UI that shows
 suggestions come with the catalogue phase.
 
@@ -77,7 +77,7 @@ by a better one later without losing any of the user's work.
 | --- | --- |
 | `crates/tagging` | Pure logic, no I/O: vocabulary, embeddings, preprocessing, zero-shot head, learning, suggestion rules, similarity search. |
 | `crates/tagging-onnx` | `ImageEncoder` / `TextEncoder` on ONNX Runtime for SigLIP-family exports; model specs (input size, token length, logit scale and bias). |
-| `crates/cli` | `rne tag`: suggestions for RAW and JPEG files, and text search. |
+| `crates/cli` | `aktis-cli tag`: suggestions for RAW and JPEG files, and text search. |
 
 ## Try it
 

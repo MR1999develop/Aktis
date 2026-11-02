@@ -1,23 +1,23 @@
-//! `rne`: develops RAW files from the command line.
+//! `aktis-cli`: develops RAW files from the command line.
 //!
 //! ```text
-//! rne develop <file> [-o <out.jpg>] [--exposure <stops>] [--denoise <grain %>]
+//! aktis-cli develop <file> [-o <out.jpg>] [--exposure <stops>] [--denoise <grain %>]
 //!             [--denoise-color <colour %>] [--quality <1-100>] [--cpu]
 //!             [--profile <name>] [--lens <name>] [--lens-zoom <factor>] [--no-lens] [selection]
-//! rne mask <file> <selection> [-o <overlay.jpg>] [--mask-out <mask.jpg>]
-//! rne models [--verify]
-//! rne info <file>
-//! rne lenses [<words>...]
-//! rne profiles <file>
-//! rne gpu
-//! rne tag <files...> --model <dir> --keywords <file> [--template <text>] [--search <text>]
+//! aktis-cli mask <file> <selection> [-o <overlay.jpg>] [--mask-out <mask.jpg>]
+//! aktis-cli models [--verify]
+//! aktis-cli info <file>
+//! aktis-cli lenses [<words>...]
+//! aktis-cli profiles <file>
+//! aktis-cli gpu
+//! aktis-cli tag <files...> --model <dir> --keywords <file> [--template <text>] [--search <text>]
 //! ```
 //!
 //! Results go to stdout, diagnostics and errors to stderr. Exit codes:
 //! 0 success, 1 the operation failed, 2 wrong arguments.
 #![allow(
     linker_messages,
-    reason = "a C dependency of the tokenizer exports functions, so the MSVC linker reports the .lib/.exp it writes next to rne.exe"
+    reason = "a C dependency of the tokenizer exports functions, so the MSVC linker reports the .lib/.exp it writes next to aktis-cli.exe"
 )]
 
 mod ai;
@@ -45,10 +45,13 @@ use tool_api::ToolRegistry;
 type BoxError = Box<dyn std::error::Error>;
 
 fn main() -> ExitCode {
+    for problem in platform::move_legacy_dirs() {
+        eprintln!("aktis-cli: warning: {problem}");
+    }
     let command = match args::parse(std::env::args().skip(1)) {
         Ok(c) => c,
         Err(msg) => {
-            eprintln!("rne: {msg}\n\n{}", args::USAGE);
+            eprintln!("aktis-cli: {msg}\n\n{}", args::USAGE);
             return ExitCode::from(2);
         }
     };
@@ -70,7 +73,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("rne: {}", chain(e.as_ref()));
+            eprintln!("aktis-cli: {}", chain(e.as_ref()));
             ExitCode::FAILURE
         }
     }
@@ -123,7 +126,7 @@ fn gpu_info() -> Result<(), BoxError> {
 fn lens_database() -> std::borrow::Cow<'static, LensDatabase> {
     let (db, problems) = engine::lens_database();
     for problem in problems {
-        eprintln!("rne: warning: lens database: {problem}");
+        eprintln!("aktis-cli: warning: lens database: {problem}");
     }
     db
 }
@@ -202,7 +205,7 @@ fn lenses(words: &[String]) -> Result<(), BoxError> {
     for l in &found {
         println!("{}  [{}]  {}", l.full_name(), l.mounts.join(", "), lens_data(l));
     }
-    eprintln!("rne: {} of {} lenses", found.len(), db.lenses().len());
+    eprintln!("aktis-cli: {} of {} lenses", found.len(), db.lenses().len());
     Ok(())
 }
 
@@ -216,12 +219,12 @@ fn profiles(path: &Path) -> Result<(), BoxError> {
         println!("  {}  ({})", entry.name, entry.path.display());
     }
     for problem in problems {
-        eprintln!("rne: warning: {problem}");
+        eprintln!("aktis-cli: warning: {problem}");
     }
     if found.is_empty() {
-        eprintln!("rne: no DCP profiles installed for this camera; searched:");
+        eprintln!("aktis-cli: no DCP profiles installed for this camera; searched:");
         for dir in library.dirs() {
-            eprintln!("rne:   {}", dir.display());
+            eprintln!("aktis-cli:   {}", dir.display());
         }
     }
     Ok(())
@@ -238,7 +241,7 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
     let choice = if a.cpu_only { EngineChoice::CpuOnly } else { EngineChoice::Auto };
     let engine = Engine::new(engine::builtin_tools()?, choice);
     if let Some(why) = engine.gpu_problem() {
-        eprintln!("rne: {why}; rendering on the CPU");
+        eprintln!("aktis-cli: {why}; rendering on the CPU");
     }
 
     let raw = raw_io::read_raw(&a.input)?;
@@ -281,12 +284,12 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
         Some(&library),
     )?;
     if let Some(note) = &developed.profile.note {
-        eprintln!("rne: warning: {note}");
+        eprintln!("aktis-cli: warning: {note}");
     }
     if recipe.develop.lens.enabled
         && let Some(note) = &developed.lens.note
     {
-        eprintln!("rne: note: {note}");
+        eprintln!("aktis-cli: note: {note}");
     }
     let developed_at = started.elapsed();
 
@@ -310,21 +313,21 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
 
     let rendered = engine.render_with_masks(&session.recipe().graph, &developed.image, rasters)?;
     if let Some(why) = &rendered.gpu_failure {
-        eprintln!("rne: warning: the GPU failed ({why}); rendered on the CPU");
+        eprintln!("aktis-cli: warning: the GPU failed ({why}); rendered on the CPU");
     }
     for t in &rendered.missing_tools {
-        eprintln!("rne: warning: tool '{t}' is not in this build; its node was skipped");
+        eprintln!("aktis-cli: warning: tool '{t}' is not in this build; its node was skipped");
     }
     for (node, e) in &rendered.tool_errors {
-        eprintln!("rne: warning: node {node} was skipped: {e}");
+        eprintln!("aktis-cli: warning: node {node} was skipped: {e}");
     }
     if a.denoise.is_some()
         && let Some(status) = engine::ai_denoise_status()
     {
-        eprintln!("rne: AI denoise: {status}");
+        eprintln!("aktis-cli: AI denoise: {status}");
     }
     for (node, component) in &rendered.missing_masks {
-        eprintln!("rne: warning: mask {node} part {component} is not computed; it selected nothing");
+        eprintln!("aktis-cli: warning: mask {node} part {component} is not computed; it selected nothing");
     }
     let rendered_at = started.elapsed();
 
@@ -341,9 +344,9 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
         (Some(name), true) => format!("{name}: {}", describe(developed.lens.applied)),
         _ => "no lens corrections".to_owned(),
     };
-    eprintln!("rne: profile {profile_name} \u{b7} {lens_summary}");
+    eprintln!("aktis-cli: profile {profile_name} \u{b7} {lens_summary}");
     eprintln!(
-        "rne: {} {} {w}\u{d7}{h} \u{b7} decode {:.2}s \u{b7} develop {:.2}s \u{b7} masks {:.2}s \u{b7} render {:.2}s ({}) \u{b7} total {:.2}s",
+        "aktis-cli: {} {} {w}\u{d7}{h} \u{b7} decode {:.2}s \u{b7} develop {:.2}s \u{b7} masks {:.2}s \u{b7} render {:.2}s ({}) \u{b7} total {:.2}s",
         raw.make,
         raw.model,
         decoded.as_secs_f32(),
@@ -374,14 +377,14 @@ fn tag(a: &TagArgs) -> Result<(), BoxError> {
         }
     };
     let (mut images, mut texts) = tagging_onnx::load(&model_dir, spec, &opts)?;
-    eprintln!("rne: model {} loaded in {:.2}s", spec.name, started.elapsed().as_secs_f32());
+    eprintln!("aktis-cli: model {} loaded in {:.2}s", spec.name, started.elapsed().as_secs_f32());
 
     let mut embeddings = Vec::new();
     for path in &a.inputs {
         let t = Instant::now();
         let image = load_image(path)?;
         let e = images.encode_images(&[&image])?.pop().ok_or("the model returned no embedding")?;
-        eprintln!("rne: {} encoded in {:.2}s", path.display(), t.elapsed().as_secs_f32());
+        eprintln!("aktis-cli: {} encoded in {:.2}s", path.display(), t.elapsed().as_secs_f32());
         embeddings.push(e);
     }
 
@@ -402,7 +405,7 @@ fn tag(a: &TagArgs) -> Result<(), BoxError> {
         let mut tagger = tagging::Tagger::new(spec.model_id(), head, vocab);
         let t = Instant::now();
         tagger.encode_prompts(&mut texts, &a.template)?;
-        eprintln!("rne: {} keywords encoded in {:.2}s", tagger.vocabulary().len(), t.elapsed().as_secs_f32());
+        eprintln!("aktis-cli: {} keywords encoded in {:.2}s", tagger.vocabulary().len(), t.elapsed().as_secs_f32());
 
         let policy =
             SuggestPolicy { min_probability: a.min_probability, max_suggestions: a.top, ..SuggestPolicy::default() };
@@ -426,7 +429,7 @@ fn tag(a: &TagArgs) -> Result<(), BoxError> {
             println!("  best: {}", best.join(" · "));
         }
     }
-    eprintln!("rne: total {:.2}s", started.elapsed().as_secs_f32());
+    eprintln!("aktis-cli: total {:.2}s", started.elapsed().as_secs_f32());
     Ok(())
 }
 
@@ -452,7 +455,7 @@ fn load_jpeg(path: &Path) -> Result<ImageF32, BoxError> {
     let lin = |v: u8| core_color::srgb_decode(f32::from(v) / 255.0);
     let pixels: Vec<core_model::Rgba> = match info.pixel_format {
         jpeg_decoder::PixelFormat::RGB24 => {
-            data.chunks_exact(3).map(|p| [lin(p[0]), lin(p[1]), lin(p[2]), 1.0]).collect()
+            data.as_chunks::<3>().0.iter().map(|p| [lin(p[0]), lin(p[1]), lin(p[2]), 1.0]).collect()
         }
         jpeg_decoder::PixelFormat::L8 => data.iter().map(|&v| [lin(v), lin(v), lin(v), 1.0]).collect(),
         other => return Err(format!("{}: unsupported JPEG pixel format {other:?}", path.display()).into()),
@@ -517,7 +520,7 @@ fn mask(a: &MaskArgs) -> Result<(), BoxError> {
     let ai = ai::Ai::open()?;
     let def = ai.build(&a.selection, &loaded.id, &loaded.image, loaded.orientation)?;
     for c in &def.components {
-        eprintln!("rne:   {} ({:?})", c.label, c.op);
+        eprintln!("aktis-cli:   {} ({:?})", c.label, c.op);
     }
 
     let evaluated = masks::evaluate(&def, &ai.rasters, &loaded.image);
@@ -538,7 +541,7 @@ fn mask(a: &MaskArgs) -> Result<(), BoxError> {
         println!("{}", path.display());
     }
     eprintln!(
-        "rne: {} {w}\u{d7}{h} · {} part(s) · {coverage:.1}% selected · total {:.2}s",
+        "aktis-cli: {} {w}\u{d7}{h} · {} part(s) · {coverage:.1}% selected · total {:.2}s",
         loaded.camera,
         def.components.len(),
         started.elapsed().as_secs_f32()
@@ -561,7 +564,9 @@ fn quantize(v: f32) -> u8 {
 /// The photo with the selection tinted red and the rest dimmed.
 fn overlay(rgb: &[u8], mask: &MaskImage) -> Vec<u8> {
     let tint = [255.0, 48.0, 48.0];
-    rgb.chunks_exact(3)
+    rgb.as_chunks::<3>()
+        .0
+        .iter()
         .zip(mask.values())
         .flat_map(|(px, m)| {
             let m = m.clamp(0.0, 1.0);

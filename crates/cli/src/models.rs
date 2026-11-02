@@ -1,5 +1,5 @@
 //! What the AI commands download the first time they need it, and
-//! `rne models` / `rne models --download`.
+//! `aktis-cli models` / `aktis-cli models --download`.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
@@ -59,19 +59,19 @@ pub fn ensure(features: &[Feature]) -> Result<(), BoxError> {
         return Ok(());
     }
     let names: Vec<&str> = features.iter().map(|f| f.label()).collect();
-    eprintln!("rne: {} needs files that are not installed yet:", names.join(", "));
+    eprintln!("aktis-cli: {} needs files that are not installed yet:", names.join(", "));
     describe(&missing, &dir);
     let cli: Vec<&str> = features.iter().map(|f| f.cli_name()).collect();
     if !std::io::stdin().is_terminal() {
-        return Err(format!("not installed; download with `rne models --download {}`", cli.join(" ")).into());
+        return Err(format!("not installed; download with `aktis-cli models --download {}`", cli.join(" ")).into());
     }
     if !confirm("Download now?")? {
-        return Err(format!("not downloaded; later: `rne models --download {}`", cli.join(" ")).into());
+        return Err(format!("not downloaded; later: `aktis-cli models --download {}`", cli.join(" ")).into());
     }
     run(&missing, &dir)
 }
 
-/// `rne models --download <what>...`.
+/// `aktis-cli models --download <what>...`.
 ///
 /// # Errors
 /// An unknown name, a refused confirmation or a failed download.
@@ -107,7 +107,7 @@ pub fn download_cmd(what: &[String], yes: bool) -> Result<(), BoxError> {
         println!("Everything asked for is already installed in {}", dir.display());
         return Ok(());
     }
-    eprintln!("rne: to download:");
+    eprintln!("aktis-cli: to download:");
     describe(&missing, &dir);
     if !yes && std::io::stdin().is_terminal() && !confirm("Download now?")? {
         return Err("not downloaded".into());
@@ -139,7 +139,7 @@ fn run(packs: &[Pack], dir: &Path) -> Result<(), BoxError> {
     let cancel = AtomicBool::new(false);
     let mut failures = Vec::new();
     for (n, pack) in packs.iter().enumerate() {
-        eprintln!("rne: [{}/{}] {} ({})", n + 1, packs.len(), pack.name, pack.size_text());
+        eprintln!("aktis-cli: [{}/{}] {} ({})", n + 1, packs.len(), pack.name, pack.size_text());
         let mut shown = (String::new(), u64::MAX);
         let result = ai_models::download(
             std::slice::from_ref(pack),
@@ -168,19 +168,19 @@ fn run(packs: &[Pack], dir: &Path) -> Result<(), BoxError> {
             eprintln!();
         }
         if let Err(e) = result {
-            eprintln!("rne:   failed: {e}");
+            eprintln!("aktis-cli:   failed: {e}");
             failures.push(format!("{}: {e}", pack.name));
         }
     }
     if failures.is_empty() {
-        eprintln!("rne: installed in {}", dir.display());
+        eprintln!("aktis-cli: installed in {}", dir.display());
         Ok(())
     } else {
         Err(format!("{} of {} not installed:\n  {}", failures.len(), packs.len(), failures.join("\n  ")).into())
     }
 }
 
-/// What `rne models` prints: every pack with its state.
+/// What `aktis-cli models` prints: every pack with its state.
 ///
 /// # Errors
 /// Never in practice; kept fallible for the command table.
@@ -211,7 +211,7 @@ pub fn list(verify: bool, runtime_line: &str) -> Result<(), BoxError> {
     }
     if !all_ready {
         let tools: Vec<&str> = Feature::ALL.iter().map(|f| f.cli_name()).collect();
-        println!("\nInstall with `rne models --download <{}|pack id|all>`.", tools.join("|"));
+        println!("\nInstall with `aktis-cli models --download <{}|pack id|all>`.", tools.join("|"));
     }
     Ok(())
 }

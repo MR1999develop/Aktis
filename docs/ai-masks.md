@@ -76,7 +76,7 @@ the full-resolution image, so the edge is as sharp as the photo.
 
 Only models whose licence allows commercial use are listed. The catalog
 (`crates/ai-segment/src/catalog.rs`) has each file's URL, size and SHA-256;
-`rne models` shows what is installed and where to put the rest, `rne models
+`aktis-cli models` shows what is installed and where to put the rest, `aktis-cli models
 --verify` checks the checksums. The SAM 2.1 and MediaPipe ONNX files come
 from third-party releases (official weights, converted); before shipping,
 the project should export and host them in its own release.
@@ -146,30 +146,30 @@ less, use Segment Anything (a click or a box) for the subject.
 
 ## Folders
 
-- Models: `$RNE_MODELS_DIR`, else `models` in the data folder.
+- Models: `$AKTIS_MODELS_DIR`, else `models` in the data folder.
 - Raster cache: `masks` in the data folder.
-- Data folder: `$RNE_DATA_DIR`, else `%LOCALAPPDATA%\raw-node-editor`,
-  `$XDG_DATA_HOME/raw-node-editor` (`~/.local/share/raw-node-editor`) or
-  `~/Library/Application Support/raw-node-editor`.
+- Data folder: `$AKTIS_DATA_DIR`, else `%LOCALAPPDATA%\aktis`,
+  `$XDG_DATA_HOME/aktis` (`~/.local/share/aktis`) or
+  `~/Library/Application Support/aktis`.
 
 ## Command line
 
 ```sh
-rne models                                   # what is installed, where the rest goes
-rne mask photo.NEF --subject                 # writes photo-mask.jpg: selection in red
-rne mask photo.NEF --people --mask-out people.jpg
-rne mask photo.NEF --parts hair,lips         # those parts of every person
-rne mask photo.NEF --people --subtract --parts face-skin   # people without their faces
-rne mask photo.NEF --point 0.42,0.55 --not 0.47,0.30
-rne mask photo.NEF --box 0.2,0.1,0.6,0.9 --feather 1
-rne mask photo.NEF --subject --brush 0.03:0.1,0.2:0.3,0.25 --erase 0.02:0.5,0.5
-rne mask photo.NEF --subject --invert        # the background
-rne develop photo.NEF --exposure 1 --subject # brighten only the subject
+aktis-cli models                                   # what is installed, where the rest goes
+aktis-cli mask photo.NEF --subject                 # writes photo-mask.jpg: selection in red
+aktis-cli mask photo.NEF --people --mask-out people.jpg
+aktis-cli mask photo.NEF --parts hair,lips         # those parts of every person
+aktis-cli mask photo.NEF --people --subtract --parts face-skin   # people without their faces
+aktis-cli mask photo.NEF --point 0.42,0.55 --not 0.47,0.30
+aktis-cli mask photo.NEF --box 0.2,0.1,0.6,0.9 --feather 1
+aktis-cli mask photo.NEF --subject --brush 0.03:0.1,0.2:0.3,0.25 --erase 0.02:0.5,0.5
+aktis-cli mask photo.NEF --subject --invert        # the background
+aktis-cli develop photo.NEF --exposure 1 --subject # brighten only the subject
 ```
 
 Parts of the selection combine in order; `--add` (default), `--subtract` and
 `--intersect` apply to what follows. Coordinates are fractions of the upright
-photo. `rne mask` also reads 8-bit binary PPM files, so it can be tried on
+photo. `aktis-cli mask` also reads 8-bit binary PPM files, so it can be tried on
 any picture (`jpegtopnm x.jpg > x.ppm`).
 
 ## Not yet

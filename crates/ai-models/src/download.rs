@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn a_file_is_fetched_checked_and_installed_and_a_bad_checksum_is_refused() {
-        let dir = std::env::temp_dir().join(format!("rne-ai-dl-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-ai-dl-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("temp dir");
         let source = dir.join("source.bin");

@@ -119,7 +119,7 @@ pub fn to_srgb8_with(image: &ImageF32, curve: BaseCurve) -> Vec<u8> {
     let src = image.pixels();
     let mut out = vec![0_u8; w * h * 3];
     for_each_row(&mut out, h, w * 3, ROWS_PER_THREAD, &|y, bytes| {
-        for (p, o) in src[y * w..(y + 1) * w].iter().zip(bytes.chunks_exact_mut(3)) {
+        for (p, o) in src[y * w..(y + 1) * w].iter().zip(bytes.as_chunks_mut::<3>().0) {
             let rgb = crate::tone::output_rgb_with([p[0], p[1], p[2]], &m, curve);
             o[0] = enc.encode(rgb[0]);
             o[1] = enc.encode(rgb[1]);
@@ -152,7 +152,7 @@ pub fn to_srgb16_with(image: &ImageF32, curve: BaseCurve) -> Vec<u16> {
         for (chunk, part) in out.chunks_mut(rows_per_chunk * w * 3).enumerate() {
             let first = chunk * rows_per_chunk * w;
             scope.spawn(move || {
-                for (p, o) in src[first..].iter().zip(part.chunks_exact_mut(3)) {
+                for (p, o) in src[first..].iter().zip(part.as_chunks_mut::<3>().0) {
                     let rgb = crate::tone::output_rgb_with([p[0], p[1], p[2]], m, curve);
                     for (dst, v) in o.iter_mut().zip(rgb) {
                         *dst = crate::quantize_u16(core_color::srgb_encode(v.clamp(0.0, 1.0)));

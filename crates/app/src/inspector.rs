@@ -274,7 +274,7 @@ fn base_characteristics(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdi
     let current = doc.recipe().curve;
     ui.horizontal(|ui| {
         ui.label("Curve");
-        egui::ComboBox::from_id_salt("rne-base-curve").selected_text(current.label()).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("aktis-base-curve").selected_text(current.label()).show_ui(ui, |ui| {
             for curve in BaseCurve::ALL {
                 if ui.selectable_label(curve == current, curve.label()).on_hover_text(curve_hint(curve)).clicked()
                     && curve != current
@@ -367,7 +367,7 @@ fn lens_section(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut 
             None => {}
         }
         ui.add_space(SPACE[0]);
-        let id = egui::Id::unique("rne-lens-sliders");
+        let id = egui::Id::unique("aktis-lens-sliders");
         amount_row(ui, id.with("d"), &mut next.distortion, &mut next.amount.distortion, "Distortion");
         amount_row(ui, id.with("t"), &mut next.tca, &mut next.amount.tca, "Chromatic aberration");
         amount_row(ui, id.with("v"), &mut next.vignetting, &mut next.amount.vignetting, "Vignetting");
@@ -529,8 +529,8 @@ fn lens_chooser(ui: &mut egui::Ui, doc: &Document, menu: &LensMenu<'_>) -> Optio
     let LensMenu { selected, automatic, chosen, custom_chosen, customs, exif_lens } = *menu;
     let mut pick = None;
     let t = Tokens::of(ui.ctx().theme());
-    let search_id = egui::Id::unique("rne-lens-search");
-    let only_id = egui::Id::unique("rne-lens-compatible-only");
+    let search_id = egui::Id::unique("aktis-lens-search");
+    let only_id = egui::Id::unique("aktis-lens-compatible-only");
     let mut search: String = ui.ctx().data(|d| d.get_temp(search_id)).unwrap_or_default();
     let mut only: bool = ui.ctx().data(|d| d.get_temp::<bool>(only_id)).unwrap_or(true);
     let popup = egui::ComboBox::from_id_salt("lens-choice")

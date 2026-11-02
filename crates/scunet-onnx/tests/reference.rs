@@ -2,11 +2,11 @@
 //! checkpoint (72 MB, not in the repository).
 //!
 //! ```sh
-//! RNE_SCUNET_PTH=scunet_color_real_psnr.pth RNE_SCUNET_REF448=scunet_color_real_448.onnx \
+//! AKTIS_SCUNET_PTH=scunet_color_real_psnr.pth AKTIS_SCUNET_REF448=scunet_color_real_448.onnx \
 //!     cargo test --release -p scunet-onnx -- --ignored --nocapture
 //! ```
 //!
-//! `RNE_SCUNET_REF960`, if set, adds the 960 px tile model.
+//! `AKTIS_SCUNET_REF960`, if set, adds the 960 px tile model.
 
 #![allow(clippy::unwrap_used)]
 
@@ -17,7 +17,7 @@ fn compare(tile: u32, reference_var: &str) {
         println!("{reference_var} not set: tile {tile} skipped");
         return;
     };
-    let pth = std::fs::read(std::env::var("RNE_SCUNET_PTH").expect("RNE_SCUNET_PTH")).unwrap();
+    let pth = std::fs::read(std::env::var("AKTIS_SCUNET_PTH").expect("AKTIS_SCUNET_PTH")).unwrap();
     let reference = std::fs::read(reference).unwrap();
     let start = Instant::now();
     let model = scunet_onnx::convert(&pth, tile).unwrap();
@@ -29,16 +29,16 @@ fn compare(tile: u32, reference_var: &str) {
 }
 
 #[test]
-#[ignore = "needs the KAIR checkpoint and the Python-made models (RNE_SCUNET_PTH, RNE_SCUNET_REF448)"]
+#[ignore = "needs the KAIR checkpoint and the Python-made models (AKTIS_SCUNET_PTH, AKTIS_SCUNET_REF448)"]
 fn identical_to_python() {
-    compare(448, "RNE_SCUNET_REF448");
-    compare(960, "RNE_SCUNET_REF960");
+    compare(448, "AKTIS_SCUNET_REF448");
+    compare(960, "AKTIS_SCUNET_REF960");
 }
 
 #[test]
-#[ignore = "needs the KAIR checkpoint (RNE_SCUNET_PTH)"]
+#[ignore = "needs the KAIR checkpoint (AKTIS_SCUNET_PTH)"]
 fn reads_every_weight() {
-    let pth = std::fs::read(std::env::var("RNE_SCUNET_PTH").expect("RNE_SCUNET_PTH")).unwrap();
+    let pth = std::fs::read(std::env::var("AKTIS_SCUNET_PTH").expect("AKTIS_SCUNET_PTH")).unwrap();
     let weights = scunet_onnx::load_state_dict(&pth).unwrap();
     assert_eq!(weights.len(), 540);
     assert_eq!(weights.values().map(|t| t.data.len()).sum::<usize>(), 17_946_072);

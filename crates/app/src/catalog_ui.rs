@@ -114,7 +114,7 @@ pub fn new_catalog_dialog(ctx: &egui::Context, form: &mut NewCatalog) -> Outcome
     } else {
         ("New Catalog", "A catalog keeps the ratings, keywords and edits of the photos imported into it.", "Create")
     };
-    dialog(ctx, "rne-new-catalog", |ui| {
+    dialog(ctx, "aktis-new-catalog", |ui| {
         ui.label(RichText::new(title).size(FONT[4]).strong());
         ui.add_space(SPACE[1]);
         ui.label(RichText::new(intro).color(t.text_weak));
@@ -211,7 +211,7 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rne-catalog-ui-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-catalog-ui-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -226,7 +226,7 @@ mod tests {
         assert!(catalogs::is_catalog(&made));
         assert!(form.target().is_err(), "the name is taken now");
         let copy = NewCatalog::save_as(dir.clone());
-        assert!(copy.save_as && copy.target().is_ok_and(|p| p.ends_with("My Catalog.rnecatalog")));
+        assert!(copy.save_as && copy.target().is_ok_and(|p| p.ends_with("My Catalog.aktiscatalog")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

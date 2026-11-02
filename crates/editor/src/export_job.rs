@@ -55,7 +55,7 @@ pub struct ExportJob {
     pub photos: Vec<ExportPhoto>,
     /// The export window's choices.
     pub options: ExportOptions,
-    /// Written as the EXIF "Software" ("RAW Node Editor 0.1.0").
+    /// Written as the EXIF "Software" ("Aktis 0.1.0").
     pub software: String,
     /// The custom lenses: a photo never edited is exported with the one of its lens.
     pub custom_lenses: crate::custom_lenses::CustomLenses,
@@ -296,7 +296,7 @@ mod tests {
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rne-export-job-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("aktis-export-job-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

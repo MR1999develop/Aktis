@@ -54,7 +54,7 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    /// The dark theme: the neutral whites, greys and blacks of a photo viewer
+    /// The dark theme: neutral whites, greys and blacks
     /// (no tint, so colours are judged on true greys) with the copper accent
     /// of the Interface design; default for a photo editor.
     #[must_use]
@@ -279,7 +279,7 @@ pub fn visuals(t: &Tokens, theme: Theme) -> Visuals {
         wv.corner_radius = CornerRadius::same(RADIUS_CONTROL);
     }
     if theme == Theme::Dark {
-        // a photo viewer's control greys: fields #1C1C1C, buttons #242424,
+        // Control greys: fields #1C1C1C, buttons #242424,
         // hovered #303030, pressed #3F3F3F.
         v.extreme_bg_color = Color32::from_rgb(0x1c, 0x1c, 0x1c);
         w.inactive.bg_fill = Color32::from_rgb(0x1c, 0x1c, 0x1c);

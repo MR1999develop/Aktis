@@ -1,10 +1,12 @@
 [package]
 name = "tool-denoise-ai"
-description = "AI denoise tool: the SCUNet neural network on ONNX Runtime (TensorRT for RTX, DirectML, CPU), ported from an earlier denoiser."
+description = "AI denoise tool: the SCUNet neural network on ONNX Runtime (TensorRT for RTX, DirectML, CPU)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
+authors.workspace = true
 
 [features]
 default = []
@@ -23,7 +25,7 @@ onnx-env.workspace = true
 # Loaded at run time through `onnx-env`, the one runtime of the process. The
 # TensorRT for RTX provider needs an ONNX Runtime build that has it (1.31 with
 # TensorRT for RTX 1.4); with another build the node uses DirectML or the CPU.
-# Pinned exactly, as in an earlier denoiser: upgraded deliberately.
+# Pinned exactly: upgraded deliberately.
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-22"] }
 
 [lints]

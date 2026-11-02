@@ -1,6 +1,6 @@
 //! Where the SCUNet model files are and what their names say.
 //!
-//! The models are the ones an earlier denoiser uses, `scunet_color_real_<N>.onnx`
+//! The models are named `scunet_color_real_<N>.onnx`,
 //! with a fixed `1 × 3 × N × N` input (N = 448 is the normal one; 704, 960,
 //! 1216 and 1600 are optional, faster on a GPU) and the half-precision
 //! variants `scunet_color_real_<N>_fp16.onnx` for TensorRT for RTX. They are
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use platform::Os;
 
 /// Environment variable naming a model folder (or one model file).
-pub const MODELS_ENV: &str = "RNE_DENOISE_MODELS";
+pub const MODELS_ENV: &str = "AKTIS_DENOISE_MODELS";
 /// Side of the input tile of the normal model.
 pub const DEFAULT_TILE_PX: usize = 448;
 /// Pixels discarded along each edge of the network's output.
@@ -64,10 +64,8 @@ pub(crate) fn process_env(key: &str) -> Option<OsString> {
 /// 1. [`MODELS_ENV`] (a folder, or a model file whose folder is used);
 /// 2. a `models` folder next to the executable or up to three folders above
 ///    it (handy during development: `target/release/../../models`);
-/// 3. the editor's data folder, `…/raw-node-editor/models` (shared with
-///    the AI selection models);
-/// 4. an earlier denoiser's data folder, `…/Denoiser/models`, so the models
-///    already installed for it are shared.
+/// 3. the editor's data folder, `…/aktis/models` (shared with
+///    the AI selection models).
 #[must_use]
 pub fn search_dirs(os: Os, exe: Option<&Path>, env: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
@@ -82,9 +80,6 @@ pub fn search_dirs(os: Os, exe: Option<&Path>, env: impl Fn(&str) -> Option<OsSt
         dirs.extend(exe.ancestors().skip(1).take(4).map(|d| d.join("models")));
     }
     if let Some(d) = platform::data_dir(os, platform::APP_DIR, &env) {
-        dirs.push(d.join("models"));
-    }
-    if let Some(d) = platform::roaming_data_dir(os, "Denoiser", &env) {
         dirs.push(d.join("models"));
     }
     dirs
@@ -133,21 +128,20 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn folders_are_searched_from_the_variable_to_earlier_denoiser() {
+    fn folders_are_searched_from_the_variable_to_the_data_folder() {
         let env = |k: &str| match k {
             MODELS_ENV => Some(OsString::from("/opt/m/scunet_color_real_448.onnx")),
             "HOME" => Some(OsString::from("/home/u")),
             _ => None,
         };
-        let dirs = search_dirs(Os::Linux, Some(Path::new("/w/target/release/rne")), env);
+        let dirs = search_dirs(Os::Linux, Some(Path::new("/w/target/release/aktis-cli")), env);
         let expected: Vec<PathBuf> = [
             "/opt/m",
             "/w/target/release/models",
             "/w/target/models",
             "/w/models",
             "/models",
-            "/home/u/.local/share/raw-node-editor/models",
-            "/home/u/.local/share/Denoiser/models",
+            "/home/u/.local/share/aktis/models",
         ]
         .iter()
         .map(PathBuf::from)
@@ -157,7 +151,7 @@ mod tests {
 
     #[test]
     fn models_come_from_the_first_folder_that_has_any() {
-        let root = std::env::temp_dir().join(format!("rne-models-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("aktis-models-{}", std::process::id()));
         let (a, b, c) = (root.join("a"), root.join("b"), root.join("c"));
         for d in [&a, &b, &c] {
             std::fs::create_dir_all(d).expect("temp folder");

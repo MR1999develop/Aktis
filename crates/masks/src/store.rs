@@ -88,7 +88,7 @@ const MAGIC: &[u8; 8] = b"RNEMASK1";
 /// Largest raster side accepted from disk; models work far below this.
 const MAX_SIDE: u32 = 8192;
 /// File name extension of stored rasters.
-const EXTENSION: &str = "rnemask";
+pub const RASTER_EXTENSION: &str = "aktismask";
 
 /// Rasters in a folder (one small file each), with an in-memory cache.
 #[derive(Debug)]
@@ -115,7 +115,7 @@ impl DiskRasters {
     }
 
     fn path(&self, key: &RasterKey) -> PathBuf {
-        self.dir.join(format!("{key}.{EXTENSION}"))
+        self.dir.join(format!("{key}.{RASTER_EXTENSION}"))
     }
 
     /// Stores a raster in memory and on disk. The file is written to a
@@ -208,7 +208,7 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rne-masks-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("aktis-masks-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         d
     }

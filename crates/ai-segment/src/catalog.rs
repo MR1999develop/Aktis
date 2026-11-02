@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn status_reports_missing_and_damaged_files() {
-        let dir = std::env::temp_dir().join(format!("rne-models-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-models-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("temp dir");
         let store = ModelStore::new(&dir);

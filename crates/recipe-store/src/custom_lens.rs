@@ -7,7 +7,7 @@ use crate::json::{self, Value};
 use crate::{DecodeError, MAX_TEXT_BYTES, codec};
 
 /// File extension of custom lenses.
-pub const CUSTOM_LENS_EXTENSION: &str = "rnelens";
+pub const CUSTOM_LENS_EXTENSION: &str = "aktislens";
 
 /// Version of the custom lens format written by this build.
 pub const CUSTOM_LENS_FORMAT: u32 = 1;

@@ -2,7 +2,7 @@
 //! on the GPU the pixels of its CPU reference, at its defaults and at
 //! pseudo-random settings.
 //!
-//! Without a GPU the test reports it and passes, unless `RNE_REQUIRE_GPU=1`.
+//! Without a GPU the test reports it and passes, unless `AKTIS_REQUIRE_GPU=1`.
 
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use tool_api::{GpuKernel, ParamKind, ToolRegistry};
 fn renderer() -> Option<GpuRenderer> {
     match GpuContext::new() {
         Ok(ctx) => Some(GpuRenderer::new(Arc::new(ctx))),
-        Err(e) if std::env::var_os("RNE_REQUIRE_GPU").is_some() => panic!("GPU required but unavailable: {e}"),
+        Err(e) if std::env::var_os("AKTIS_REQUIRE_GPU").is_some() => panic!("GPU required but unavailable: {e}"),
         Err(e) => {
             eprintln!("skipped: {e}");
             None

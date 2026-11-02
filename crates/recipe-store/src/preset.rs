@@ -14,10 +14,10 @@ use crate::json::{self, Value};
 use crate::{DecodeError, MAX_TEXT_BYTES, codec};
 
 /// Extension of a preset file (a style applied to the whole photo).
-pub const PRESET_EXTENSION: &str = "rnepreset";
+pub const PRESET_EXTENSION: &str = "aktispreset";
 
 /// Extension of a style brush file.
-pub const BRUSH_EXTENSION: &str = "rnebrush";
+pub const BRUSH_EXTENSION: &str = "aktisbrush";
 
 /// Version of the preset format written by this build; a newer one is refused.
 pub const PRESET_FORMAT: u32 = 1;

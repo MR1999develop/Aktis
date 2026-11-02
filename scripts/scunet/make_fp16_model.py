@@ -1,4 +1,4 @@
-"""Makes the half-precision (FP16) variant of a an earlier denoiser ONNX model.
+"""Makes the half-precision (FP16) variant of an AI denoise ONNX model.
 
 TensorRT for RTX (and TensorRT 11) only run a network in FP16 if the model
 itself is FP16 ("strongly typed"): unlike TensorRT 10 they no longer convert

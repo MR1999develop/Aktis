@@ -78,7 +78,7 @@ impl TaggingJob {
         let cancel = Arc::new(AtomicBool::new(false));
         let total = photos.len();
         let stop = Arc::clone(&cancel);
-        thread::Builder::new().name("rne-tagging".into()).spawn(move || {
+        thread::Builder::new().name("aktis-tagging".into()).spawn(move || {
             if let Err(message) = run(&photos, &stop, &tx, &notify) {
                 let _ = tx.send(Progress::Failed(message));
             }
@@ -198,7 +198,8 @@ fn vocabulary() -> Result<Vocabulary, String> {
 fn preview(path: &Path) -> Result<ImageF32, String> {
     let thumb = raw_io::read_thumbnail(path, PREVIEW_SIDE).map_err(|e| e.to_string())?;
     let lin = |v: u8| core_color::srgb_decode(f32::from(v) / 255.0);
-    let pixels: Vec<Rgba> = thumb.rgb.chunks_exact(3).map(|p| [lin(p[0]), lin(p[1]), lin(p[2]), 1.0]).collect();
+    let pixels: Vec<Rgba> =
+        thumb.rgb.as_chunks::<3>().0.iter().map(|p| [lin(p[0]), lin(p[1]), lin(p[2]), 1.0]).collect();
     ImageF32::from_pixels(thumb.width, thumb.height, WorkingSpace::LinearSrgb, pixels).map_err(|e| e.to_string())
 }
 

@@ -1,4 +1,4 @@
-//! SCUNet on ONNX Runtime, ported from an earlier denoiser's `engine` crate.
+//! SCUNet on ONNX Runtime.
 //!
 //! Two GPU back ends can be compiled in (the Windows build has both):
 //! * **TensorRT for RTX** (feature `nvrtx`): NVIDIA RTX 30xx and later; needs
@@ -24,7 +24,7 @@ use crate::models::{DEFAULT_TILE_PX, TILE_MARGIN_PX, fp16_variant, tile_px_for};
 use crate::tiling::{ModelError, TileModel, TilePlan};
 
 /// Environment variable choosing the device: `auto` (default), `rtx`, `directml` or `cpu`.
-pub const DEVICE_ENV: &str = "RNE_DENOISE_DEVICE";
+pub const DEVICE_ENV: &str = "AKTIS_DENOISE_DEVICE";
 
 /// Timed runs of each tile size in the automatic search; the fastest counts.
 const TIMED_PROBES: usize = 2;

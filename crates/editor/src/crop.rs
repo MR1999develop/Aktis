@@ -1,4 +1,4 @@
-//! The crop box being edited, as in a photo viewer: a rectangle of the
+//! The crop box being edited: a rectangle of the
 //! frame (normalised, `[x, y, w, h]`) moved by its inside and resized by
 //! eight handles, optionally held to an aspect ratio; and the aspect-ratio
 //! presets.
@@ -74,7 +74,7 @@ pub struct Aspect {
     pub ratio: Option<f32>,
 }
 
-/// The presets, in menu order (as a photo viewer's).
+/// The presets, in menu order.
 pub const ASPECTS: [Aspect; 9] = [
     Aspect { label: "Unconstrained", ratio: None },
     Aspect { label: "Original", ratio: Some(0.0) },

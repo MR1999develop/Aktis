@@ -7,7 +7,7 @@ How the editor keeps photos, as in Capture One's catalogs. Code:
 
 ## Catalogs
 
-- A catalog is a folder `Name.rnecatalog` holding its database
+- A catalog is a folder `Name.aktiscatalog` holding its database
   `catalog.sqlite`, so it can be moved or copied whole.
 - File ▸ New Catalog… (Ctrl+N) makes one in the catalogs folder
   (Preferences ▸ Catalogs; by default `Catalogs` in the editor's data
@@ -19,7 +19,7 @@ How the editor keeps photos, as in Capture One's catalogs. Code:
   give the photos imported into `Default` a catalog of their own. The copy
   is made by SQLite (`VACUUM INTO`), consistent while the catalog is open.
 - At start the catalog open when the editor was closed opens again. The first
-  time, `Default.rnecatalog` is made and takes over the single catalog of
+  time, `Default.aktiscatalog` is made and takes over the single catalog of
   earlier versions (ratings, keywords, edits; every photo it knew counts as
   imported).
 - Saving: ratings, labels, keywords, albums and the Trash are written at once.
@@ -34,6 +34,8 @@ How the editor keeps photos, as in Capture One's catalogs. Code:
   keywords and selection belong to the photo, so they are shared by its
   variants (`Catalog::multi_variants`, `Catalog::variant_preview`,
   `editor::library::strip_cards`).
+- The open photo's card shows each change as soon as the viewer has
+  rendered it (not while a control is dragged), before the edit is saved.
 - Deleting a variant (its card's menu ▸ Delete Variant N…, or Delete over
   the filmstrip while the open photo has several) removes only that
   variant, after a confirmation: the photo and its other variants stay,

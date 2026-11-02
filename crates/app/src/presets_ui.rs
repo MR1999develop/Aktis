@@ -181,7 +181,7 @@ impl PresetsUi {
         let draft = self.save.as_mut()?;
         let t = Tokens::of(ctx.theme());
         let mut choice = None;
-        dialog(ctx, "rne-save-preset", |ui| {
+        dialog(ctx, "aktis-save-preset", |ui| {
             let title = if draft.brush { "Save Style Brush" } else { "Save Preset" };
             ui.label(RichText::new(title).size(FONT[4]).strong());
             ui.add_space(SPACE[2]);

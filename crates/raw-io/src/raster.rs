@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn a_jpeg_reads_as_linear_rgb_marked_as_a_finished_picture() {
-        let dir = std::env::temp_dir().join(format!("rne-raster-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-raster-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("grey.jpg");
         let img = image::RgbImage::from_pixel(8, 4, image::Rgb([128, 128, 128]));

@@ -1,4 +1,4 @@
-//! Domain model of the RAW node editor.
+//! Domain model of Aktis.
 //!
 //! Pure data and rules, no I/O, no GPU, no UI. Everything that can change an
 //! image's edit is expressed here as a [`Recipe`]: a fixed development stage

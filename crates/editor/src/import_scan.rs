@@ -130,13 +130,13 @@ impl ScanJob {
         let queue = Arc::new(Queue::default());
         {
             let (tx, stop, reader, notify) = (tx.clone(), Arc::clone(&stop), Arc::clone(&reader), Arc::clone(&notify));
-            thread::Builder::new().name("rne-import-scan".into()).spawn(move || {
+            thread::Builder::new().name("aktis-import-scan".into()).spawn(move || {
                 scan(&*reader, &dir, subfolders, &stop, &tx, &*notify);
             })?;
         }
         {
             let queue = Arc::clone(&queue);
-            thread::Builder::new().name("rne-import-pictures".into()).spawn(move || {
+            thread::Builder::new().name("aktis-import-pictures".into()).spawn(move || {
                 pictures(&*reader, &queue, &tx, &*notify);
             })?;
         }

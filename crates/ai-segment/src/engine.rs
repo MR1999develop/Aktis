@@ -434,7 +434,7 @@ mod tests {
                 n if n.contains("selfie") => {
                     // Hair (class 1) in the top half of the square, background below.
                     let mut data = vec![0.0; 256 * 256 * 6];
-                    for (i, px) in data.chunks_exact_mut(6).enumerate() {
+                    for (i, px) in data.as_chunks_mut::<6>().0.iter_mut().enumerate() {
                         px[if i / 256 < 128 { 1 } else { 0 }] = 8.0;
                     }
                     vec![("Identity".to_owned(), Tensor { shape: vec![1, 256, 256, 6], data })]
@@ -470,7 +470,7 @@ mod tests {
     }
 
     fn store(name: &str) -> TempStore {
-        let dir = std::env::temp_dir().join(format!("rne-ai-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-ai-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
         let store = ModelStore::new(&dir);
@@ -526,7 +526,7 @@ mod tests {
 
     #[test]
     fn missing_model_files_are_reported_with_their_download() {
-        let dir = std::env::temp_dir().join(format!("rne-ai-empty-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-ai-empty-{}", std::process::id()));
         let seg = Segmenter::new(Arc::new(Fake::default()), ModelStore::new(&dir));
         let ai = AiMask { target: AiTarget::Subject, model: default_model(&AiTarget::Subject), raster: None };
         match seg.compute("img", &image(4, 4), Orientation::Normal, &ai) {

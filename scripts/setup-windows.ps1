@@ -1,4 +1,4 @@
-# Installs what building RawNodeEditor needs on a new Windows PC, with winget:
+# Installs what building Aktis needs on a new Windows PC, with winget:
 #   - Git,
 #   - Visual Studio 2022 Build Tools with the C++ workload (MSVC linker and
 #     Windows SDK, needed by Rust on Windows),

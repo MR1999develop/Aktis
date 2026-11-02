@@ -70,7 +70,7 @@ pub fn srgb_profile() -> Vec<u8> {
     let curve = srgb_curve();
     // (signature, data); the three TRC tags share one data block.
     let tags: Vec<(&[u8; 4], Vec<u8>)> = vec![
-        (b"desc", text_description("sRGB (RAW node editor)")),
+        (b"desc", text_description("sRGB (Aktis)")),
         (b"cprt", text("No copyright, use freely")),
         (b"wtpt", xyz_tag(D50)),
         (b"rXYZ", xyz_tag(RED)),

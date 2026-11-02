@@ -103,7 +103,7 @@ impl ExportDialog {
         let mut request = None;
         let max_height = (ctx.content_rect().height() - 180.0).max(240.0);
         let n = self.photos.len();
-        dialog_with_width(ctx, "rne-export", WIDTH, |ui| {
+        dialog_with_width(ctx, "aktis-export", WIDTH, |ui| {
             let title = match self.photos.as_slice() {
                 [one] => format!("Export {}", file_name(one)),
                 _ => format!("Export {n} selected photos"),

@@ -32,7 +32,9 @@ fn scene_luminance(image: &ImageF32) -> Vec<f32> {
 /// sRGB-encoded luminance of 8-bit sRGB pixels.
 fn picture_luminance(rgb: &[u8]) -> Vec<f32> {
     const W: [f32; 3] = [0.2126, 0.7152, 0.0722];
-    rgb.chunks_exact(3)
+    rgb.as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| {
             let y: f32 = c.iter().zip(W).map(|(v, w)| w * core_color::srgb_decode(f32::from(*v) / 255.0)).sum();
             core_color::srgb_encode(y)

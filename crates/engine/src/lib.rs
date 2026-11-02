@@ -388,7 +388,7 @@ pub fn downscale_rgb8(image: &Rgb8Image, max_side: u32) -> Rgb8Image {
         return image.clone();
     }
     let src: Vec<[f32; 3]> =
-        image.pixels.chunks_exact(3).map(|p| [f32::from(p[0]), f32::from(p[1]), f32::from(p[2])]).collect();
+        image.pixels.as_chunks::<3>().0.iter().map(|p| [f32::from(p[0]), f32::from(p[1]), f32::from(p[2])]).collect();
     let out = render_cpu::resize::shrink(&src, w, h, ow, oh);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a rounded mean of bytes is a byte
     let pixels = out.iter().flat_map(|p| p.map(|v| v.round().clamp(0.0, 255.0) as u8)).collect();
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn export_never_overwrites_and_reports_the_name_used() {
-        let dir = std::env::temp_dir().join(format!("rne-engine-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-engine-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let wanted = dir.join("photo.jpg");
         let first = export_jpeg(&ramp(8, 4), Orientation::Normal, 90, &wanted).unwrap();

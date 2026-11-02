@@ -4,19 +4,19 @@ use std::path::PathBuf;
 
 pub const USAGE: &str = "\
 Usage:
-  rne develop <file> [-o <out.jpg>] [--exposure <stops>] [--denoise <grain %>]
+  aktis-cli develop <file> [-o <out.jpg>] [--exposure <stops>] [--denoise <grain %>]
               [--denoise-color <colour %>] [--quality <1-100>] [--cpu]
               [--profile <name>] [--lens <name>] [--lens-zoom <factor>] [--no-lens] [selection]
-  rne mask <file> <selection> [-o <overlay.jpg>] [--mask-out <mask.jpg>]
-  rne info <file>
-  rne lenses [<words>...]
-  rne profiles <file>
-  rne models [--verify]
-  rne models --download <what>... [--yes]
-  rne gpu
-  rne tag <files...> [--model <dir>] --keywords <file> [--template <text>] [--min <0-1>]
+  aktis-cli mask <file> <selection> [-o <overlay.jpg>] [--mask-out <mask.jpg>]
+  aktis-cli info <file>
+  aktis-cli lenses [<words>...]
+  aktis-cli profiles <file>
+  aktis-cli models [--verify]
+  aktis-cli models --download <what>... [--yes]
+  aktis-cli gpu
+  aktis-cli tag <files...> [--model <dir>] --keywords <file> [--template <text>] [--min <0-1>]
           [--top <n>] [--search <text>] [--quantized]
-  rne help
+  aktis-cli help
 
 develop   Develops a RAW file to an sRGB JPEG. Without -o the JPEG goes next to
           the RAW file; an existing file is never overwritten. With a
@@ -25,12 +25,12 @@ develop   Develops a RAW file to an sRGB JPEG. Without -o the JPEG goes next to
           how much of the grain to remove, 0-100 (80 is the recommended
           value); --denoise-color sets how much of the colour blotches to
           remove, 0-100 (default 100). The model is looked for in
-          RNE_DENOISE_MODELS, then in a models folder near rne.
+          AKTIS_DENOISE_MODELS, then in a models folder near aktis-cli.
           Lens corrections (lensfun) are applied when camera and lens are known.
-          --profile    camera profile by name (see `rne profiles`); default: the
+          --profile    camera profile by name (see `aktis-cli profiles`); default: the
                        camera's built-in matrices
           --lens       lens by its database name, when the file does not say it
-                       or says it wrongly (see `rne lenses`)
+                       or says it wrongly (see `aktis-cli lenses`)
           --lens-zoom  magnification after correction (default: no empty borders)
           --no-lens    no lens corrections
 info      Shows camera, lens, shooting data and the corrections that would apply.
@@ -45,7 +45,7 @@ models    Lists what the AI tools download (ONNX Runtime and the models), where
           The AI commands also offer the download the first time they need it.
 gpu       Shows the GPU that would be used.
 tag       Suggests keywords for RAW or JPEG files with a local AI model. --model is
-          a SigLIP 2 ONNX folder (default: the one `rne models` installs),
+          a SigLIP 2 ONNX folder (default: the one `aktis-cli models` installs),
           --keywords a keyword list in Lightroom's text format (one per line,
           tabs for levels, {synonyms}). --template puts each
           keyword in a sentence, e.g. \"una foto di {}\". --search ranks the files by
@@ -75,8 +75,8 @@ selection, unless --subtract or --intersect comes before it:
   --feather <percent>  soften the edge (0-10 % of the long side)
   --no-refine          do not snap the edges to the photo
 
-AI models go in the folder shown by `rne models` (or $RNE_MODELS_DIR); the
-ONNX Runtime library is found through $ORT_DYLIB_PATH, next to rne, or in
+AI models go in the folder shown by `aktis-cli models` (or $AKTIS_MODELS_DIR); the
+ONNX Runtime library is found through $ORT_DYLIB_PATH, next to aktis-cli, or in
 that folder.";
 
 /// What to do.
@@ -493,7 +493,7 @@ fn parse_mask(mut it: impl Iterator<Item = String>) -> Result<MaskArgs, String> 
     Ok(a)
 }
 
-/// Recommended amounts of the AI denoise node (an earlier denoiser's "Medium").
+/// Recommended amounts of the AI denoise node (a medium strength).
 const DEFAULT_DENOISE_GRAIN: f32 = 80.0;
 const DEFAULT_DENOISE_COLOR: f32 = 100.0;
 

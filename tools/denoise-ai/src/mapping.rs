@@ -5,11 +5,11 @@
 //! curve, keeping the working space's primaries (Rec.2020: no negative values
 //! from out-of-gamut colours). The network sees values clamped to 0..=1.
 //!
-//! Its correction is then applied in the encoded domain, split as in an earlier
-//! denoiser into a luma part (grain) and a colour part (colour blotches),
+//! Its correction is then applied in the encoded domain, split
+//! into a luma part (grain) and a colour part (colour blotches),
 //! each weighted by its own amount, and the result is decoded back to linear
-//! light. Two differences from an earlier denoiser, both because RAW data reach the
-//! node unclipped:
+//! light. Two differences from applying it to a finished photo, both
+//! because RAW data reach the node unclipped:
 //!
 //! * values below 0 (noise below black) are denoised like the rest: the
 //!   network sees them as 0, and its output replaces them. Tried on simulated

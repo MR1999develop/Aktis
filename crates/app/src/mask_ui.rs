@@ -274,7 +274,7 @@ impl MaskUi {
     fn settings_popup(&mut self, ctx: &egui::Context) {
         let Some(at) = self.settings_at else { return };
         let t = Tokens::of(ctx.theme());
-        let shown = egui::Area::new(Id::unique("rne-brush-settings"))
+        let shown = egui::Area::new(Id::unique("aktis-brush-settings"))
             .order(Order::Foreground)
             .fixed_pos(at)
             .show(ctx, |ui| {
@@ -541,7 +541,7 @@ impl MaskUi {
                     })
                     .collect();
                 let img = egui::ColorImage::new([w as usize, h as usize], pixels);
-                (key, ui.ctx().load_texture("rne-mask-overlay", img, egui::TextureOptions::LINEAR))
+                (key, ui.ctx().load_texture("aktis-mask-overlay", img, egui::TextureOptions::LINEAR))
             });
         }
         if let Some((_, tex)) = &self.overlay {
@@ -564,7 +564,7 @@ impl MaskUi {
         edits: &mut Vec<MaskEdit>,
     ) {
         let t = Tokens::of(ctx.theme());
-        egui::Area::new(Id::unique("rne-mask-options"))
+        egui::Area::new(Id::unique("aktis-mask-options"))
             .order(Order::Foreground)
             .fixed_pos(egui::pos2(viewer.center().x, viewer.top() + SPACE[1]))
             .pivot(Align2::CENTER_TOP)
@@ -713,7 +713,7 @@ impl MaskUi {
     /// while one is armed.
     fn style_brush_picker(&mut self, ui: &mut egui::Ui, t: &Tokens, brushes: &[String], edits: &mut Vec<MaskEdit>) {
         let current = self.armed.as_ref().map_or("Style brush", |a| a.name.as_str());
-        egui::ComboBox::from_id_salt("rne-style-brush")
+        egui::ComboBox::from_id_salt("aktis-style-brush")
             .selected_text(current)
             .width(150.0)
             .show_ui(ui, |ui| {

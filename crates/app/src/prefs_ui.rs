@@ -28,7 +28,7 @@ impl Preferences {
         let Some(draft) = &mut self.draft else { return false };
         let t = Tokens::of(ctx.theme());
         let mut choice = None;
-        dialog(ctx, "rne-preferences", |ui| {
+        dialog(ctx, "aktis-preferences", |ui| {
             ui.label(RichText::new("Preferences").size(FONT[4]).strong());
             ui.add_space(SPACE[2]);
 
@@ -133,7 +133,7 @@ impl Preferences {
             });
             ui.label(
                 RichText::new(
-                    "Presets (.rnepreset) and style brushes (.rnebrush) are files in this folder; sub-folders are groups.",
+                    "Presets (.aktispreset) and style brushes (.aktisbrush) are files in this folder; sub-folders are groups.",
                 )
                 .size(FONT[0])
                 .color(t.text_weak),

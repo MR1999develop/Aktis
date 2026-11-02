@@ -1,6 +1,6 @@
 //! The GPU engine must give the CPU reference's pixels.
 //!
-//! Without a GPU the test reports it and passes, unless `RNE_REQUIRE_GPU=1`
+//! Without a GPU the test reports it and passes, unless `AKTIS_REQUIRE_GPU=1`
 //! is set (as on machines that must test the GPU path).
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ fn renderer() -> Option<GpuRenderer> {
             println!("GPU: {}", ctx.adapter_name());
             Some(GpuRenderer::new(Arc::new(ctx)))
         }
-        Err(e) if std::env::var_os("RNE_REQUIRE_GPU").is_some() => panic!("GPU required but unavailable: {e}"),
+        Err(e) if std::env::var_os("AKTIS_REQUIRE_GPU").is_some() => panic!("GPU required but unavailable: {e}"),
         Err(e) => {
             eprintln!("skipped: {e}");
             None

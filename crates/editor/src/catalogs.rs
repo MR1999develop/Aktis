@@ -1,4 +1,4 @@
-//! Catalogs on disk: each catalog is a folder ("Travel.rnecatalog") holding
+//! Catalogs on disk: each catalog is a folder ("Travel.aktiscatalog") holding
 //! its database, so it can be moved or copied whole, as Capture One's
 //! catalogs. Photos are imported into a catalog by reference (the RAW files
 //! stay where they are); this module finds catalogs, makes new ones, brings
@@ -26,13 +26,13 @@ pub fn database(catalog: &Path) -> PathBuf {
     catalog.join(FILE_NAME)
 }
 
-/// The catalog's name, for titles ("Travel" for "…/Travel.rnecatalog").
+/// The catalog's name, for titles ("Travel" for "…/Travel.aktiscatalog").
 #[must_use]
 pub fn name(catalog: &Path) -> String {
     catalog.file_stem().map_or_else(|| catalog.display().to_string(), |s| s.to_string_lossy().into_owned())
 }
 
-/// `true` when `path` is a catalog: a folder named `*.rnecatalog`, or a
+/// `true` when `path` is a catalog: a folder named `*.aktiscatalog`, or a
 /// folder that holds a catalog database.
 #[must_use]
 pub fn is_catalog(path: &Path) -> bool {
@@ -103,7 +103,7 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rne-catalogs-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-catalogs-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -113,7 +113,7 @@ mod tests {
     fn new_catalogs_are_named_folders_and_never_replace_one() {
         let dir = temp("new");
         let travel = new_catalog_path(&dir, " Travel ").unwrap();
-        assert_eq!(travel, dir.join("Travel.rnecatalog"));
+        assert_eq!(travel, dir.join("Travel.aktiscatalog"));
         assert_eq!(name(&travel), "Travel");
         assert!(!is_catalog(&travel), "not made yet");
         std::fs::create_dir_all(&travel).unwrap();

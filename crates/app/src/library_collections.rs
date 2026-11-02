@@ -112,20 +112,24 @@ impl Library {
         if count_row(ui, t, on(&Collection::All), "All Images", self.counts.all).clicked() {
             chosen = Some(Collection::All);
         }
-        egui::CollapsingHeader::new("Recent Imports").id_salt("rne-recent-imports").default_open(true).show(ui, |ui| {
-            if self.imports.is_empty() {
-                ui.label(RichText::new("No imports yet").size(FONT[0]).color(t.text_weak));
-            }
-            for batch in &self.imports {
-                let c = Collection::Import(batch.number);
-                let photos = if batch.count == 1 { "1 photo".to_owned() } else { format!("{} photos", batch.count) };
-                let r = count_row(ui, t, on(&c), &batch.when_text(), batch.count)
-                    .on_hover_text(format!("Import {}: {photos}", batch.number));
-                if r.clicked() {
-                    chosen = Some(c);
+        egui::CollapsingHeader::new("Recent Imports").id_salt("aktis-recent-imports").default_open(true).show(
+            ui,
+            |ui| {
+                if self.imports.is_empty() {
+                    ui.label(RichText::new("No imports yet").size(FONT[0]).color(t.text_weak));
                 }
-            }
-        });
+                for batch in &self.imports {
+                    let c = Collection::Import(batch.number);
+                    let photos =
+                        if batch.count == 1 { "1 photo".to_owned() } else { format!("{} photos", batch.count) };
+                    let r = count_row(ui, t, on(&c), &batch.when_text(), batch.count)
+                        .on_hover_text(format!("Import {}: {photos}", batch.number));
+                    if r.clicked() {
+                        chosen = Some(c);
+                    }
+                }
+            },
+        );
         let r = count_row(ui, t, on(&Collection::RecentEdits), "Recent Edits", self.counts.edits)
             .on_hover_text(format!("Photos edited in the last {} days", catalog::RECENT_EDIT_DAYS));
         if r.clicked() {
@@ -309,7 +313,8 @@ impl Library {
         let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) else { return };
         let n = self.strip.targets(&dragged.0).len();
         let text = if n == 1 { "1 photo".to_owned() } else { format!("{n} photos") };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("rne-drag-photos")));
+        let painter =
+            ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("aktis-drag-photos")));
         let galley = painter.layout_no_wrap(text, egui::FontId::proportional(FONT[1]), t.text_strong);
         let rect = Rect::from_min_size(pos + vec2(14.0, 10.0), galley.size() + vec2(12.0, 6.0));
         painter.rect_filled(rect, egui::CornerRadius::same(4), t.bg_overlay);
@@ -449,7 +454,7 @@ impl Library {
                 (None, Some(_)) => "New Sub-album",
                 (None, None) => "New Album",
             };
-            dialog(ctx, "rne-album", |ui| {
+            dialog(ctx, "aktis-album", |ui| {
                 ui.label(RichText::new(title).size(FONT[4]).strong());
                 ui.add_space(SPACE[1]);
                 if !d.photos.is_empty() {
@@ -491,7 +496,7 @@ impl Library {
         }
         if let Some(album) = self.delete_album.clone() {
             let mut choice = None;
-            dialog(ctx, "rne-delete-album", |ui| {
+            dialog(ctx, "aktis-delete-album", |ui| {
                 ui.label(RichText::new(format!("Delete \u{201c}{}\u{201d}?", album.name)).size(FONT[4]).strong());
                 ui.add_space(SPACE[1]);
                 ui.label(RichText::new("Its photos stay in the catalog.").color(t.text_weak));
@@ -517,7 +522,7 @@ impl Library {
         if self.confirm_empty_trash {
             let n = self.counts.trash;
             let mut choice = None;
-            dialog(ctx, "rne-empty-trash", |ui| {
+            dialog(ctx, "aktis-empty-trash", |ui| {
                 let photos = if n == 1 { "1 photo".to_owned() } else { format!("{n} photos") };
                 ui.label(RichText::new(format!("Remove {photos} from the catalog?")).size(FONT[4]).strong());
                 ui.add_space(SPACE[1]);

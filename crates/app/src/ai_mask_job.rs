@@ -56,7 +56,7 @@ impl AiMaskJob {
         notify: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self> {
         let (tx, rx) = channel();
-        thread::Builder::new().name("rne-ai-mask".into()).spawn(move || {
+        thread::Builder::new().name("aktis-ai-mask".into()).spawn(move || {
             let result = run(&photo, &mut def).map(|()| def);
             let _ = tx.send(result);
             notify();

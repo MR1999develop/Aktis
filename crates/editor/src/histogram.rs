@@ -55,7 +55,7 @@ impl Waveform {
         if width == 0 {
             return w;
         }
-        for (i, p) in rgb.chunks_exact(3).enumerate() {
+        for (i, p) in rgb.as_chunks::<3>().0.iter().enumerate() {
             let column = (i % width) * WAVEFORM_COLUMNS / width;
             let at = |v: u32| (v as usize * WAVEFORM_LEVELS / 256) * WAVEFORM_COLUMNS + column;
             let (r, g, b) = (u32::from(p[0]), u32::from(p[1]), u32::from(p[2]));
@@ -107,7 +107,7 @@ impl Histogram {
     #[must_use]
     pub fn of_rgb8(rgb: &[u8]) -> Self {
         let mut h = Self::default();
-        for p in rgb.chunks_exact(3) {
+        for p in rgb.as_chunks::<3>().0 {
             let (r, g, b) = (p[0], p[1], p[2]);
             h.red[usize::from(r)] += 1;
             h.green[usize::from(g)] += 1;

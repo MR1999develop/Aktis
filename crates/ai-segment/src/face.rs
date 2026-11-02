@@ -152,7 +152,7 @@ pub(crate) fn mesh(model: &mut dyn Model, image: &Planes, sq: Square) -> Result<
         .find(|t| t.data.len() == MESH_POINTS * 3)
         .ok_or_else(|| AiError::UnexpectedOutput("no 478-point face mesh in the output".to_owned()))?;
     let side = MESH_SIDE as f32;
-    Ok(pts.data.chunks_exact(3).map(|p| sq.to_image(p[0] / side, p[1] / side)).collect())
+    Ok(pts.data.as_chunks::<3>().0.iter().map(|p| sq.to_image(p[0] / side, p[1] / side)).collect())
 }
 
 /// Mesh point indices of each facial feature's outline, in order around it.

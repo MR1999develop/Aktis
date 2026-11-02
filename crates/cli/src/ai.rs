@@ -18,12 +18,12 @@ use crate::args::{Op, Selection, Step};
 /// Smallest detector confidence accepted from the command line.
 const MIN_SCORE: f32 = 0.35;
 
-/// Folder for models and caches: `$RNE_DATA_DIR`, else the system's data folder.
+/// Folder for models and caches: `$AKTIS_DATA_DIR`, else the system's data folder.
 pub fn data_dir() -> PathBuf {
     ai_models::data_dir()
 }
 
-/// Folder of the model files: `$RNE_MODELS_DIR`, else `models` in the data folder.
+/// Folder of the model files: `$AKTIS_MODELS_DIR`, else `models` in the data folder.
 pub fn models_dir() -> PathBuf {
     ai_models::models_dir()
 }
@@ -32,7 +32,7 @@ pub fn models_dir() -> PathBuf {
 fn runtime() -> Result<OnnxRuntime, BoxError> {
     let library = ai_segment::find_library(&[models_dir(), data_dir()]).ok_or_else(|| {
         format!(
-            "ONNX Runtime ({}) not found: set ORT_DYLIB_PATH, or put it next to rne or in {}",
+            "ONNX Runtime ({}) not found: set ORT_DYLIB_PATH, or put it next to aktis-cli or in {}",
             ai_segment::library_name(),
             models_dir().display()
         )
@@ -40,7 +40,7 @@ fn runtime() -> Result<OnnxRuntime, BoxError> {
     Ok(OnnxRuntime::load(&library)?)
 }
 
-/// What `rne models` prints: the runtime in use, then every pack.
+/// What `aktis-cli models` prints: the runtime in use, then every pack.
 pub fn list_models(verify: bool) -> Result<(), BoxError> {
     let runtime_line = match runtime() {
         Ok(rt) => {
@@ -96,13 +96,13 @@ impl Ai {
                 Step::Detect(class) => {
                     let started = Instant::now();
                     let found = self.segmenter.detect(image, orientation, &[*class], MIN_SCORE)?;
-                    eprintln!("rne: found {} in {:.2}s", describe(&found), started.elapsed().as_secs_f32());
+                    eprintln!("aktis-cli: found {} in {:.2}s", describe(&found), started.elapsed().as_secs_f32());
                     components.extend(ai_segment::from_detections(&found, op));
                 }
                 Step::Parts(parts) => {
                     if people.is_none() {
                         let found = self.segmenter.detect(image, orientation, &[ai_segment::PERSON], MIN_SCORE)?;
-                        eprintln!("rne: found {}", describe(&found));
+                        eprintln!("aktis-cli: found {}", describe(&found));
                         people = Some(found);
                     }
                     for (n, person) in people.iter().flatten().enumerate() {
@@ -148,7 +148,7 @@ impl Ai {
         let failures =
             ai_segment::compute_pending(&self.segmenter, image_id, image, orientation, &mut def, &self.rasters);
         for (index, e) in &failures {
-            eprintln!("rne: warning: '{}' could not be computed: {e}", def.components[*index].label);
+            eprintln!("aktis-cli: warning: '{}' could not be computed: {e}", def.components[*index].label);
         }
         let ai_parts = def.components.iter().filter(|c| matches!(c.source, core_model::MaskSource::Ai(_))).count();
         if let Some((_, first)) = failures.first()
@@ -157,7 +157,7 @@ impl Ai {
             return Err(first.clone().into());
         }
         eprintln!(
-            "rne: AI masks ready in {:.2}s ({})",
+            "aktis-cli: AI masks ready in {:.2}s ({})",
             started.elapsed().as_secs_f32(),
             self.segmenter.devices().join(", ")
         );

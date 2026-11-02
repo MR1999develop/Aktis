@@ -111,7 +111,7 @@ impl Scopes {
         };
         match &mut self.texture {
             Some(t) => t.set(img, TextureOptions::LINEAR),
-            None => self.texture = Some(ctx.load_texture("rne-scope", img, TextureOptions::LINEAR)),
+            None => self.texture = Some(ctx.load_texture("aktis-scope", img, TextureOptions::LINEAR)),
         }
     }
 

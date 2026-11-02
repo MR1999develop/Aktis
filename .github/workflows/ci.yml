@@ -72,7 +72,7 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked 2>&1 | tee -a ci-out/log.txt
         env:
-          RNE_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
+          AKTIS_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
       - name: Publish results
         if: always()
         run: |
@@ -100,7 +100,7 @@ jobs:
           ls -l testdata | tee ci-out/log.txt
       - name: Decode and develop every sample
         run: cargo test -p raw-io --release --locked -- --ignored --nocapture 2>&1 | tee -a ci-out/log.txt
-      - name: rne gpu / info / develop
+      - name: aktis-cli gpu / info / develop
         run: |
           {
             cargo run -q --release --locked -p cli -- gpu
@@ -114,7 +114,7 @@ jobs:
         run: cargo test -p app --release --locked --test screenshot -- --ignored --nocapture 2>&1 | tee -a ci-out/log.txt
         env:
           # Tests run in the crate's folder: give an absolute path.
-          RNE_SCREENSHOT_DIR: ${{ github.workspace }}/ci-out
+          AKTIS_SCREENSHOT_DIR: ${{ github.workspace }}/ci-out
       - name: Publish results
         if: always()
         run: bash .github/scripts/publish-results.sh real-raw ${{ job.status }}
@@ -152,21 +152,21 @@ jobs:
           curl -fsSL --retry 3 -o testdata/tag/nikon-d3s.NEF https://raw.githubusercontent.com/letmaik/rawpy/main/test/iss030e122639.NEF \
             || echo "missing sample NEF"
           ls -l testdata/tag | tee -a ci-out/log.txt
-      - name: rne tag
+      - name: aktis-cli tag
         run: |
           cargo build -q --release --locked -p cli 2>&1 | tee -a ci-out/log.txt
-          rne=target/release/rne
+          cli=target/release/aktis-cli
           kw=crates/tagging/testdata/keywords-it.txt
           {
             echo "== template {} =="
-            $rne tag testdata/tag/* --model models/siglip2 --keywords $kw | tee tags.txt
+            $cli tag testdata/tag/* --model models/siglip2 --keywords $kw | tee tags.txt
             echo "== template 'una foto di {}' =="
-            $rne tag testdata/tag/* --model models/siglip2 --keywords $kw --template "una foto di {}"
+            $cli tag testdata/tag/* --model models/siglip2 --keywords $kw --template "una foto di {}"
             echo "== quantized, template 'una foto di {}' =="
-            $rne tag testdata/tag/* --model models/siglip2 --keywords $kw --template "una foto di {}" --quantized
+            $cli tag testdata/tag/* --model models/siglip2 --keywords $kw --template "una foto di {}" --quantized
             echo "== search =="
-            $rne tag testdata/tag/*.jpg --model models/siglip2 --search "un animale con il muso colorato"
-            $rne tag testdata/tag/* --model models/siglip2 --search "la Terra fotografata dallo spazio"
+            $cli tag testdata/tag/*.jpg --model models/siglip2 --search "un animale con il muso colorato"
+            $cli tag testdata/tag/* --model models/siglip2 --search "la Terra fotografata dallo spazio"
           } 2>&1 | tee -a ci-out/log.txt
       - name: Expected keywords
         # The first suggestion of each sample must name what it shows.
@@ -213,11 +213,11 @@ jobs:
       - name: The network removes the noise (tool test)
         run: cargo test -p tool-denoise-ai --release --locked -- --ignored --nocapture 2>&1 | tee -a ci-out/log.txt
         env:
-          RNE_DENOISE_MODELS: ${{ github.workspace }}/models
-          RNE_DENOISE_DEVICE: cpu
+          AKTIS_DENOISE_MODELS: ${{ github.workspace }}/models
+          AKTIS_DENOISE_DEVICE: cpu
       - name: Software Vulkan driver
         run: sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers
-      - name: rne develop --denoise on a real RAW file
+      - name: aktis-cli develop --denoise on a real RAW file
         run: |
           curl -fsSL -o testdata/nikon-d3s.NEF https://raw.githubusercontent.com/letmaik/rawpy/main/test/iss030e122639.NEF
           {
@@ -225,7 +225,7 @@ jobs:
             cargo run -q --release --locked -p cli -- develop testdata/nikon-d3s.NEF --exposure 0.5 --denoise 80 -o ci-out/nikon-d3s-denoise.jpg
           } 2>&1 | tee -a ci-out/log.txt
         env:
-          RNE_DENOISE_DEVICE: cpu
+          AKTIS_DENOISE_DEVICE: cpu
       - name: Publish results
         if: always()
         run: bash .github/scripts/publish-results.sh ai-denoise ${{ job.status }}
@@ -258,8 +258,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ORT_VERSION: 1.24.1
-      RNE_MODELS_DIR: ${{ github.workspace }}/models
-      RNE_DATA_DIR: ${{ github.workspace }}/rne-data
+      AKTIS_MODELS_DIR: ${{ github.workspace }}/models
+      AKTIS_DATA_DIR: ${{ github.workspace }}/aktis-data
     steps:
       - uses: actions/checkout@v5
         with:
@@ -281,10 +281,10 @@ jobs:
       - name: Models (download what the catalog lists, then verify the checksums)
         run: |
           mkdir -p models
-          for url in $(target/release/rne models | grep -o 'https://[^ ]*\.onnx'); do
+          for url in $(target/release/aktis-cli models | grep -o 'https://[^ ]*\.onnx'); do
             curl -fsSL -o "models/$(basename "$url")" "$url"
           done
-          target/release/rne models --verify 2>&1 | tee -a ci-out/log.txt
+          target/release/aktis-cli models --verify 2>&1 | tee -a ci-out/log.txt
       - name: Test photos
         # Public test images of OpenCV, Segment Anything and YOLOX (not committed).
         run: |
@@ -298,22 +298,22 @@ jobs:
           get truck https://raw.githubusercontent.com/facebookresearch/segment-anything/main/notebooks/images/truck.jpg
           get dog https://raw.githubusercontent.com/Megvii-BaseDetection/YOLOX/main/assets/dog.jpg
           ls -l testdata | tee -a ci-out/log.txt
-      - name: rne mask / develop with a selection
+      - name: aktis-cli mask / develop with a selection
         run: |
-          rne() {
-            echo "\$ rne $*"
-            if ! target/release/rne "$@"; then echo "FAILED: rne $*"; touch ci-out/FAILED; fi
+          cli() {
+            echo "\$ aktis-cli $*"
+            if ! target/release/aktis-cli "$@"; then echo "FAILED: aktis-cli $*"; touch ci-out/FAILED; fi
             echo
           }
           {
-            rne mask testdata/people.ppm --people -o ci-out/people-people.jpg
-            rne mask testdata/people.ppm --subject -o ci-out/people-subject.jpg --mask-out ci-out/people-subject-mask.jpg
-            rne mask testdata/truck.ppm --point 0.278,0.3125 -o ci-out/truck-click.jpg
-            rne mask testdata/truck.ppm --box 0.236,0.5,0.389,0.729 -o ci-out/truck-box.jpg
-            rne mask testdata/truck.ppm --subject --invert --feather 1 -o ci-out/truck-background.jpg
-            rne mask testdata/dog.ppm --detect dog --detect bicycle -o ci-out/dog-detect.jpg
-            rne mask testdata/nikon-d3s.NEF --subject -o ci-out/nef-subject.jpg
-            rne develop testdata/nikon-d3s.NEF --exposure 1.5 --subject -o ci-out/nef-subject-plus-1.5.jpg
+            cli mask testdata/people.ppm --people -o ci-out/people-people.jpg
+            cli mask testdata/people.ppm --subject -o ci-out/people-subject.jpg --mask-out ci-out/people-subject-mask.jpg
+            cli mask testdata/truck.ppm --point 0.278,0.3125 -o ci-out/truck-click.jpg
+            cli mask testdata/truck.ppm --box 0.236,0.5,0.389,0.729 -o ci-out/truck-box.jpg
+            cli mask testdata/truck.ppm --subject --invert --feather 1 -o ci-out/truck-background.jpg
+            cli mask testdata/dog.ppm --detect dog --detect bicycle -o ci-out/dog-detect.jpg
+            cli mask testdata/nikon-d3s.NEF --subject -o ci-out/nef-subject.jpg
+            cli develop testdata/nikon-d3s.NEF --exposure 1.5 --subject -o ci-out/nef-subject-plus-1.5.jpg
           } 2>&1 | tee -a ci-out/log.txt
           test ! -e ci-out/FAILED
       - name: Publish results

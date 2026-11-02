@@ -279,7 +279,13 @@ impl EditorApp {
         // Ctrl+Plus/Minus/0 zoom the photo, not the interface.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
 
-        let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, STORAGE_KEY)).unwrap_or_default();
+        let mut settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, STORAGE_KEY)).unwrap_or_default();
+        // Folders remembered under the editor's old name follow them to the new one.
+        for (old, new) in platform::legacy_dir_moves(platform::Os::current(), |k| std::env::var_os(k)) {
+            if !old.exists() && new.is_dir() {
+                settings.follow_moved_folder(&old, &new);
+            }
+        }
         ctx.set_theme(theme_preference(settings.theme));
 
         let mut toast = None;
@@ -392,6 +398,15 @@ impl EditorApp {
         app
     }
 
+    /// Shows problems found before the window opened (the first one, with
+    /// how many more).
+    pub fn report_startup_problems(&mut self, problems: &[String]) {
+        if let Some(first) = problems.first() {
+            let more = if problems.len() > 1 { format!(" (and {} more)", problems.len() - 1) } else { String::new() };
+            self.toast = Some(error_toast(format!("{first}{more}")));
+        }
+    }
+
     /// The window's state, for tests.
     #[must_use]
     pub fn status(&self) -> Status {
@@ -430,7 +445,7 @@ impl EditorApp {
 
     /// File ▸ Open Catalog…: a catalog folder chosen in the system window.
     fn pick_catalog(&mut self) {
-        let mut dialog = rfd::FileDialog::new().set_title("Open a catalog (a folder named *.rnecatalog)");
+        let mut dialog = rfd::FileDialog::new().set_title("Open a catalog (a folder named *.aktiscatalog)");
         if let Some(dir) = self.library.catalog_dir().parent().or(self.settings.catalogs_folder().as_deref()) {
             dialog = dialog.set_directory(dir);
         }
@@ -915,6 +930,13 @@ impl EditorApp {
                         ..crate::photo_texture::smooth()
                     };
                     self.texture = Some(PhotoTexture::new(ctx, "photo", &color, max_texture_side(ctx), options));
+                    // The filmstrip follows every change, not only the saved previews.
+                    if quality != Quality::Draft
+                        && let (Some(doc), Some(state)) = (&self.doc, &self.variant)
+                        && doc.generation() == generation
+                    {
+                        self.library.show_live_thumbnail(ctx, doc.path(), state.info.number, &image);
+                    }
                     self.shown = Some(image);
                     self.warning_texture = None;
                     self.plan.shown_at(generation, quality, max_side);
@@ -1722,7 +1744,7 @@ impl EditorApp {
         let Some((path, target)) = self.confirm_delete.clone() else { return };
         let t = Tokens::of(ctx.theme());
         let mut choice = None;
-        dialog(ctx, "rne-delete-variant", |ui| {
+        dialog(ctx, "aktis-delete-variant", |ui| {
             ui.label(RichText::new(format!("Delete {}?", target.name)).size(FONT[4]).strong());
             ui.add_space(SPACE[1]);
             ui.label(
@@ -1963,6 +1985,7 @@ impl EditorApp {
             ui.menu_button("Help", |ui| {
                 ui.label(format!("{APP_NAME} {VERSION}"));
                 ui.weak("Non-destructive RAW editor with nodes");
+                ui.weak("Copyright (C) 2026 MR \u{b7} GNU GPL version 3");
             });
         });
 
@@ -2322,7 +2345,8 @@ impl EditorApp {
                             match &mut self.loupe {
                                 Some(tex) => tex.set(img, TextureOptions::NEAREST),
                                 None => {
-                                    self.loupe = Some(ui.ctx().load_texture("rne-loupe", img, TextureOptions::NEAREST));
+                                    self.loupe =
+                                        Some(ui.ctx().load_texture("aktis-loupe", img, TextureOptions::NEAREST));
                                 }
                             }
                             if let Some(tex) = &self.loupe {
@@ -2554,7 +2578,7 @@ impl EditorApp {
         let t = Tokens::of(ctx.theme());
         let mut close = false;
         let mut action = None;
-        let shown = egui::Area::new(Id::unique("rne-toast"))
+        let shown = egui::Area::new(Id::unique("aktis-toast"))
             .anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -48.0))
             .order(Order::Foreground)
             .show(ctx, |ui| {
@@ -2696,7 +2720,7 @@ impl EditorApp {
                             ui.separator();
                             ui.add_space(SPACE[1]);
                         }
-                        ui.push_id(("rne-recent-node", id), |ui| {
+                        ui.push_id(("aktis-recent-node", id), |ui| {
                             inspector::settings(ui, doc, inspector::Context { selected: Some(id), ..cx }, edits);
                         });
                     }
@@ -3105,7 +3129,7 @@ impl EditorApp {
         let t = Tokens::of(ctx.theme());
         let mut choice = None;
         let exists = |n: &str| self.settings.workspaces.iter().any(|w| w.name.eq_ignore_ascii_case(n.trim()));
-        crate::dialog::dialog(ctx, "rne-save-workspace", |ui| {
+        crate::dialog::dialog(ctx, "aktis-save-workspace", |ui| {
             ui.label(RichText::new("Save Workspace").size(FONT[4]).strong());
             ui.add_space(SPACE[1]);
             ui.label(RichText::new("The sizes of the panels and the view choices, under a name.").color(t.text_weak));
@@ -3144,7 +3168,7 @@ impl EditorApp {
         let t = Tokens::of(ctx.theme());
         let mut choice = None;
         let replaced = self.custom_lenses.named(name).map(|c| c.name.clone());
-        crate::dialog::dialog(ctx, "rne-save-custom-lens", |ui| {
+        crate::dialog::dialog(ctx, "aktis-save-custom-lens", |ui| {
             ui.label(RichText::new("Save Custom Lens").size(FONT[4]).strong());
             ui.add_space(SPACE[1]);
             ui.label(
@@ -3201,7 +3225,7 @@ impl EditorApp {
         let Some(name) = self.delete_custom_lens.clone() else { return };
         let t = Tokens::of(ctx.theme());
         let mut choice = None;
-        crate::dialog::dialog(ctx, "rne-delete-custom-lens", |ui| {
+        crate::dialog::dialog(ctx, "aktis-delete-custom-lens", |ui| {
             ui.label(RichText::new(format!("Delete custom lens \u{201c}{name}\u{201d}?")).size(FONT[4]).strong());
             ui.add_space(SPACE[1]);
             ui.label(

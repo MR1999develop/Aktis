@@ -47,7 +47,7 @@ pub fn mask_store() -> Option<&'static masks::DiskRasters> {
     static STORE: OnceLock<Option<masks::DiskRasters>> = OnceLock::new();
     STORE
         .get_or_init(|| {
-            let dir = platform::editor_data_dir().unwrap_or_else(|| PathBuf::from(".rne")).join("masks");
+            let dir = platform::editor_data_dir().unwrap_or_else(|| PathBuf::from(".aktis")).join("masks");
             masks::DiskRasters::open(dir).ok()
         })
         .as_ref()
@@ -1019,7 +1019,7 @@ mod tests {
     #[test]
     fn exports_report_progress_and_their_files() {
         let worker = cpu_worker();
-        let dir = std::env::temp_dir().join(format!("rne-worker-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-worker-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = ImageF32::from_pixels(4, 2, WorkingSpace::LinearRec2020, vec![[0.5, 0.2, 0.1, 1.0]; 8]).unwrap();
         let photo = crate::export_job::ExportPhoto {

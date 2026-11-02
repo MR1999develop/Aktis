@@ -308,7 +308,12 @@ impl<'a, 'z> Machine<'a, 'z> {
         if !items.len().is_multiple_of(2) {
             return Err(err("odd number of items for SETITEMS"));
         }
-        let pairs = items.chunks_exact(2).map(|kv| Ok((self.key_of(kv[0])?, kv[1]))).collect::<Result<Vec<_>, _>>()?;
+        let pairs = items
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|kv| Ok((self.key_of(kv[0])?, kv[1])))
+            .collect::<Result<Vec<_>, _>>()?;
         match &mut self.objs[dict] {
             Obj::Dict(d) => {
                 for (k, v) in pairs {

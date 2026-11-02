@@ -9,7 +9,22 @@ use std::path::{Path, PathBuf};
 
 /// Name of the editor's folder for profiles and lens data inside
 /// [`config_dir`]; the same as the window's application id (`app::APP_ID`).
-pub const APP_DIR: &str = "raw-node-editor";
+pub const APP_DIR: &str = "aktis";
+
+/// Name of the editor's folders before it was called Aktis; see
+/// [`move_legacy_dirs`].
+pub const LEGACY_APP_DIR: &str = "raw-node-editor";
+
+/// File extensions used before the editor was called Aktis, each with the
+/// one that replaced it (presets, style brushes, camera defaults, custom
+/// lenses, stored masks).
+pub const LEGACY_EXTENSIONS: [(&str, &str); 5] = [
+    ("rnepreset", "aktispreset"),
+    ("rnebrush", "aktisbrush"),
+    ("rnedefaults", "aktisdefaults"),
+    ("rnelens", "aktislens"),
+    ("rnemask", "aktismask"),
+];
 
 /// Operating systems the editor knows about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,20 +266,20 @@ pub fn data_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> Op
 }
 
 /// The editor's data folder (catalog, keyword list, masks, models):
-/// `$RNE_DATA_DIR`, else [`data_dir`] of [`APP_DIR`] on this system.
+/// `$AKTIS_DATA_DIR`, else [`data_dir`] of [`APP_DIR`] on this system.
 /// `None` only when the system says nothing about its folders.
 #[must_use]
 pub fn editor_data_dir() -> Option<PathBuf> {
-    std::env::var_os("RNE_DATA_DIR")
+    std::env::var_os("AKTIS_DATA_DIR")
         .map(PathBuf::from)
         .or_else(|| data_dir(Os::current(), APP_DIR, |k| std::env::var_os(k)))
 }
 
-/// The folder of the downloaded AI models: `$RNE_MODELS_DIR`, else
+/// The folder of the downloaded AI models: `$AKTIS_MODELS_DIR`, else
 /// `models` inside [`editor_data_dir`].
 #[must_use]
 pub fn editor_models_dir() -> Option<PathBuf> {
-    std::env::var_os("RNE_MODELS_DIR").map(PathBuf::from).or_else(|| editor_data_dir().map(|d| d.join("models")))
+    std::env::var_os("AKTIS_MODELS_DIR").map(PathBuf::from).or_else(|| editor_data_dir().map(|d| d.join("models")))
 }
 
 /// Folder for caches that can be rebuilt (compiled GPU engines):
@@ -284,17 +299,79 @@ pub fn cache_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> O
     Some(base.join(app))
 }
 
-/// Like [`data_dir`], but in the roaming `%APPDATA%\<app>` on Windows (the
-/// same folder elsewhere). Only for finding data that other programs, such as
-/// an earlier denoiser, keep there.
+/// The editor's folders under their old name ([`LEGACY_APP_DIR`]), each with
+/// its new place: the settings, data and cache folders of `os`, each once
+/// (Windows keeps data and cache in one folder, macOS settings and data).
+/// `env` as in [`config_dir`].
 #[must_use]
-pub fn roaming_data_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    match os {
-        Os::Windows => {
-            let absolute = |v: OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
-            Some(env("APPDATA").and_then(absolute)?.join(app))
+pub fn legacy_dir_moves(os: Os, env: impl Fn(&str) -> Option<OsString>) -> Vec<(PathBuf, PathBuf)> {
+    let pairs = [
+        config_dir(os, LEGACY_APP_DIR, &env).zip(config_dir(os, APP_DIR, &env)),
+        data_dir(os, LEGACY_APP_DIR, &env).zip(data_dir(os, APP_DIR, &env)),
+        cache_dir(os, LEGACY_APP_DIR, &env).zip(cache_dir(os, APP_DIR, &env)),
+    ];
+    let mut moves: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for pair in pairs.into_iter().flatten() {
+        if !moves.iter().any(|(old, _)| *old == pair.0) {
+            moves.push(pair);
         }
-        Os::Linux | Os::MacOs => data_dir(os, app, env),
+    }
+    moves
+}
+
+/// Renames the editor's folders from their old name to the new one, on the
+/// first start after the rename, and gives the files inside the new
+/// extensions ([`LEGACY_EXTENSIONS`]). A folder is moved only when the new
+/// one does not exist yet, or holds no files (empty folders made before the
+/// move), so nothing is ever overwritten. Call it before anything reads
+/// those folders (eframe reads the window settings when it starts). Returns
+/// what could not be moved, for the user.
+#[must_use]
+pub fn move_legacy_dirs() -> Vec<String> {
+    let mut problems = Vec::new();
+    for (old, new) in legacy_dir_moves(Os::current(), |k| std::env::var_os(k)) {
+        if !old.is_dir() {
+            continue;
+        }
+        if new.exists() && !(holds_no_files(&new) && std::fs::remove_dir_all(&new).is_ok()) {
+            continue;
+        }
+        match std::fs::rename(&old, &new) {
+            Ok(()) => rename_legacy_files(&new, &mut problems),
+            Err(e) => problems.push(format!("{} could not be renamed to {}: {e}", old.display(), new.display())),
+        }
+    }
+    problems
+}
+
+/// `true` when `dir` is a folder with no files in it, only empty folders
+/// (nested or not).
+fn holds_no_files(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.flatten().all(|e| e.file_type().is_ok_and(|t| t.is_dir()) && holds_no_files(&e.path()))
+    })
+}
+
+/// Gives every file under `dir` with an extension of [`LEGACY_EXTENSIONS`]
+/// the new one, unless a file of the new name exists.
+fn rename_legacy_files(dir: &Path, problems: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            rename_legacy_files(&path, problems);
+            continue;
+        }
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else { continue };
+        let Some((_, new_ext)) = LEGACY_EXTENSIONS.iter().find(|(old, _)| old.eq_ignore_ascii_case(ext)) else {
+            continue;
+        };
+        let target = path.with_extension(new_ext);
+        if !target.exists()
+            && let Err(e) = std::fs::rename(&path, &target)
+        {
+            problems.push(format!("{} could not be renamed: {e}", path.display()));
+        }
     }
 }
 
@@ -319,14 +396,14 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn config_dir_follows_xdg_then_home_on_linux_and_library_on_macos() {
-        let with_xdg = config_dir(Os::Linux, "rne", env(&[("XDG_CONFIG_HOME", "/cfg"), ("HOME", "/home/m")]));
-        assert_eq!(with_xdg, Some(PathBuf::from("/cfg/rne")));
-        let home_only = config_dir(Os::Linux, "rne", env(&[("HOME", "/home/m")]));
-        assert_eq!(home_only, Some(PathBuf::from("/home/m/.config/rne")));
-        let relative_xdg = config_dir(Os::Linux, "rne", env(&[("XDG_CONFIG_HOME", "cfg"), ("HOME", "/home/m")]));
-        assert_eq!(relative_xdg, Some(PathBuf::from("/home/m/.config/rne")));
-        let mac = config_dir(Os::MacOs, "rne", env(&[("HOME", "/Users/m")]));
-        assert_eq!(mac, Some(PathBuf::from("/Users/m/Library/Application Support/rne")));
+        let with_xdg = config_dir(Os::Linux, "aktis", env(&[("XDG_CONFIG_HOME", "/cfg"), ("HOME", "/home/m")]));
+        assert_eq!(with_xdg, Some(PathBuf::from("/cfg/aktis")));
+        let home_only = config_dir(Os::Linux, "aktis", env(&[("HOME", "/home/m")]));
+        assert_eq!(home_only, Some(PathBuf::from("/home/m/.config/aktis")));
+        let relative_xdg = config_dir(Os::Linux, "aktis", env(&[("XDG_CONFIG_HOME", "cfg"), ("HOME", "/home/m")]));
+        assert_eq!(relative_xdg, Some(PathBuf::from("/home/m/.config/aktis")));
+        let mac = config_dir(Os::MacOs, "aktis", env(&[("HOME", "/Users/m")]));
+        assert_eq!(mac, Some(PathBuf::from("/Users/m/Library/Application Support/aktis")));
     }
 
     #[test]
@@ -334,29 +411,29 @@ mod tests {
     fn config_dir_uses_appdata_on_windows_and_refuses_a_relative_one() {
         let roaming = r"C:\Users\m\AppData\Roaming";
         assert_eq!(
-            config_dir(Os::Windows, "rne", env(&[("APPDATA", roaming)])),
-            Some(PathBuf::from(r"C:\Users\m\AppData\Roaming\rne"))
+            config_dir(Os::Windows, "aktis", env(&[("APPDATA", roaming)])),
+            Some(PathBuf::from(r"C:\Users\m\AppData\Roaming\aktis"))
         );
-        assert_eq!(config_dir(Os::Windows, "rne", env(&[("APPDATA", "Roaming")])), None);
+        assert_eq!(config_dir(Os::Windows, "aktis", env(&[("APPDATA", "Roaming")])), None);
     }
 
     #[test]
     #[cfg(unix)]
     fn profiles_and_lens_data_live_in_the_editors_own_folder_only() {
-        let linux = camera_profile_dirs(Os::Linux, "rne", env(&[("HOME", "/home/m")]));
-        assert_eq!(linux, vec![PathBuf::from("/home/m/.config/rne/profiles")]);
-        assert!(camera_profile_dirs(Os::Linux, "rne", env(&[])).is_empty());
+        let linux = camera_profile_dirs(Os::Linux, "aktis", env(&[("HOME", "/home/m")]));
+        assert_eq!(linux, vec![PathBuf::from("/home/m/.config/aktis/profiles")]);
+        assert!(camera_profile_dirs(Os::Linux, "aktis", env(&[])).is_empty());
         assert_eq!(
-            lensfun_dir(Os::Linux, "rne", env(&[("HOME", "/home/m")])),
-            Some(PathBuf::from("/home/m/.config/rne/lensfun"))
+            lensfun_dir(Os::Linux, "aktis", env(&[("HOME", "/home/m")])),
+            Some(PathBuf::from("/home/m/.config/aktis/lensfun"))
         );
     }
 
     #[test]
     fn config_dir_is_none_without_the_needed_variables() {
-        assert_eq!(config_dir(Os::Windows, "rne", env(&[])), None);
-        assert_eq!(config_dir(Os::Linux, "rne", env(&[])), None);
-        assert_eq!(config_dir(Os::MacOs, "rne", env(&[])), None);
+        assert_eq!(config_dir(Os::Windows, "aktis", env(&[])), None);
+        assert_eq!(config_dir(Os::Linux, "aktis", env(&[])), None);
+        assert_eq!(config_dir(Os::MacOs, "aktis", env(&[])), None);
     }
 
     #[test]
@@ -410,37 +487,91 @@ mod tests {
     #[cfg(unix)]
     fn data_and_cache_dirs_follow_xdg_then_home_on_linux_and_library_on_macos() {
         let vars = [("XDG_DATA_HOME", "/data"), ("XDG_CACHE_HOME", "/cache"), ("HOME", "/home/m")];
-        assert_eq!(data_dir(Os::Linux, "rne", env(&vars)), Some(PathBuf::from("/data/rne")));
-        assert_eq!(cache_dir(Os::Linux, "rne", env(&vars)), Some(PathBuf::from("/cache/rne")));
+        assert_eq!(data_dir(Os::Linux, "aktis", env(&vars)), Some(PathBuf::from("/data/aktis")));
+        assert_eq!(cache_dir(Os::Linux, "aktis", env(&vars)), Some(PathBuf::from("/cache/aktis")));
         let home = [("HOME", "/home/m")];
-        assert_eq!(data_dir(Os::Linux, "rne", env(&home)), Some(PathBuf::from("/home/m/.local/share/rne")));
-        assert_eq!(cache_dir(Os::Linux, "rne", env(&home)), Some(PathBuf::from("/home/m/.cache/rne")));
+        assert_eq!(data_dir(Os::Linux, "aktis", env(&home)), Some(PathBuf::from("/home/m/.local/share/aktis")));
+        assert_eq!(cache_dir(Os::Linux, "aktis", env(&home)), Some(PathBuf::from("/home/m/.cache/aktis")));
         let mac = [("HOME", "/Users/m")];
         assert_eq!(
-            data_dir(Os::MacOs, "rne", env(&mac)),
-            Some(PathBuf::from("/Users/m/Library/Application Support/rne"))
+            data_dir(Os::MacOs, "aktis", env(&mac)),
+            Some(PathBuf::from("/Users/m/Library/Application Support/aktis"))
         );
-        assert_eq!(cache_dir(Os::MacOs, "rne", env(&mac)), Some(PathBuf::from("/Users/m/Library/Caches/rne")));
+        assert_eq!(cache_dir(Os::MacOs, "aktis", env(&mac)), Some(PathBuf::from("/Users/m/Library/Caches/aktis")));
     }
 
     #[test]
     #[cfg(windows)]
-    fn data_and_cache_dirs_are_local_and_only_the_roaming_one_roams_on_windows() {
+    fn data_and_cache_dirs_are_local_on_windows() {
         let vars = [("APPDATA", r"C:\Users\m\AppData\Roaming"), ("LOCALAPPDATA", r"C:\Users\m\AppData\Local")];
-        assert_eq!(data_dir(Os::Windows, "rne", env(&vars)), Some(PathBuf::from(r"C:\Users\m\AppData\Local\rne")));
-        assert_eq!(cache_dir(Os::Windows, "rne", env(&vars)), Some(PathBuf::from(r"C:\Users\m\AppData\Local\rne")));
-        assert_eq!(
-            roaming_data_dir(Os::Windows, "rne", env(&vars)),
-            Some(PathBuf::from(r"C:\Users\m\AppData\Roaming\rne"))
-        );
+        assert_eq!(data_dir(Os::Windows, "aktis", env(&vars)), Some(PathBuf::from(r"C:\Users\m\AppData\Local\aktis")));
+        assert_eq!(cache_dir(Os::Windows, "aktis", env(&vars)), Some(PathBuf::from(r"C:\Users\m\AppData\Local\aktis")));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn legacy_folders_move_once_each_on_windows() {
+        let vars = [("APPDATA", r"C:\Users\m\AppData\Roaming"), ("LOCALAPPDATA", r"C:\Users\m\AppData\Local")];
+        let expected = [
+            (r"C:\Users\m\AppData\Roaming\raw-node-editor", r"C:\Users\m\AppData\Roaming\aktis"),
+            (r"C:\Users\m\AppData\Local\raw-node-editor", r"C:\Users\m\AppData\Local\aktis"),
+        ]
+        .map(|(a, b)| (PathBuf::from(a), PathBuf::from(b)));
+        assert_eq!(legacy_dir_moves(Os::Windows, env(&vars)), expected);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn legacy_folders_move_once_each_on_linux_and_macos() {
+        let expected = [
+            ("/home/m/.config/raw-node-editor", "/home/m/.config/aktis"),
+            ("/home/m/.local/share/raw-node-editor", "/home/m/.local/share/aktis"),
+            ("/home/m/.cache/raw-node-editor", "/home/m/.cache/aktis"),
+        ]
+        .map(|(a, b)| (PathBuf::from(a), PathBuf::from(b)));
+        assert_eq!(legacy_dir_moves(Os::Linux, env(&[("HOME", "/home/m")])), expected);
+        let mac = legacy_dir_moves(Os::MacOs, env(&[("HOME", "/Users/m")]));
+        assert_eq!(mac.len(), 2, "settings and data share one folder: {mac:?}");
+        assert!(legacy_dir_moves(Os::Linux, env(&[])).is_empty());
+    }
+
+    #[test]
+    fn legacy_files_get_the_new_extensions_and_nothing_is_overwritten() {
+        let dir = std::env::temp_dir().join(format!("aktis-legacy-{}", std::process::id()));
+        let presets = dir.join("Presets").join("Group");
+        std::fs::create_dir_all(&presets).expect("temp folder");
+        std::fs::write(presets.join("Warm.rnepreset"), "old").expect("write");
+        std::fs::write(dir.join("Soft.RNEBRUSH"), "old").expect("write");
+        std::fs::write(dir.join("Kept.rnelens"), "old").expect("write");
+        std::fs::write(dir.join("Kept.aktislens"), "new").expect("write");
+        std::fs::write(dir.join("notes.txt"), "other").expect("write");
+        let mut problems = Vec::new();
+        rename_legacy_files(&dir, &mut problems);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(presets.join("Warm.aktispreset").is_file());
+        assert!(dir.join("Soft.aktisbrush").is_file());
+        assert_eq!(std::fs::read_to_string(dir.join("Kept.aktislens")).expect("read"), "new");
+        assert!(dir.join("Kept.rnelens").is_file(), "left as it was");
+        assert!(dir.join("notes.txt").is_file());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_a_folder_without_files_counts_as_empty() {
+        let dir = std::env::temp_dir().join(format!("aktis-empty-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("masks").join("deeper")).expect("temp folder");
+        assert!(holds_no_files(&dir));
+        std::fs::write(dir.join("masks").join("a.aktismask"), "x").expect("write");
+        assert!(!holds_no_files(&dir));
+        assert!(!holds_no_files(&dir.join("missing")), "a missing folder is not an empty one");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn data_and_cache_dirs_are_none_without_the_needed_variables() {
         for os in [Os::Windows, Os::Linux, Os::MacOs] {
-            assert_eq!(data_dir(os, "rne", env(&[])), None);
-            assert_eq!(cache_dir(os, "rne", env(&[])), None);
-            assert_eq!(roaming_data_dir(os, "rne", env(&[])), None);
+            assert_eq!(data_dir(os, "aktis", env(&[])), None);
+            assert_eq!(cache_dir(os, "aktis", env(&[])), None);
         }
     }
 

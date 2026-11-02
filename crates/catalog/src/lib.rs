@@ -28,5 +28,5 @@ pub use store::{Catalog, CatalogError};
 /// catalogs, in the editor's data folder).
 pub const FILE_NAME: &str = "catalog.sqlite";
 
-/// Extension of a catalog's folder ("Travel.rnecatalog").
-pub const CATALOG_EXTENSION: &str = "rnecatalog";
+/// Extension of a catalog's folder ("Travel.aktiscatalog").
+pub const CATALOG_EXTENSION: &str = "aktiscatalog";

@@ -39,7 +39,7 @@ Done:
 - `export`: JPEG (4:4:4 from quality 90) with an sRGB ICC profile built in
   code (checked against LittleCMS's own sRGB: identical output), atomic write,
   `photo (2).jpg` instead of overwriting.
-- `cli`: `rne develop | info | gpu`, GPU with CPU fallback.
+- `cli`: `aktis-cli develop | info | gpu`, GPU with CPU fallback.
 - `engine`: what the window and the CLI share (tools, GPU-or-CPU render,
   preview copy, display pixels, JPEG export).
 - `editor`: documents with undo/redo (slider drag = one step), background
@@ -54,8 +54,7 @@ Done:
   (Ctrl+D, next to the RAW or to a chosen folder, never overwriting) with a
   "Show in folder" toast; status bar with camera, size, zoom, GPU; theme
   System/Light/Dark (dark by default); settings and recent files remembered.
-- `tools/denoise-ai`: AI denoise node, SCUNet on ONNX Runtime ported from
-  an earlier denoiser (tiles with a 64 px mirrored margin, TensorRT for RTX /
+- `tools/denoise-ai`: AI denoise node, SCUNet on ONNX Runtime (tiles with a 64 px mirrored margin, TensorRT for RTX /
   DirectML / CPU with fallback and tile-size search, grain and colour amounts
   applied to a cached network output). Linear light is sRGB-encoded in the
   working primaries for the network; noise below black is denoised, the
@@ -63,7 +62,7 @@ Done:
 - `tool-api`: host tools (`GpuKernel::Host`, fallible `Tool::apply`): the GPU
   renderer splits the chain around them; both renderers pass a failing node
   through and report it (`tool_errors`).
-- `cli`: `rne develop --denoise <grain %> [--denoise-color <colour %>]`;
+- `cli`: `aktis-cli develop --denoise <grain %> [--denoise-color <colour %>]`;
   `engine` registers the node, the window shows it bypassed in every new
   document (switch it on in the inspector) and tells when it cannot run.
 
@@ -82,7 +81,7 @@ Done:
   coordinate rescaling; vignetting gain, then distortion + TCA resampling per
   channel (Catmull-Rom, multithreaded) with automatic zoom against empty
   borders. Recipe: `LensSettings`; edits `SetCameraProfile`,
-  `SetLensCorrection` with undo. `rne info | lenses | profiles`, `develop
+  `SetLensCorrection` with undo. `aktis-cli info | lenses | profiles`, `develop
   --profile --lens --lens-zoom --no-lens`.
 - Window: "Lens corrections" section at the top of the inspector (on/off,
   lens chosen automatically or from the lenses that fit the camera,
@@ -111,7 +110,7 @@ Design and models in `docs/ai-masks.md`.
   MediaPipe multiclass + BlazeFace + face mesh (hair, face skin, body skin,
   clothes, accessories, eyebrows, sclera, irises, lips, teeth); catalog with
   SHA-256.
-- `cli`: `rne mask`, `rne models`, `rne develop … --subject`; `--add`,
+- `cli`: `aktis-cli mask`, `aktis-cli models`, `aktis-cli develop … --subject`; `--add`,
   `--subtract`, `--intersect`, `--parts`, `--brush`, `--erase`; PPM input.
 - Checked by eye on test photos (dog and bicycle, truck, people at a bus,
   portraits): wheels empty between the spokes, no halos, parts of each
@@ -139,8 +138,8 @@ Pieces:
 
 - `catalog` (new crate): ratings 0–5, colour labels (Red, Yellow, Green,
   Blue, Purple; no heart), keywords from the AI (with confidence) or the
-  user, in SQLite (`%LOCALAPPDATA%\raw-node-editor\catalog.sqlite`, WAL,
-  layout version checked). Filters as in a photo viewer: rating is a
+  user, in SQLite (`%LOCALAPPDATA%\aktis\catalog.sqlite`, WAL,
+  layout version checked). Filters: rating is a
   multi-select of exact values (All, 0★ … 5★, not "at least"), label
   multi-select with "None", name text, keywords; the model is pure and
   tested, the SQLite store behind the default `sqlite` feature.
@@ -197,7 +196,7 @@ tested offline.
   after it, bypass or delete it. Positions are kept per photo while it is
   open (`editor::graph_view`: new nodes go right of their input and push the
   following ones aside unless the user moved them).
-- Filmstrip selection as in a photo viewer: click selects and opens one
+- Filmstrip selection as in a file manager: click selects and opens one
   photo; Ctrl+click adds (and opens) or removes; Shift+click selects the
   range from the last clicked photo and opens the clicked one; Ctrl+Shift
   adds the range. Stars and the Rating/Color Tag menus on a card of the
@@ -235,7 +234,7 @@ tested offline.
   normalised mosaic, in active-area coordinates offset by the default crop
   (Pixel and other phone DNGs no longer have dark corners). Other opcodes
   are skipped; required ones are reported in `RawFile::notes`, shown in
-  the inspector's development notes and by `rne info`.
+  the inspector's development notes and by `aktis-cli info`.
 - Open dialog: ARI, DCS, FFF, ORI, QTK and RAW added; README lists the
   supported cameras and rawler 0.8.0's known limits per brand.
 
@@ -250,7 +249,7 @@ tested offline.
 - Top bar: Undo/Redo on the left, tools centred (Crop C, Perspective K,
   Level L, Masks M, AI Select A, Heal H, Clone S), Export on the right.
 - Node graph zooms with the wheel (and pinch) around the pointer.
-- History/Metadata panel keeps its size; interface greys follow a photo viewer.
+- History/Metadata panel keeps its size; interface greys are neutral.
 - Adjustment nodes (`tools/adjust`, CPU reference + WGSL, every kernel run on
   WebGPU/SwiftShader against the CPU): White balance (mode, picker, kelvin,
   tint; the Source develops as shot), Exposure v2 (contrast, brightness,
@@ -261,12 +260,12 @@ tested offline.
 - Several selected photos fill the viewer (grid shape for the largest
   tiles, 1600 px previews, up to 24).
 - Scopes: histogram, waveform and parade.
-- Viewer: right button eyedropper, middle button 4× loupe (a photo viewer).
+- Viewer: right button eyedropper, middle button 4× loupe.
 - Lens corrections: every lens, fitting ones first then others by maker,
   type to filter, tick for fitting lenses only.
 - Geometry in the recipe (`core_model::Geometry`, applied by
-  `engine::geometry` after the graph, for screen and export): Crop as in
-  a photo viewer (aspect presets, handles, Enter/Esc), Level (drag a line
+  `engine::geometry` after the graph, for screen and export): Crop
+  (aspect presets, handles, Enter/Esc), Level (drag a line
   or slider), Perspective (keystone sliders).
 - Masks (brush) and AI Select (SAM clicks, subject) build the selected
   node's mask; the models run in the background; AI masks now render in
@@ -291,8 +290,8 @@ tested offline.
   (`Edit::ApplyStyle`: each tool sets the photo's unmasked node of that
   tool, or is added before the output). Photos not open are changed in
   the catalog. No universal preset format exists (Lightroom: XMP `crs:`,
-  Capture One: `.costyle`): ours are versioned JSON files (`.rnepreset`,
-  `.rnebrush`, `recipe_store::preset`) in a folder chosen in Preferences
+  Capture One: `.costyle`): ours are versioned JSON files (`.aktispreset`,
+  `.aktisbrush`, `recipe_store::preset`) in a folder chosen in Preferences
   (default `Presets` in the data folder), sub-folders being groups.
 - Style brushes (Capture One's): built-in Light & Contrast, Color and
   Enhancements brushes, plus saved ones (Image ▸ Style brushes ▸ Save
@@ -397,10 +396,10 @@ GitHub Actions (`.github/workflows/ci.yml`) on every push:
 
 - Windows and Ubuntu: fmt, clippy with warnings as errors, all tests.
   On Ubuntu the GPU tests run on Mesa's software Vulkan driver (llvmpipe)
-  and must pass (`RNE_REQUIRE_GPU=1`); elsewhere they skip without a GPU.
+  and must pass (`AKTIS_REQUIRE_GPU=1`); elsewhere they skip without a GPU.
 - macOS: `cargo check` only.
 - `real-raw`: downloads a public-domain Nikon D3S NEF (NASA, from the rawpy
-  test set), runs the ignored real-file test, `rne info` and `rne develop`
+  test set), runs the ignored real-file test, `aktis-cli info` and `aktis-cli develop`
   on the GPU and on the CPU, then opens the file in the window headless
   (egui_kittest on wgpu) and saves a screenshot (`window.png`).
 - `lockfile`: when a `Cargo.toml` adds dependencies, it resolves them,
@@ -411,7 +410,7 @@ Each job pushes its log and output files to the branch `ci-results/<branch>--<jo
 `git fetch origin "refs/heads/ci-results/*:refs/remotes/origin/ci-results/*"`.
 
 - `ai-denoise`: generates the SCUNet model from the KAIR weights, runs the
-  network test on the CPU, then `rne develop --denoise 80` on the Nikon D3S
+  network test on the CPU, then `aktis-cli develop --denoise 80` on the Nikon D3S
   (JPEGs with and without the node are published).
 
 First green run: Nikon D3S 4256×2832 develops in about 2 s on llvmpipe;
@@ -432,7 +431,7 @@ the GPU and CPU renders look the same.
   handles for the last one, Alt takes away.
 - Film Standard brighter and livelier; the crop box shows its size in
   pixels; the viewer background is the interface's colour or white.
-- Catalogs (`*.rnecatalog` folders): New, Open, recent catalogs; the old
+- Catalogs (`*.aktiscatalog` folders): New, Open, recent catalogs; the old
   single catalog becomes "Default"; photos come in only by import.
 - Import engine: background import with Stop; copy into dated sub-folders
   or add in place; backup folder; duplicates by name and capture time;
@@ -493,7 +492,7 @@ Details in `docs/catalog.md`.
   Auto), undoable, the photo is developed again.
 - Software renderers are no longer taken for a GPU (Microsoft Basic Render
   Driver, llvmpipe: what a virtual machine offers): they read back wrong
-  pixels or fail, so the editor uses the CPU engine; `RNE_SOFTWARE_GPU=1`
+  pixels or fail, so the editor uses the CPU engine; `AKTIS_SOFTWARE_GPU=1`
   accepts them for debugging. `scripts\setup-windows.bat` installs Git, the
   C++ build tools, rustup and the pinned toolchain on a new PC.
 
@@ -599,3 +598,26 @@ Details in `docs/catalog.md`.
   Delete Variant N… (only that one, asked first) and Move Photo to Trash
   (the photo with every variant); Delete over the filmstrip, with the open
   photo alone selected and several variants, deletes the open variant.
+
+## 2 November: the name Aktis, Rust 1.99.1, GPLv3
+
+- The editor is called Aktis: window `aktis`, command line `aktis-cli`,
+  folders `aktis`, variables `AKTIS_*`, files `.aktiscatalog`,
+  `.aktispreset`, `.aktisbrush`, `.aktisdefaults`, `.aktislens`,
+  `.aktismask`. `platform::move_legacy_dirs` renames the old
+  `raw-node-editor` folders (and the files' extensions) at the first start
+  of either program; the window's remembered paths follow
+  (`Settings::follow_moved_folder`).
+- Rust 1.99.1. Licence GPL-3.0-only (`LICENSE`), `authors = ["MR"]` in
+  every crate. The build scripts remap local paths out of the programs
+  (`scripts/build-env.ps1`).
+- The AI denoise models are looked for only in the editor's own folders.
+- Rust 1.99's clippy: `chunks_exact` with a constant size became
+  `as_chunks` throughout.
+
+## 30 October: live filmstrip thumbnails
+
+- The open photo's filmstrip card (and its variant's card) follows every
+  change: each finished render (not the drafts made while dragging) is
+  reduced to a thumbnail on the spot (`Library::show_live_thumbnail`,
+  block means); the catalog's preview is still written with the edit.

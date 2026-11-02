@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn profiles_are_found_by_their_camera_not_their_file_name() {
-        let dir = std::env::temp_dir().join(format!("rne-profiles-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-profiles-{}", std::process::id()));
         let sub = dir.join("Adobe Standard");
         std::fs::create_dir_all(&sub).expect("temp folder");
         std::fs::write(sub.join("Sony ILCE-7RM5 Adobe Standard.dcp"), profile("Sony ILCE-7RM5", "Adobe Standard"))

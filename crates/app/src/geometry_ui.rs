@@ -1,6 +1,6 @@
 //! The geometry tools of the bar, drawn over the photo:
 //!
-//! - **Crop** (C), as in a photo viewer: a box with a rule-of-thirds grid
+//! - **Crop** (C): a box with a rule-of-thirds grid
 //!   and eight handles over the dimmed frame; drag inside to move it;
 //!   aspect presets (Unconstrained, Original, 1x1 … 65x24, custom) and a
 //!   portrait/landscape switch in the options bar. Enter or a double-click
@@ -223,9 +223,9 @@ impl GeometryUi {
     /// Returns `Some(true)` for Apply, `Some(false)` for Cancel.
     pub fn crop_options(&mut self, ctx: &egui::Context, viewer: Rect, frame_aspect: f32) -> Option<bool> {
         let mut result = None;
-        options_bar(ctx, viewer, "rne-crop-options", |ui| {
+        options_bar(ctx, viewer, "aktis-crop-options", |ui| {
             ui.label("Aspect");
-            egui::ComboBox::from_id_salt("rne-crop-aspect").selected_text(self.aspect_label()).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("aktis-crop-aspect").selected_text(self.aspect_label()).show_ui(ui, |ui| {
                 for (i, a) in ASPECTS.iter().enumerate() {
                     if ui.selectable_label(self.aspect == Some(i), a.label).clicked() {
                         self.aspect = Some(i);
@@ -339,7 +339,7 @@ impl GeometryUi {
 
     /// The options bar of Level and Perspective: angle, or the two keystones.
     pub fn sliders(&self, ctx: &egui::Context, viewer: Rect, tool: ViewerTool, g: &Geometry, edits: &mut Vec<GeoEdit>) {
-        options_bar(ctx, viewer, "rne-geometry-options", |ui| {
+        options_bar(ctx, viewer, "aktis-geometry-options", |ui| {
             let mut next = *g;
             let mut slider =
                 |ui: &mut egui::Ui, label: &str, v: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str| {

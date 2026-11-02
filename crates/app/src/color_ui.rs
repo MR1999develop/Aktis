@@ -392,7 +392,7 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
             WheelPart::None => Vec::new(),
         }
     };
-    let drag_id = Id::unique(("rne-balance-drag", node, band.hue.as_str()));
+    let drag_id = Id::unique(("aktis-balance-drag", node, band.hue.as_str()));
     if response.drag_started()
         && let Some(p) = response.interact_pointer_pos()
     {
@@ -468,7 +468,7 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
 
 /// Where a colour wheel under the pointer says it wants the arrow keys.
 fn arrows_id() -> Id {
-    Id::unique("rne-wheel-arrows")
+    Id::unique("aktis-wheel-arrows")
 }
 
 /// The arrow keys are taken, for this frame or the next, from the
@@ -499,7 +499,7 @@ const BALANCE_TABS: [&str; 5] = ["Master", "3-Way", "Shadow", "Midtone", "Highli
 pub fn color_balance(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
     let node = row.node;
-    let tab_id = Id::unique(("rne-balance-tab", node));
+    let tab_id = Id::unique(("aktis-balance-tab", node));
     let tab = tabs(ui, &BALANCE_TABS, remembered::<usize>(ui, tab_id)).min(BALANCE_TABS.len() - 1);
     remember(ui, tab_id, tab);
     ui.add_space(SPACE[0]);
@@ -581,7 +581,7 @@ fn chip(ui: &mut egui::Ui, fill: Color32, selected: bool, changed: bool, name: &
 
 /// Basic, Advanced and Skin Tone tabs.
 pub fn color_editor(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
-    let tab_id = Id::unique(("rne-color-editor-tab", row.node));
+    let tab_id = Id::unique(("aktis-color-editor-tab", row.node));
     let tab = tabs(ui, &["Basic", "Advanced", "Skin Tone"], remembered::<usize>(ui, tab_id)).min(2);
     remember(ui, tab_id, tab);
     ui.add_space(SPACE[0]);
@@ -596,7 +596,7 @@ pub fn color_editor(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edit
 fn color_editor_basic(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
     use color_editor::{RANGES, hue_id, lightness_id, saturation_id};
     let node = row.node;
-    let chosen_id = Id::unique(("rne-color-editor-range", node));
+    let chosen_id = Id::unique(("aktis-color-editor-range", node));
     let mut r = remembered::<usize>(ui, chosen_id).min(RANGES.len() - 1);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = SPACE[0];
@@ -622,7 +622,7 @@ fn color_editor_basic(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>)
 fn color_editor_advanced(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
     let node = row.node;
-    let chosen_id = Id::unique(("rne-color-editor-advanced", node));
+    let chosen_id = Id::unique(("aktis-color-editor-advanced", node));
     let mut n = remembered::<usize>(ui, chosen_id).min(color_editor::ADVANCED - 1);
     for k in 0..color_editor::ADVANCED {
         let id = |v: &str| color_editor::advanced_id(k, v);
@@ -758,7 +758,7 @@ fn range_wheel(
         };
         vec![(set.0, ParamValue::Float(set.1)), (pid(&id("on")), ParamValue::Bool(true))]
     };
-    let drag_id = Id::unique(("rne-range-drag", node, id("center")));
+    let drag_id = Id::unique(("aktis-range-drag", node, id("center")));
     if response.drag_started()
         && let Some(h) = response.interact_pointer_pos().and_then(hue_at)
     {
@@ -797,7 +797,7 @@ pub fn black_white(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
     check(ui, row, ENABLE, "Enable Black & White", edits);
     ui.add_space(SPACE[0]);
     ui.add_enabled_ui(boolean(row, ENABLE), |ui| {
-        let tab_id = Id::unique(("rne-black-white-tab", node));
+        let tab_id = Id::unique(("aktis-black-white-tab", node));
         let tab = tabs(ui, &["Color Sensitivity", "Split Tones"], remembered::<usize>(ui, tab_id)).min(1);
         remember(ui, tab_id, tab);
         ui.add_space(SPACE[0]);

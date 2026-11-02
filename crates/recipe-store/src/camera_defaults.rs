@@ -7,7 +7,7 @@ use crate::json::{self, Value};
 use crate::{DecodeError, MAX_TEXT_BYTES, codec};
 
 /// File extension of camera defaults.
-pub const CAMERA_DEFAULTS_EXTENSION: &str = "rnedefaults";
+pub const CAMERA_DEFAULTS_EXTENSION: &str = "aktisdefaults";
 
 /// Version of the camera defaults format written by this build.
 pub const CAMERA_DEFAULTS_FORMAT: u32 = 1;

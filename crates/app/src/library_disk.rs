@@ -174,7 +174,7 @@ impl Library {
             DiskDialog::Rename { path, name, error, focused } => {
                 let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
                 let problem = rename_problem(&parent, path, name);
-                dialog(ctx, "rne-rename-folder", |ui| {
+                dialog(ctx, "aktis-rename-folder", |ui| {
                     ui.label(RichText::new("Rename Folder").size(FONT[4]).strong());
                     ui.add_space(SPACE[1]);
                     ui.label(RichText::new(path.display().to_string()).color(t.text_weak));
@@ -200,7 +200,7 @@ impl Library {
                 });
             }
             DiskDialog::Delete { path, photos, remove } => {
-                dialog(ctx, "rne-delete-folder", |ui| {
+                dialog(ctx, "aktis-delete-folder", |ui| {
                     let name = editor::library::folder_name(path);
                     ui.label(RichText::new(format!("Delete \u{201c}{name}\u{201d}?")).size(FONT[4]).strong());
                     ui.add_space(SPACE[1]);
@@ -222,7 +222,7 @@ impl Library {
                 });
             }
             DiskDialog::Paste { from, into, photos } => {
-                dialog(ctx, "rne-move-folder", |ui| {
+                dialog(ctx, "aktis-move-folder", |ui| {
                     let (name, target) = (editor::library::folder_name(from), editor::library::folder_name(into));
                     ui.label(
                         RichText::new(format!("Move \u{201c}{name}\u{201d} into \u{201c}{target}\u{201d}?"))
@@ -291,7 +291,7 @@ impl Library {
             DiskDialog::Delete { path, remove, .. } => {
                 let (tx, rx) = channel();
                 let launch = platform::move_to_trash(platform::Os::current(), &path, true);
-                let spawned = std::thread::Builder::new().name("rne-trash-folder".into()).spawn(move || {
+                let spawned = std::thread::Builder::new().name("aktis-trash-folder".into()).spawn(move || {
                     let result = std::process::Command::new(launch.program)
                         .args(&launch.args)
                         .output()
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn a_new_folder_name_is_checked_before_renaming() {
-        let dir = std::env::temp_dir().join(format!("rne-disk-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-disk-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("Trip")).ok();
         std::fs::create_dir_all(dir.join("Other")).ok();

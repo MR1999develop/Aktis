@@ -93,7 +93,7 @@ impl ImportJob {
         let stop = Arc::new(AtomicBool::new(false));
         let total = request.files.len();
         let flag = Arc::clone(&stop);
-        thread::Builder::new().name("rne-import".into()).spawn(move || {
+        thread::Builder::new().name("aktis-import".into()).spawn(move || {
             let stopped = run(&request, &flag, &mut |p| {
                 let _ = tx.send(p);
                 notify();
@@ -276,7 +276,7 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rne-import-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-import-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

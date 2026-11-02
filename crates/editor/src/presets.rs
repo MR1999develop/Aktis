@@ -148,7 +148,7 @@ pub fn load(path: &Path) -> Result<Preset, String> {
 
 /// Writes `preset` into `folder` (style brushes into its
 /// [`BRUSH_FOLDER`]), named after it; an existing file is never replaced
-/// (`Warm (2).rnepreset`). Returns the file written.
+/// (`Warm (2).aktispreset`). Returns the file written.
 ///
 /// # Errors
 /// A message when the folder cannot be made or the file written.
@@ -313,19 +313,19 @@ mod tests {
 
     #[test]
     fn saved_presets_are_found_by_group_and_never_overwritten() {
-        let dir = std::env::temp_dir().join(format!("rne-presets-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aktis-presets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let warm =
             Preset { name: "Warm: soft?".into(), style: builtin_brushes()[10].preset.style.clone(), brush: None };
         let a = save(&dir, &warm).unwrap();
         let b = save(&dir, &warm).unwrap();
         assert_ne!(a, b);
-        assert_eq!(a.file_name().unwrap().to_string_lossy(), "Warm_ soft_.rnepreset");
+        assert_eq!(a.file_name().unwrap().to_string_lossy(), "Warm_ soft_.aktispreset");
         let mut dodge = builtin_brushes()[2].preset.clone();
         dodge.name = "My dodge".into();
         let c = save(&dir, &dodge).unwrap();
         assert_eq!(c.parent().unwrap(), dir.join(BRUSH_FOLDER));
-        std::fs::write(dir.join("broken.rnepreset"), "{").unwrap();
+        std::fs::write(dir.join("broken.aktispreset"), "{").unwrap();
         std::fs::write(dir.join("notes.txt"), "not a preset").unwrap();
 
         let lib = Library::scan(Some(&dir));
@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(lib.presets().count(), 2);
         assert_eq!(lib.brushes().filter(|e| e.group == BRUSH_FOLDER).count(), 1);
         assert_eq!(lib.problems.len(), 1);
-        assert!(lib.problems[0].starts_with("broken.rnepreset"));
+        assert!(lib.problems[0].starts_with("broken.aktispreset"));
         std::fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(Library::scan(None).entries.len(), builtin_brushes().len());
@@ -364,5 +364,18 @@ mod tests {
         let (kept, missing) = usable(&style, &registry());
         assert_eq!(kept.nodes.len(), 1);
         assert_eq!(missing, vec![ToolId::new("hologram").unwrap()]);
+    }
+
+    #[test]
+    fn old_file_extensions_are_renamed_to_the_ones_in_use() {
+        let in_use = [
+            PRESET_EXTENSION,
+            BRUSH_EXTENSION,
+            recipe_store::CAMERA_DEFAULTS_EXTENSION,
+            recipe_store::CUSTOM_LENS_EXTENSION,
+            masks::RASTER_EXTENSION,
+        ];
+        let renamed: Vec<&str> = platform::LEGACY_EXTENSIONS.iter().map(|(_, new)| *new).collect();
+        assert_eq!(renamed, in_use);
     }
 }

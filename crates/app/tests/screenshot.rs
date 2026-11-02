@@ -1,9 +1,9 @@
 //! Opens the first RAW file in `testdata/`, waits until the full-size image
 //! is on screen, and saves a picture of the whole window to the folder in
-//! `RNE_SCREENSHOT_DIR`. Run by CI to look at the window without a display:
+//! `AKTIS_SCREENSHOT_DIR`. Run by CI to look at the window without a display:
 //!
 //! ```text
-//! RNE_SCREENSHOT_DIR=out cargo test -p app --release --test screenshot -- --ignored
+//! AKTIS_SCREENSHOT_DIR=out cargo test -p app --release --test screenshot -- --ignored
 //! ```
 #![allow(
     linker_messages,
@@ -30,7 +30,7 @@ fn first_raw_file() -> Option<PathBuf> {
 #[test]
 #[ignore = "needs a RAW file in testdata/ and a GPU (a software one is fine)"]
 fn window_with_a_developed_raw_file() {
-    let out = PathBuf::from(std::env::var_os("RNE_SCREENSHOT_DIR").expect("set RNE_SCREENSHOT_DIR"));
+    let out = PathBuf::from(std::env::var_os("AKTIS_SCREENSHOT_DIR").expect("set AKTIS_SCREENSHOT_DIR"));
     let raw = first_raw_file().expect("put a RAW file in testdata/");
 
     let mut harness =

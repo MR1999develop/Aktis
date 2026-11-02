@@ -1,5 +1,5 @@
 //! The real network, when its model is available: run with
-//! `RNE_DENOISE_MODELS=<folder> cargo test -p tool-denoise-ai --release -- --ignored --nocapture`.
+//! `AKTIS_DENOISE_MODELS=<folder> cargo test -p tool-denoise-ai --release -- --ignored --nocapture`.
 //! CI generates the 448 px model from the original weights and runs this.
 
 use std::path::PathBuf;
@@ -65,7 +65,7 @@ fn rmse(a: &ImageF32, b: &ImageF32) -> f32 {
 }
 
 #[test]
-#[ignore = "needs the SCUNet model: set RNE_DENOISE_MODELS"]
+#[ignore = "needs the SCUNet model: set AKTIS_DENOISE_MODELS"]
 fn the_network_removes_most_of_the_noise() {
     let Some(dir) = std::env::var_os(MODELS_ENV) else { panic!("set {MODELS_ENV} to the model folder") };
     let device = std::env::var(DEVICE_ENV).map_or(Device::Auto, |v| Device::parse(&v));

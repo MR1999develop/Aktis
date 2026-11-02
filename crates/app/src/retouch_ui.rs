@@ -450,7 +450,7 @@ impl RetouchUi {
         #[allow(clippy::cast_precision_loss)] // image sizes
         let long = developed.width().max(developed.height()).max(1) as f32;
         let mut switch = None;
-        crate::geometry_ui::options_bar(ctx, viewer, "rne-retouch-options", |ui| {
+        crate::geometry_ui::options_bar(ctx, viewer, "aktis-retouch-options", |ui| {
             for (kind_tool, label, hint) in [
                 (ViewerTool::Heal, "Heal", "Copy texture from the source, matched to the spot's surroundings (H)"),
                 (ViewerTool::Clone, "Clone", "Copy the source as it is (S)"),
