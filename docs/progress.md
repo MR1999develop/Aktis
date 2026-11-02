@@ -612,6 +612,11 @@ Details in `docs/catalog.md`.
   every crate. The build scripts remap local paths out of the programs
   (`scripts/build-env.ps1`).
 - The AI denoise models are looked for only in the editor's own folders.
+- Zoom controls on the right of the status line (`zoom_bar`): Zoom out,
+  the percentage (typed or dragged), Levels, Zoom in, Fit, 100 %, Keep
+  zoom (`ViewState::keep_inside` fits a kept zoom to the new photo). The
+  status line gives way in a narrow window (shooting data, lens, then the
+  GPU's name); tests check the controls' order and glyphs.
 - Rust 1.99's clippy: `chunks_exact` with a constant size became
   `as_chunks` throughout.
 

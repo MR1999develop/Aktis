@@ -254,6 +254,12 @@ rename, Delete to the Trash, Ctrl+A select all, Escape back to one photo;
 drag photos onto an album; Ctrl+Z over the Library undoes its last move to
 the Trash or album merge. Photos come in through File ▸ Import Images… (or the Import… button,
 left of Undo on the bar under the menu) and live in a catalog (`Name.aktiscatalog`): see `docs/catalog.md`.
+Zoom: the wheel and pinch around the pointer, a double click between fit
+and 100 %, and on the right of the status line Zoom out, the zoom in percent
+(type or drag), Levels (Capture One's zoom levels), Zoom in, Fit, 100 % and
+Keep zoom (another photo opens at the same zoom and place, to compare one
+detail). In a narrow window the status line drops the shooting data, then
+the lens, and shortens the GPU's name.
 A photo with several variants shows each as a card of its own in the
 filmstrip, right after the one before ("IMG_0001.CR3 (2)"), with its own
 preview; a click opens that variant. Deleting a variant, the first one

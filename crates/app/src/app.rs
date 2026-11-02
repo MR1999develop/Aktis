@@ -60,6 +60,7 @@ use crate::theme::{
     SPINNER_DELAY_SECONDS, TABS_HEIGHT, TOAST_ERROR_SECONDS, TOAST_SECONDS, Tokens,
 };
 use crate::toolbar::{self, BarAction, BarState, TOOL_GROUPS, ViewerTool};
+use crate::zoom_bar::{self, ZoomAction};
 use crate::{APP_NAME, VERSION};
 
 /// Zoom factor per point of mouse-wheel scrolling (one notch ≈ 50 points ≈ ×1.25).
@@ -255,6 +256,8 @@ pub struct EditorApp {
     delete_custom_lens: Option<String>,
     /// Wheel scrolling not yet turned into a zoom step.
     wheel: f32,
+    /// Keep zoom (tool bar): another photo opens at the same zoom and place.
+    keep_zoom: bool,
     /// The New Catalog window, while open.
     new_catalog: Option<NewCatalog>,
     /// The Import Images window, while open.
@@ -363,6 +366,7 @@ impl EditorApp {
             restore_node: None,
             delete_custom_lens: None,
             wheel: 0.0,
+            keep_zoom: false,
             new_catalog: None,
             import: None,
             importing: None,
@@ -879,7 +883,10 @@ impl EditorApp {
                                 }
                             };
                             self.settings.opened(&path);
-                            self.view.fit();
+                            // Keep zoom: the viewer fits the zoom to the new photo instead.
+                            if !self.keep_zoom {
+                                self.view.fit();
+                            }
                             // A development in flight is for the photo being left.
                             self.developing = None;
                             self.install(reopened, false, false);
@@ -2029,9 +2036,29 @@ impl EditorApp {
         }
     }
 
-    /// The status line; a variant chosen in its variant menu goes to `switch_to`.
-    fn status_bar(&self, ui: &mut egui::Ui, switch_to: &mut Option<u32>, zoom_to: &mut Option<ZoomChoice>) {
+    /// The status line; a variant chosen in its variant menu goes to
+    /// `switch_to`, what the zoom controls asked for to `zoom_to`.
+    fn status_bar(&self, ui: &mut egui::Ui, switch_to: &mut Option<u32>, zoom_to: &mut Option<ZoomAction>) {
         let t = Tokens::of(ui.ctx().theme());
+        // The right side (zoom, engine, progress) as wide as last frame: the
+        // lens and the shooting data give way to it in a narrow window, the
+        // shooting data first.
+        let right_id = Id::unique("aktis-status-right");
+        let zoom_id = Id::unique("aktis-status-zoom");
+        let right = ui.ctx().data(|d| d.get_temp::<f32>(right_id)).unwrap_or(0.0);
+        let variant_label = self.variant.as_ref().map(|state| {
+            let list = self.variant_list();
+            let place = list.iter().position(|v| v.number == state.info.number).map_or(1, |i| i + 1);
+            format!("{} \u{b7} {place}/{}", state.info.name, list.len())
+        });
+        let separator = 2.0 * ui.spacing().item_spacing.x + 6.0;
+        let pad = 2.0 * ui.spacing().button_padding.x;
+        let read_only = self.variant.as_ref().is_some_and(|s| s.read_only.is_some());
+        let after = right
+            + variant_label.as_deref().map_or(0.0, |l| separator + text_width(ui, l) + pad)
+            + if read_only { separator + text_width(ui, "Read-only") } else { 0.0 }
+            + separator;
+        let fits = |ui: &egui::Ui, text: &str| separator + text_width(ui, text) <= ui.available_width() - after;
         ui.horizontal(|ui| {
             if let Some(folder) = self.library.folder() {
                 let shown = self.library.strip.visible().len();
@@ -2056,43 +2083,17 @@ impl EditorApp {
                 ui.separator();
                 let (w, h) = doc.shown_size(self.tool != Some(ViewerTool::Crop));
                 ui.label(format!("{w} \u{d7} {h}"));
-                if let Some(vp) = &self.viewport {
-                    ui.separator();
-                    // The zoom, with its levels as in Capture One's zoom menu.
-                    let shown = format!("{:.0} %", self.view.percent([w as f32, h as f32], vp));
-                    ui.menu_button(shown, |ui| {
-                        let fit_keys = ui.ctx().format_shortcut(&Command::ZoomFit.shortcuts()[0]);
-                        if ui.add(Button::new("Fit").shortcut_text(fit_keys)).clicked() {
-                            *zoom_to = Some(ZoomChoice::Fit);
-                            ui.close();
-                        }
-                        for level in editor::view::ZOOM_LEVELS {
-                            let label = format!("{:.0} %", level * 100.0);
-                            let button = if (level - 1.0).abs() < 1e-6 {
-                                let keys = ui.ctx().format_shortcut(&Command::Zoom100.shortcuts()[0]);
-                                Button::new(label).shortcut_text(keys)
-                            } else {
-                                Button::new(label)
-                            };
-                            if ui.add(button).clicked() {
-                                *zoom_to = Some(ZoomChoice::Scale(level));
-                                ui.close();
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text("Zoom: , fits, . shows 100 %, Ctrl+ and Ctrl− step, the wheel too");
-                }
                 if !doc.has_camera_white_balance() {
                     ui.separator();
                     ui.label(RichText::new("No white balance in file").color(t.warning));
                 }
                 let notes = doc.develop_notes().join("\n");
                 match doc.lens() {
-                    Some(lens) => {
+                    Some(lens) if fits(ui, lens) => {
                         ui.separator();
                         ui.label(lens).on_hover_text(notes);
                     }
+                    Some(_) => {}
                     None if !notes.is_empty() => {
                         ui.separator();
                         ui.weak("No lens corrections").on_hover_text(notes);
@@ -2109,17 +2110,17 @@ impl EditorApp {
                 .into_iter()
                 .flatten()
                 .collect();
-                if !shot.is_empty() {
+                let shot = shot.join(" \u{b7} ");
+                if !shot.is_empty() && fits(ui, &shot) {
                     ui.separator();
-                    ui.label(shot.join(" \u{b7} ")).on_hover_text("Aperture, shutter speed and ISO");
+                    ui.label(shot).on_hover_text("Aperture, shutter speed and ISO");
                 }
             }
-            if let Some(state) = &self.variant {
+            if let (Some(state), Some(label)) = (&self.variant, variant_label) {
                 // Which variant is open, with the others a click away.
                 let list = self.variant_list();
-                let place = list.iter().position(|v| v.number == state.info.number).map_or(1, |i| i + 1);
                 ui.separator();
-                ui.menu_button(format!("{} \u{b7} {place}/{}", state.info.name, list.len()), |ui| {
+                ui.menu_button(label, |ui| {
                     for v in &list {
                         if ui.radio(v.number == state.info.number, v.name.as_str()).clicked() {
                             *switch_to = Some(v.number);
@@ -2140,7 +2141,13 @@ impl EditorApp {
                         ui.weak("CPU").on_hover_text(format!("No GPU in use: {why}"));
                     }
                     (Some(b), _) => {
-                        let label = ui.weak(b.to_string());
+                        // The GPU's name only when the zoom controls leave room for it.
+                        let full = b.to_string();
+                        let zoom_width = ui.ctx().data(|d| d.get_temp::<f32>(zoom_id)).unwrap_or(0.0);
+                        let room = ui.available_width() - zoom_width - 2.0 * separator;
+                        let short = matches!(b, Backend::Gpu(_)) && text_width(ui, &full) > room;
+                        let label = ui.weak(if short { "GPU" } else { full.as_str() });
+                        let label = if short { label.on_hover_text(full.as_str()) } else { label };
                         if let Some((timing, quality, [w, h])) = &self.last_render {
                             let kind = match quality {
                                 Quality::Draft => "draft",
@@ -2161,6 +2168,17 @@ impl EditorApp {
                     (None, _) => {
                         ui.weak("Starting the GPU\u{2026}");
                     }
+                }
+                if let (Some(doc), Some(vp)) = (&self.doc, &self.viewport) {
+                    let (w, h) = doc.shown_size(self.tool != Some(ViewerTool::Crop));
+                    ui.separator();
+                    let percent = self.view.percent([w as f32, h as f32], vp);
+                    let before = ui.min_rect().width();
+                    if let Some(action) = zoom_bar::zoom_controls(ui, percent, self.keep_zoom) {
+                        *zoom_to = Some(action);
+                    }
+                    let width = ui.min_rect().width() - before;
+                    ui.ctx().data_mut(|d| d.insert_temp(zoom_id, width));
                 }
                 if self.developing.is_some() {
                     ui.separator();
@@ -2216,6 +2234,8 @@ impl EditorApp {
                     };
                     ui.label(text);
                 }
+                let width = ui.min_rect().width();
+                ui.ctx().data_mut(|d| d.insert_temp(right_id, width));
             });
         });
     }
@@ -2252,6 +2272,8 @@ impl EditorApp {
             let geometry = doc.recipe().geometry;
             let (uw, uh) = doc.upright_size();
             let frame_aspect = uw as f32 / uh.max(1) as f32;
+            // A zoom kept from another photo, or a resized viewer.
+            self.view.keep_inside(image, &vp);
 
             if response.hovered() {
                 let (scroll, pinch, hover) =
@@ -3394,11 +3416,16 @@ impl eframe::App for EditorApp {
         let mut switch_variant = None;
         let mut zoom_to = None;
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &mut switch_variant, &mut zoom_to));
-        if let (Some(choice), Some(doc), Some(vp)) = (zoom_to, &self.doc, &self.viewport) {
-            let (w, h) = doc.shown_size(self.tool != Some(ViewerTool::Crop));
-            match choice {
-                ZoomChoice::Fit => self.view.fit(),
-                ZoomChoice::Scale(s) => self.view.set_scale(s, [w as f32, h as f32], vp),
+        if let (Some(action), Some(doc), Some(vp)) = (zoom_to, &self.doc, &self.viewport) {
+            let image = {
+                let (w, h) = doc.shown_size(self.tool != Some(ViewerTool::Crop));
+                [w as f32, h as f32]
+            };
+            match action {
+                ZoomAction::Fit => self.view.fit(),
+                ZoomAction::Scale(s) => self.view.set_scale(s, image, vp),
+                ZoomAction::Step(up) => self.view.step(up, None, image, vp),
+                ZoomAction::Keep(on) => self.keep_zoom = on,
             }
         }
         let layout = self.settings.layout;
@@ -3574,13 +3601,10 @@ fn error_toast(text: String) -> Toast {
     }
 }
 
-/// A zoom chosen in the status bar's menu.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ZoomChoice {
-    /// The whole photo.
-    Fit,
-    /// Screen pixels per image pixel.
-    Scale(f32),
+/// Width `text` takes as a label in `ui`'s body font.
+fn text_width(ui: &egui::Ui, text: &str) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    ui.painter().layout_no_wrap(text.to_owned(), font, Color32::WHITE).size().x
 }
 
 /// What the View ▸ Workspace menu asked for.

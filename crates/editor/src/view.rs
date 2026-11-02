@@ -195,6 +195,19 @@ impl ViewState {
         self.clamp(image, vp);
     }
 
+    /// Keeps the zoom valid for `image` in the viewport after either changed
+    /// (a zoom kept from another photo, a resized window): a scale at or
+    /// below fit becomes [`Zoom::Fit`], and the image keeps covering the
+    /// viewport where it can.
+    pub fn keep_inside(&mut self, image: [f32; 2], vp: &Viewport) {
+        if let Zoom::Pixels { scale, .. } = self.zoom
+            && scale <= Self::fit_scale(image, vp) * 1.0001
+        {
+            self.zoom = Zoom::Fit;
+        }
+        self.clamp(image, vp);
+    }
+
     /// Keeps the image covering the viewport where it can, and centred on
     /// an axis where it is smaller than the viewport.
     fn clamp(&mut self, image: [f32; 2], vp: &Viewport) {
@@ -356,6 +369,23 @@ mod tests {
         v.pan([0.0, 500.0], wide, &vp1);
         let r = v.image_rect(wide, &vp1);
         assert!(close(r.y + r.h / 2.0, 250.0), "{r:?}");
+    }
+
+    #[test]
+    fn a_zoom_kept_for_another_photo_stays_inside_it() {
+        let mut v = ViewState::default();
+        let vp1 = vp(1.0);
+        v.actual_pixels(None, IMAGE, &vp1);
+        v.pan([-1.0e6, -1.0e6], IMAGE, &vp1);
+        // A smaller photo: still 100 %, its bottom-right corner in the corner.
+        let smaller = [2000.0, 1500.0];
+        v.keep_inside(smaller, &vp1);
+        assert!(close(v.percent(smaller, &vp1), 100.0));
+        let r = v.image_rect(smaller, &vp1);
+        assert!(close(r.x + r.w, 900.0) && close(r.y + r.h, 450.0), "{r:?}");
+        // A photo that fits at 100 %: fit.
+        v.keep_inside([600.0, 300.0], &vp1);
+        assert_eq!(v.zoom(), Zoom::Fit);
     }
 
     #[test]

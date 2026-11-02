@@ -39,6 +39,7 @@ mod settings;
 mod tagging_job;
 mod theme;
 mod toolbar;
+mod zoom_bar;
 
 pub use app::{EditorApp, Status};
 
