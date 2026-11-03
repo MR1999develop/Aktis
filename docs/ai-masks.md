@@ -4,15 +4,15 @@ AI selection makes masks for the subject of a photo, for objects and people
 picked with clicks or a rectangle, for every person (or car, dog …) in the
 frame, and for parts of each person: hair, face skin, body skin, clothes,
 accessories, eyebrows, eye sclera, irises, lips, teeth. AI parts combine with
-brush strokes through add, subtract and intersect. A mask restricts a node:
-the node's effect applies only where the mask is,
-`out = in + mask · (node(in) − in)`.
+brush strokes through add, subtract and intersect. A mask belongs to a
+layer: the layer's tools act only where the mask is,
+`out = in + mask · (tools(in) − in)`.
 
-## In the node graph
+## In the layers
 
-- A **Mask** node (`NodeKind::Mask`) has no input and one key output (blue
-  port). It holds a `MaskDef`: an ordered list of components, then edge
-  refinement, feather, opacity and invert for the whole mask.
+- A **layer** above the Background holds a `MaskDef`: an ordered list of
+  components, then edge refinement, feather, opacity (the layer's) and
+  invert for the whole mask.
 - Each component is an AI selection or a set of brush strokes, and **adds**,
   **subtracts** or **intersects** with the components above it (fuzzy sets:
   union = max, intersection = min, difference = min(a, 1 − b)). The first
@@ -21,11 +21,11 @@ the node's effect applies only where the mask is,
   opacity, sizes as fractions of the long side so they look the same at any
   resolution. A brush component set to subtract is an eraser. With
   `edge_aware` the painted area follows the photo's edges (auto-mask brush).
-- Any tool node has a key input. `Edit::AddMask { to, def }` creates a mask
-  node and connects it there in one undoable step; `Edit::SetMask` changes a
-  definition — a click, a new component, a brush stroke, feather — and a
-  slider drag or a stroke is one undo step. A bypassed mask node leaves the
-  key input as if unconnected.
+- `Edit::AddLayer { name, mask, tools }` adds a layer with its mask in one
+  undoable step (the Masks and AI Select tools do it at the first stroke or
+  click on the Background); `Edit::SetLayerMask` changes a mask — a click, a
+  new component, a brush stroke, feather — and a slider drag or a stroke is
+  one undo step. A layer switched off does nothing.
 
 ## What is stored, and why
 

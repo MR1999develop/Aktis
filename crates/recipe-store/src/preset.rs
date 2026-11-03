@@ -140,7 +140,7 @@ fn read(value: &Value) -> Result<Preset, Read> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use core_model::{Geometry, ParamId, ParamValue, Params, ProfileChoice, StyleNode, ToolId, WhiteBalance};
+    use core_model::{Geometry, ParamId, ParamValue, Params, ProfileChoice, StyleTool, ToolId, WhiteBalance};
 
     use super::*;
 
@@ -154,9 +154,9 @@ mod tests {
             profile: Some(ProfileChoice::Named("Portrait".into())),
             lens: None,
             geometry: Some(Geometry { angle: 2.5, ..Geometry::default() }),
-            nodes: vec![
-                StyleNode { tool: ToolId::new("exposure").unwrap(), params: p },
-                StyleNode { tool: ToolId::new("clarity").unwrap(), params: Params::new() },
+            tools: vec![
+                StyleTool { tool: ToolId::new("exposure").unwrap(), params: p },
+                StyleTool { tool: ToolId::new("clarity").unwrap(), params: Params::new() },
             ],
         };
         let brush = brush.then_some(BrushSettings { radius: 0.05, hardness: 0.25, opacity: 0.6, edge_aware: true });
@@ -180,10 +180,17 @@ mod tests {
         let newer = text.replacen("\"preset_format\":1", "\"preset_format\":4", 1);
         assert_eq!(decode_preset(&newer), Err(DecodeError::NewerVersion(4)));
         for bad in
-            [String::new(), "{}".into(), text.replacen("\"nodes\"", "\"nodez\"", 1), text[..text.len() - 2].into()]
+            [String::new(), "{}".into(), text.replacen("\"tools\"", "\"toolz\"", 1), text[..text.len() - 2].into()]
         {
             assert!(matches!(decode_preset(&bad), Err(DecodeError::Malformed(_))), "{bad}");
         }
+    }
+
+    #[test]
+    fn presets_saved_before_the_layers_still_open() {
+        let p = sample(false);
+        let old = encode_preset(&p).replacen("\"tools\"", "\"nodes\"", 1);
+        assert_eq!(decode_preset(&old), Ok(p));
     }
 
     #[test]

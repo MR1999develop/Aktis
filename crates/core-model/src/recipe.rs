@@ -1,6 +1,6 @@
 //! The complete, non-destructive edit of one image version.
 
-use crate::graph::NodeGraph;
+use crate::layers::Layers;
 
 /// White balance of the development stage.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -331,8 +331,8 @@ impl BaseCurve {
 pub struct Recipe {
     /// The fixed development stage.
     pub develop: DevelopSettings,
-    /// The free node graph.
-    pub graph: NodeGraph,
+    /// The tools after the development stage, in layers.
+    pub layers: Layers,
     /// Perspective, straightening and crop of the finished image.
     pub geometry: crate::Geometry,
     /// Tone curve of the output render.

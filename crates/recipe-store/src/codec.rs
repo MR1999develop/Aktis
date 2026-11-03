@@ -2,18 +2,17 @@
 //!
 //! Enums are written as a plain string when the variant has no data
 //! (`"as_shot"`) and as an object with one key otherwise
-//! (`{"multipliers": [2.1, 1, 1.4]}`). Node ids are numbers, tool and
+//! (`{"multipliers": [2.1, 1, 1.4]}`). Layer ids are numbers, tool and
 //! parameter ids strings, positions inside the image `[x, y]` fractions.
 
 use commands::{Edit, SavedHistory, SavedStep};
 use core_model::{
-    AiMask, AiTarget, BaseCurve, BodyPart, BrushMask, BrushStroke, CustomLens, DevelopSettings, Geometry, LensAmounts,
-    LensSettings, LinearGradient, Link, ManualLens, MaskComponent, MaskDef, MaskOp, MaskSource, ModelId, Node,
-    NodeGraph, NodeId, NodeKind, NormPoint, NormRect, ParamId, ParamValue, Params, ProfileChoice, PromptPoint,
-    RadialGradient, RasterKey, Recipe, Style, StyleNode, ToolId, WhiteBalance,
+    AiMask, AiTarget, BaseCurve, BodyPart, BrushMask, BrushStroke, CustomLens, DevelopSettings, Geometry, LayerId,
+    Layers, LensAmounts, LensSettings, LinearGradient, ManualLens, MaskComponent, MaskDef, MaskOp, MaskSource, ModelId,
+    NormPoint, NormRect, ParamId, ParamValue, Params, ProfileChoice, PromptPoint, RadialGradient, RasterKey, Recipe,
+    Style, StyleTool, ToolId, ToolRef, ToolSettings, Tools, WhiteBalance,
 };
 
-use crate::Layout;
 use crate::json::{Value, field, required};
 
 type Fields = [(String, Value)];
@@ -64,12 +63,12 @@ fn tagged(name: &str, value: Value) -> Value {
     Value::Object(vec![(name.to_owned(), value)])
 }
 
-fn id(v: NodeId) -> Value {
+fn id(v: LayerId) -> Value {
     Value::uint(v.get())
 }
 
-fn read_id(v: &Value, what: &str) -> Result<NodeId, String> {
-    v.as_u32(what).map(NodeId::from_raw)
+fn read_id(v: &Value, what: &str) -> Result<LayerId, String> {
+    v.as_u32(what).map(LayerId::from_raw)
 }
 
 fn read_tool(v: &Value, what: &str) -> Result<ToolId, String> {
@@ -80,12 +79,28 @@ fn read_param(v: &Value, what: &str) -> Result<ParamId, String> {
     ParamId::new(v.as_str(what)?).map_err(|e| format!("{what}: {e}"))
 }
 
-fn ids(list: &[NodeId]) -> Value {
+fn ids(list: &[LayerId]) -> Value {
     Value::Array(list.iter().map(|n| id(*n)).collect())
 }
 
-fn read_ids(v: &Value, what: &str) -> Result<Vec<NodeId>, String> {
-    v.as_array(what)?.iter().map(|n| read_id(n, what)).collect()
+fn read_ids(v: &Value, what: &str) -> Result<Vec<LayerId>, String> {
+    v.as_array(what)?.iter().map(|x| read_id(x, what)).collect()
+}
+
+/// A tool in a layer as `[layer, "tool", slot]`.
+fn tool_ref(at: &ToolRef) -> Value {
+    Value::Array(vec![id(at.layer), Value::text(at.tool.as_str()), Value::uint(at.slot)])
+}
+
+fn read_tool_ref(v: &Value, what: &str) -> Result<ToolRef, String> {
+    let [layer, tool, slot] = v.as_array(what)? else {
+        return Err(format!("{what}: expected [layer, tool, slot]"));
+    };
+    Ok(ToolRef {
+        layer: read_id(layer, what)?,
+        tool: read_tool(tool, what)?,
+        slot: u16::try_from(slot.as_u32(what)?).map_err(|_| format!("{what}: slot too large"))?,
+    })
 }
 
 // ----- development -----
@@ -265,43 +280,53 @@ fn read_params(v: &Value) -> Result<Params, String> {
 
 // ----- styles -----
 
-/// A style: each development setting and the geometry `null` when not
-/// included, the tool nodes as `{"tool": …, "params": {…}}` in acting order.
-pub(crate) fn style(st: &Style) -> Value {
-    let nodes = st
-        .nodes
+/// Tools of a style or a new layer as `[{"tool": …, "params": {…}}]`.
+fn style_tools(tools: &[StyleTool]) -> Value {
+    Value::Array(
+        tools
+            .iter()
+            .map(|n| Value::object([("tool", Value::text(n.tool.as_str())), ("params", params(&n.params))]))
+            .collect(),
+    )
+}
+
+fn read_style_tools(v: &Value) -> Result<Vec<StyleTool>, String> {
+    v.as_array("tools")?
         .iter()
-        .map(|n| Value::object([("tool", Value::text(n.tool.as_str())), ("params", params(&n.params))]))
-        .collect();
+        .map(|n| {
+            let nf = n.as_object("style tool")?;
+            Ok(StyleTool {
+                tool: read_tool(required(nf, "tool")?, "tool")?,
+                params: read_params(required(nf, "params")?)?,
+            })
+        })
+        .collect()
+}
+
+/// A style: each development setting and the geometry `null` when not
+/// included, the tools as `{"tool": …, "params": {…}}`.
+pub(crate) fn style(st: &Style) -> Value {
     Value::object([
         ("white_balance", opt(st.white_balance.map(white_balance))),
         ("profile", opt(st.profile.as_ref().map(profile))),
         ("lens", opt(st.lens.as_ref().map(lens))),
         ("geometry", opt(st.geometry.as_ref().map(geometry))),
-        ("nodes", Value::Array(nodes)),
+        ("tools", style_tools(&st.tools)),
     ])
 }
 
 /// A style read back.
 pub(crate) fn read_style(v: &Value) -> Result<Style, String> {
     let f = v.as_object("style")?;
-    let nodes = required(f, "nodes")?
-        .as_array("nodes")?
-        .iter()
-        .map(|n| {
-            let nf = n.as_object("style node")?;
-            Ok(StyleNode {
-                tool: read_tool(required(nf, "tool")?, "tool")?,
-                params: read_params(required(nf, "params")?)?,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    // Presets saved before the layers call their tools "nodes".
+    let tools = field(f, "tools").or_else(|| field(f, "nodes")).ok_or("missing field 'tools'")?;
+    let tools = read_style_tools(tools)?;
     Ok(Style {
         white_balance: optional(f, "white_balance").map(read_white_balance).transpose()?,
         profile: optional(f, "profile").map(read_profile).transpose()?,
         lens: optional(f, "lens").map(read_lens).transpose()?,
         geometry: optional(f, "geometry").map(read_geometry).transpose()?,
-        nodes,
+        tools,
     })
 }
 
@@ -518,89 +543,82 @@ fn read_mask_def(v: &Value) -> Result<MaskDef, String> {
     })
 }
 
-// ----- graph -----
+// ----- layers -----
 
-fn kind(k: &NodeKind) -> Value {
-    match k {
-        NodeKind::Source => Value::text("source"),
-        NodeKind::Output => Value::text("output"),
-        NodeKind::Mask => Value::text("mask"),
-        NodeKind::Tool(t) => tagged("tool", Value::text(t.as_str())),
-        NodeKind::Parallel { inputs } => tagged("parallel", Value::uint(*inputs)),
-    }
+/// The tools of a layer as `[{"tool": …, "enabled": …, "slots": [{…}]}]`, in id order.
+fn tools(t: &Tools) -> Value {
+    Value::Array(
+        t.iter()
+            .map(|(tool, s)| {
+                Value::object([
+                    ("tool", Value::text(tool.as_str())),
+                    ("enabled", Value::Bool(s.enabled)),
+                    ("slots", Value::Array(s.slots().iter().map(params).collect())),
+                ])
+            })
+            .collect(),
+    )
 }
 
-fn read_kind(v: &Value) -> Result<NodeKind, String> {
-    match tag(v, "node kind")? {
-        ("source", None) => Ok(NodeKind::Source),
-        ("output", None) => Ok(NodeKind::Output),
-        ("mask", None) => Ok(NodeKind::Mask),
-        ("tool", Some(t)) => Ok(NodeKind::Tool(read_tool(t, "tool")?)),
-        ("parallel", Some(n)) => Ok(NodeKind::Parallel { inputs: n.as_u8("parallel inputs")? }),
-        (other, _) => Err(format!("unknown node kind '{other}'")),
+fn read_tools(v: &Value) -> Result<Tools, String> {
+    let mut out = Tools::new();
+    for item in v.as_array("tools")? {
+        let f = item.as_object("tool")?;
+        let tool = read_tool(required(f, "tool")?, "tool")?;
+        let slots = required(f, "slots")?.as_array("slots")?.iter().map(read_params).collect::<Result<_, _>>()?;
+        let settings =
+            ToolSettings::from_parts(required(f, "enabled")?.as_bool("enabled")?, slots).map_err(|e| e.to_string())?;
+        if out.insert(tool.clone(), settings).is_some() {
+            return Err(format!("tool '{tool}' is twice in a layer"));
+        }
     }
+    Ok(out)
 }
 
-fn node(n: &Node) -> Value {
+fn layers(l: &Layers) -> Value {
+    let above = l
+        .layers()
+        .iter()
+        .map(|layer| {
+            Value::object([
+                ("id", id(layer.id)),
+                ("name", Value::text(&layer.name)),
+                ("enabled", Value::Bool(layer.enabled)),
+                ("mask", mask_def(&layer.mask)),
+                ("tools", tools(&layer.tools)),
+            ])
+        })
+        .collect();
     Value::object([
-        ("id", id(n.id)),
-        ("kind", kind(&n.kind)),
-        ("enabled", Value::Bool(n.enabled)),
-        ("label", Value::text(&n.label)),
-        ("params", params(&n.params)),
-        ("mask", opt(n.mask.as_ref().map(mask_def))),
+        ("next_id", Value::uint(l.next_id())),
+        ("background", tools(&l.background)),
+        ("layers", Value::Array(above)),
     ])
 }
 
-fn read_node(v: &Value) -> Result<Node, String> {
-    let f = v.as_object("node")?;
-    Ok(Node {
-        id: read_id(required(f, "id")?, "node id")?,
-        kind: read_kind(required(f, "kind")?)?,
-        enabled: required(f, "enabled")?.as_bool("enabled")?,
-        label: required(f, "label")?.as_str("label")?.to_owned(),
-        params: read_params(required(f, "params")?)?,
-        mask: optional(f, "mask").map(read_mask_def).transpose()?,
-    })
-}
-
-fn link(l: &Link) -> Value {
-    Value::Array(vec![id(l.from), Value::uint(l.from_port), id(l.to), Value::uint(l.to_port)])
-}
-
-fn read_link(v: &Value) -> Result<Link, String> {
-    let [from, from_port, to, to_port] = v.as_array("link")? else {
-        return Err("link: expected [from, port, to, port]".to_owned());
-    };
-    Ok(Link {
-        from: read_id(from, "link")?,
-        from_port: from_port.as_u8("link port")?,
-        to: read_id(to, "link")?,
-        to_port: to_port.as_u8("link port")?,
-    })
-}
-
-fn graph(g: &NodeGraph) -> Value {
-    Value::object([
-        ("next_id", Value::uint(g.next_id())),
-        ("nodes", Value::Array(g.nodes().map(node).collect())),
-        ("links", Value::Array(g.links().map(link).collect())),
-    ])
-}
-
-fn read_graph(v: &Value) -> Result<NodeGraph, String> {
-    let f = v.as_object("graph")?;
-    let nodes = required(f, "nodes")?.as_array("nodes")?.iter().map(read_node).collect::<Result<_, _>>()?;
-    let links = required(f, "links")?.as_array("links")?.iter().map(read_link).collect::<Result<_, _>>()?;
+fn read_layers(v: &Value) -> Result<Layers, String> {
+    let f = v.as_object("layers")?;
+    let mut above = Vec::new();
+    for item in required(f, "layers")?.as_array("layers")? {
+        let lf = item.as_object("layer")?;
+        above.push(core_model::Layer {
+            id: read_id(required(lf, "id")?, "layer id")?,
+            name: required(lf, "name")?.as_str("name")?.to_owned(),
+            enabled: required(lf, "enabled")?.as_bool("enabled")?,
+            mask: read_mask_def(required(lf, "mask")?)?,
+            tools: read_tools(required(lf, "tools")?)?,
+        });
+    }
+    let background = read_tools(required(f, "background")?)?;
     let next_id = required(f, "next_id")?.as_u32("next_id")?;
-    NodeGraph::from_parts(nodes, links, next_id).map_err(|e| e.to_string())
+    Layers::from_parts(background, above, next_id).map_err(|e| e.to_string())
 }
 
 /// A recipe as a JSON value.
 pub(crate) fn recipe(r: &Recipe) -> Value {
     Value::object([
         ("develop", develop(&r.develop)),
-        ("graph", graph(&r.graph)),
+        ("layers", layers(&r.layers)),
         ("geometry", geometry(&r.geometry)),
         ("curve", Value::text(r.curve.id())),
     ])
@@ -611,11 +629,9 @@ pub(crate) fn read_recipe(v: &Value) -> Result<Recipe, String> {
     let f = v.as_object("recipe")?;
     Ok(Recipe {
         develop: read_develop(required(f, "develop")?)?,
-        graph: read_graph(required(f, "graph")?)?,
-        // Recipes saved before geometry existed have none.
-        geometry: optional(f, "geometry").map(read_geometry).transpose()?.unwrap_or_default(),
-        // Recipes saved before the base curve existed use the camera's default.
-        curve: optional(f, "curve").map(read_curve).transpose()?.unwrap_or_default(),
+        layers: read_layers(required(f, "layers")?)?,
+        geometry: read_geometry(required(f, "geometry")?)?,
+        curve: read_curve(required(f, "curve")?)?,
     })
 }
 
@@ -633,55 +649,67 @@ pub(crate) fn edit(e: &Edit) -> Value {
         Value::Object(rest)
     };
     let kv = |k: &str, v: Value| (k.to_owned(), v);
+    let tool = |t: &ToolId| Value::text(t.as_str());
     match e {
-        Edit::SetParam { node, param, value } => o(
+        Edit::SetParam { at, param, value } => o(
             "set_param",
-            vec![kv("node", id(*node)), kv("param", Value::text(param.as_str())), kv("value", param_value(*value))],
+            vec![kv("at", tool_ref(at)), kv("param", Value::text(param.as_str())), kv("value", param_value(*value))],
         ),
-        Edit::SetParams { node, values } => {
+        Edit::SetParams { at, values } => {
             let list =
                 values.iter().map(|(p, v)| Value::Array(vec![Value::text(p.as_str()), param_value(*v)])).collect();
-            o("set_params", vec![kv("node", id(*node)), kv("values", Value::Array(list))])
+            o("set_params", vec![kv("at", tool_ref(at)), kv("values", Value::Array(list))])
         }
-        Edit::ResetParam { node, param } => {
-            o("reset_param", vec![kv("node", id(*node)), kv("param", Value::text(param.as_str()))])
+        Edit::ResetParam { at, param } => {
+            o("reset_param", vec![kv("at", tool_ref(at)), kv("param", Value::text(param.as_str()))])
         }
-        Edit::InsertSerial { after, tool, params: p } => o(
-            "insert_serial",
-            vec![kv("after", id(*after)), kv("tool", Value::text(tool.as_str())), kv("params", params(p))],
+        Edit::ResetTool { layer, tool: t } => o("reset_tool", vec![kv("layer", id(*layer)), kv("tool", tool(t))]),
+        Edit::SetToolEnabled { layer, tool: t, enabled } => o(
+            "set_tool_enabled",
+            vec![kv("layer", id(*layer)), kv("tool", tool(t)), kv("enabled", Value::Bool(*enabled))],
         ),
-        Edit::RemoveNode { node } => o("remove_node", vec![kv("node", id(*node))]),
-        Edit::Connect(l) => o("connect", vec![kv("link", link(l))]),
-        Edit::Disconnect { to, port } => o("disconnect", vec![kv("to", id(*to)), kv("port", Value::uint(*port))]),
-        Edit::SetEnabled { node, enabled } => {
-            o("set_enabled", vec![kv("node", id(*node)), kv("enabled", Value::Bool(*enabled))])
+        Edit::AddLayer { name, mask, tools } => o(
+            "add_layer",
+            vec![kv("name", Value::text(name)), kv("mask", mask_def(mask)), kv("tools", style_tools(tools))],
+        ),
+        Edit::RemoveLayer { layer } => o("remove_layer", vec![kv("layer", id(*layer))]),
+        Edit::RenameLayer { layer, name } => {
+            o("rename_layer", vec![kv("layer", id(*layer)), kv("name", Value::text(name))])
+        }
+        Edit::MoveLayer { layer, index } => o(
+            "move_layer",
+            vec![kv("layer", id(*layer)), kv("index", Value::uint(u32::try_from(*index).unwrap_or(u32::MAX)))],
+        ),
+        Edit::SetLayerEnabled { layer, enabled } => {
+            o("set_layer_enabled", vec![kv("layer", id(*layer)), kv("enabled", Value::Bool(*enabled))])
+        }
+        Edit::SetLayerMask { layer, mask } => {
+            o("set_layer_mask", vec![kv("layer", id(*layer)), kv("mask", mask_def(mask))])
         }
         Edit::SetWhiteBalance(wb) => o("set_white_balance", vec![kv("white_balance", white_balance(*wb))]),
         Edit::SetCameraProfile(p) => o("set_camera_profile", vec![kv("profile", profile(p))]),
         Edit::SetLensCorrection(l) => o("set_lens_correction", vec![kv("lens", lens(l))]),
         Edit::SetGeometry(g) => o("set_geometry", vec![kv("geometry", geometry(g))]),
         Edit::SetBaseCurve(c) => o("set_base_curve", vec![kv("curve", Value::text(c.id()))]),
-        Edit::AddMask { to, def } => o("add_mask", vec![kv("to", id(*to)), kv("mask", mask_def(def))]),
-        Edit::SetMask { node, def } => o("set_mask", vec![kv("node", id(*node)), kv("mask", mask_def(def))]),
         Edit::ApplyStyle { name, style: st } => {
             o("apply_style", vec![kv("name", Value::text(name)), kv("style", style(st))])
         }
-        Edit::AddStyleBrush { name, style: st, mask } => o(
-            "add_style_brush",
-            vec![kv("name", Value::text(name)), kv("style", style(st)), kv("mask", mask_def(mask))],
-        ),
     }
 }
 
 /// An edit read back.
 pub(crate) fn read_edit(v: &Value) -> Result<Edit, String> {
     let f = v.as_object("edit")?;
-    let node = |key: &str| read_id(required(f, key)?, key);
+    let at = || read_tool_ref(required(f, "at")?, "at");
+    let layer = || read_id(required(f, "layer")?, "layer");
+    let tool = || read_tool(required(f, "tool")?, "tool");
     let param = |key: &str| read_param(required(f, key)?, key);
+    let text = |key: &str| required(f, key).and_then(|v| v.as_str(key)).map(str::to_owned);
+    let flag = |key: &str| required(f, key).and_then(|v| v.as_bool(key));
     let name = required(f, "op")?.as_str("op")?;
     Ok(match name {
         "set_param" => Edit::SetParam {
-            node: node("node")?,
+            at: at()?,
             param: param("param")?,
             value: read_param_value(required(f, "value")?, "value")?,
         },
@@ -693,39 +721,35 @@ pub(crate) fn read_edit(v: &Value) -> Result<Edit, String> {
                 };
                 values.push((read_param(p, "parameter")?, read_param_value(value, "value")?));
             }
-            Edit::SetParams { node: node("node")?, values }
+            Edit::SetParams { at: at()?, values }
         }
-        "reset_param" => Edit::ResetParam { node: node("node")?, param: param("param")? },
-        "insert_serial" => Edit::InsertSerial {
-            after: node("after")?,
-            tool: read_tool(required(f, "tool")?, "tool")?,
-            params: read_params(required(f, "params")?)?,
+        "reset_param" => Edit::ResetParam { at: at()?, param: param("param")? },
+        "reset_tool" => Edit::ResetTool { layer: layer()?, tool: tool()? },
+        "set_tool_enabled" => Edit::SetToolEnabled { layer: layer()?, tool: tool()?, enabled: flag("enabled")? },
+        "add_layer" => Edit::AddLayer {
+            name: text("name")?,
+            mask: read_mask_def(required(f, "mask")?)?,
+            tools: read_style_tools(required(f, "tools")?)?,
         },
-        "remove_node" => Edit::RemoveNode { node: node("node")? },
-        "connect" => Edit::Connect(read_link(required(f, "link")?)?),
-        "disconnect" => Edit::Disconnect { to: node("to")?, port: required(f, "port")?.as_u8("port")? },
-        "set_enabled" => Edit::SetEnabled { node: node("node")?, enabled: required(f, "enabled")?.as_bool("enabled")? },
+        "remove_layer" => Edit::RemoveLayer { layer: layer()? },
+        "rename_layer" => Edit::RenameLayer { layer: layer()?, name: text("name")? },
+        "move_layer" => Edit::MoveLayer {
+            layer: layer()?,
+            index: usize::try_from(required(f, "index")?.as_u32("index")?).unwrap_or(usize::MAX),
+        },
+        "set_layer_enabled" => Edit::SetLayerEnabled { layer: layer()?, enabled: flag("enabled")? },
+        "set_layer_mask" => Edit::SetLayerMask { layer: layer()?, mask: read_mask_def(required(f, "mask")?)? },
         "set_white_balance" => Edit::SetWhiteBalance(read_white_balance(required(f, "white_balance")?)?),
         "set_camera_profile" => Edit::SetCameraProfile(read_profile(required(f, "profile")?)?),
         "set_lens_correction" => Edit::SetLensCorrection(read_lens(required(f, "lens")?)?),
         "set_geometry" => Edit::SetGeometry(read_geometry(required(f, "geometry")?)?),
         "set_base_curve" => Edit::SetBaseCurve(read_curve(required(f, "curve")?)?),
-        "add_mask" => Edit::AddMask { to: node("to")?, def: read_mask_def(required(f, "mask")?)? },
-        "set_mask" => Edit::SetMask { node: node("node")?, def: read_mask_def(required(f, "mask")?)? },
-        "apply_style" => Edit::ApplyStyle {
-            name: required(f, "name")?.as_str("name")?.to_owned(),
-            style: Box::new(read_style(required(f, "style")?)?),
-        },
-        "add_style_brush" => Edit::AddStyleBrush {
-            name: required(f, "name")?.as_str("name")?.to_owned(),
-            style: Box::new(read_style(required(f, "style")?)?),
-            mask: read_mask_def(required(f, "mask")?)?,
-        },
+        "apply_style" => Edit::ApplyStyle { name: text("name")?, style: Box::new(read_style(required(f, "style")?)?) },
         other => return Err(format!("unknown edit '{other}'")),
     })
 }
 
-// ----- history and layout -----
+// ----- history -----
 
 /// A saved history as a JSON object.
 pub(crate) fn history(h: &SavedHistory) -> Value {
@@ -753,46 +777,12 @@ pub(crate) fn read_history(v: &Value) -> Result<SavedHistory, String> {
     let mut steps = Vec::new();
     for s in required(f, "steps")?.as_array("steps")? {
         let sf = s.as_object("step")?;
-        if retired(required(sf, "edit")?) {
-            continue;
-        }
         steps.push(SavedStep {
             edit: read_edit(required(sf, "edit")?)?,
             created: read_ids(required(sf, "created")?, "created")?,
             skipped: optional(sf, "skipped").map(|w| w.as_str("skipped").map(str::to_owned)).transpose()?,
         });
     }
-    let redo = required(f, "redo")?
-        .as_array("redo")?
-        .iter()
-        .filter(|e| !retired(e))
-        .map(read_edit)
-        .collect::<Result<_, _>>()?;
+    let redo = required(f, "redo")?.as_array("redo")?.iter().map(read_edit).collect::<Result<_, _>>()?;
     Ok(SavedHistory { base: read_recipe(required(f, "base")?)?, steps, redo })
-}
-
-/// Edits that no longer exist, dropped from saved histories: the choice of
-/// demosaic method (every photo now gets the best method for its sensor).
-fn retired(edit: &Value) -> bool {
-    edit.as_object("edit").ok().and_then(|f| optional(f, "op")).and_then(|op| op.as_str("op").ok())
-        == Some("set_demosaic")
-}
-
-/// Node positions, pan and zoom as a JSON object.
-pub(crate) fn layout(l: &Layout) -> Value {
-    let nodes = l.nodes.iter().map(|(n, [x, y])| Value::Array(vec![id(*n), Value::f32(*x), Value::f32(*y)])).collect();
-    Value::object([("pan", f32s(&l.pan)), ("zoom", Value::f32(l.zoom)), ("nodes", Value::Array(nodes))])
-}
-
-/// Node positions read back.
-pub(crate) fn read_layout(v: &Value) -> Result<Layout, String> {
-    let f = v.as_object("layout")?;
-    let mut nodes = Vec::new();
-    for item in required(f, "nodes")?.as_array("positions")? {
-        let [n, x, y] = item.as_array("position")? else {
-            return Err("position: expected [node, x, y]".to_owned());
-        };
-        nodes.push((read_id(n, "position")?, [x.as_f32("position")?, y.as_f32("position")?]));
-    }
-    Ok(Layout { nodes, pan: read_f32s(required(f, "pan")?, "pan")?, zoom: required(f, "zoom")?.as_f32("zoom")? })
 }

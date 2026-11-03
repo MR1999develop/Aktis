@@ -15,9 +15,9 @@ pub enum ViewerTool {
     Perspective,
     /// Rotation by a line drawn along the horizon.
     Level,
-    /// Brush and gradient masks on the selected node.
+    /// Brush and gradient masks of the selected layer.
     Masks,
-    /// AI selection (subject, objects, people) on the selected node.
+    /// AI selection (subject, objects, people) for the selected layer.
     AiSelect,
     /// Heal: remove spots by copying texture from nearby.
     Heal,
@@ -75,8 +75,10 @@ impl ViewerTool {
             Self::Crop => "Crop and straighten the photo",
             Self::Perspective => "Correct converging lines",
             Self::Level => "Draw a line along the horizon or a vertical to straighten the photo",
-            Self::Masks => "Paint or draw a gradient mask on the selected node",
-            Self::AiSelect => "Select the subject, objects or people for the selected node",
+            Self::Masks => "Paint or draw a gradient mask on the selected layer (on the Background: a new layer)",
+            Self::AiSelect => {
+                "Select the subject, objects or people for the selected layer (on the Background: a new layer)"
+            }
             Self::Heal => "Click a spot to remove it",
             Self::Clone => "Copy one place onto another",
         }
@@ -103,6 +105,8 @@ pub struct BarState {
     pub exporting: bool,
     /// Photos Export would export (the selection, else the open photo).
     pub export_count: usize,
+    /// The export settings in one line ("JPEG, quality 92, full size").
+    pub export_summary: String,
     /// The tool in use.
     pub active: Option<ViewerTool>,
     /// The exposure warning is on.
@@ -203,7 +207,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &BarState) -> Vec<BarAction> {
             };
             if ui
                 .add_enabled(why.is_none(), export)
-                .on_hover_text(format!("{what} with format, size, name and metadata options ({shortcut})"))
+                .on_hover_text(format!("{what}: {} ({shortcut})", state.export_summary))
                 .on_disabled_hover_text(why.unwrap_or_default())
                 .clicked()
             {

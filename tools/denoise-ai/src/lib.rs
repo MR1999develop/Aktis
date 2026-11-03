@@ -2,7 +2,7 @@
 //!
 //! SCUNet (K. Zhang et al., "Practical Blind Image Denoising via Swin-Conv-UNet
 //! and Data Synthesis", 2023, Apache-2.0) is trained on real camera noise and
-//! estimates the noise level by itself. The node therefore runs the network
+//! estimates the noise level by itself. The tool therefore runs the network
 //! once per input image and keeps its output: the two parameters only decide
 //! how much of the correction to apply, so moving them is instant.
 //!
@@ -12,7 +12,7 @@
 //! The network runs on ONNX Runtime ([`engine`]): TensorRT for RTX or
 //! DirectML on Windows, the CPU elsewhere. The model files are not in the
 //! repository; [`models`] says where they are looked for. Without a model
-//! the node passes the image through and reports why.
+//! the tool passes the image through and reports why.
 //!
 //! The image is split into overlapping tiles ([`tiling`]); how linear light
 //! is handed to the network and back is described in [`mapping`].
@@ -28,8 +28,8 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use core_model::ImageF32;
 use tool_api::{
-    Category, GpuKernel, ParamDescriptor, ParamId, ParamKind, ResolvedParams, Stage, Tool, ToolDescriptor, ToolError,
-    ToolId, Unit,
+    Category, GpuKernel, ParamDescriptor, ParamId, ParamKind, ResolvedParams, Tool, ToolDescriptor, ToolError, ToolId,
+    Unit,
 };
 
 use crate::engine::{DEVICE_ENV, Device, Scunet, TileProfile};
@@ -54,7 +54,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| {
         version: 1,
         name: "AI denoise",
         category: Category::Details,
-        stage: Stage::Graph,
+        order: 20,
         params: vec![
             ParamDescriptor {
                 id: ParamId::new(GRAIN).expect("constant id is valid"),
@@ -98,7 +98,7 @@ struct State {
     status: Option<String>,
 }
 
-/// The AI denoise tool. One instance is shared by every node that uses it;
+/// The AI denoise tool. One instance is shared by every layer that uses it;
 /// the model is loaded on first use and kept.
 pub struct AiDenoise {
     state: Mutex<State>,

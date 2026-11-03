@@ -119,7 +119,7 @@ pub fn megabytes(bytes: u64) -> String {
 /// A use of AI that needs downloaded files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
-    /// The AI denoise node (SCUNet).
+    /// The AI denoise tool (SCUNet).
     Denoise,
     /// Select the main subject (BiRefNet).
     Subject,
@@ -171,7 +171,7 @@ impl Feature {
     }
 }
 
-/// The feature a node's tool needs, for the tools that need one.
+/// The feature a tool needs, for the tools that need one.
 #[must_use]
 pub fn feature_for_tool(tool_id: &str) -> Option<Feature> {
     match tool_id {
@@ -217,7 +217,7 @@ pub fn catalog() -> Vec<Pack> {
     packs.push(Pack {
         id: SCUNET_ID,
         name: "SCUNet (AI denoise)",
-        purpose: "Removes noise; needed by the AI denoise node",
+        purpose: "Removes noise; needed by the AI denoise tool",
         license: "Apache-2.0",
         source: SCUNET_HOME,
         optional: false,

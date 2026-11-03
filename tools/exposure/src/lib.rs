@@ -26,7 +26,7 @@ use std::sync::{Arc, LazyLock};
 
 use core_model::ImageF32;
 use tool_api::{
-    Category, GpuKernel, ParamDescriptor, ParamId, ParamKind, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId, Unit,
+    Category, GpuKernel, ParamDescriptor, ParamId, ParamKind, ResolvedParams, Tool, ToolDescriptor, ToolId, Unit,
 };
 
 /// Id of the exposure parameter, in stops.
@@ -64,7 +64,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     version: 2,
     name: "Exposure",
     category: Category::Exposure,
-    stage: Stage::Graph,
+    order: 50,
     params: vec![
         ParamDescriptor {
             id: ParamId::new(EXPOSURE).expect("constant id is valid"),

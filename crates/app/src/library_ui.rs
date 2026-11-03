@@ -28,8 +28,8 @@ use crate::theme::{BADGE_STAR, FONT, SPACE, Tokens};
 
 /// Thumbnails kept on the GPU (about 270 KB each).
 const THUMB_CACHE: usize = 300;
-/// Rows above and below the visible ones whose thumbnails are asked for.
-const PREFETCH_ROWS: usize = 6;
+/// Cards before and after the visible ones whose thumbnails are asked for.
+const PREFETCH_CARDS: usize = 12;
 /// Inner margin of a filmstrip card.
 const CARD_PAD: f32 = 6.0;
 /// Thumbnail frame width ÷ height.
@@ -222,8 +222,8 @@ pub struct Library {
     rename: Option<RenameDialog>,
     /// Bring this photo into view in the filmstrip.
     scroll_to: Option<PathBuf>,
-    /// Filmstrip rows drawn at the last frame.
-    shown_rows: std::ops::Range<usize>,
+    /// Filmstrip cards drawn at the last frame.
+    shown_cards: std::ops::Range<usize>,
     /// The pointer was over the filmstrip at the last frame (Delete trashes then).
     strip_hovered: bool,
     /// The pointer was over the Explorer at the last frame (Ctrl+Z undoes
@@ -305,7 +305,7 @@ impl Library {
             wanted: Vec::new(),
             rename: None,
             scroll_to: None,
-            shown_rows: 0..0,
+            shown_cards: 0..0,
             strip_hovered: false,
             explorer_hovered: false,
             last_undo: None,
@@ -981,7 +981,7 @@ impl Library {
             self.begin_rename(path.to_owned());
         }
         // Delete moves to the Trash, as in Capture One (not from a disk folder),
-        // with the pointer over the filmstrip: elsewhere it deletes a node or a spot.
+        // with the pointer over the filmstrip: elsewhere it deletes a layer or a spot.
         if self.strip_hovered && self.collection.as_ref().is_some_and(|c| !c.is_trash()) && pressed(Key::Delete) {
             // The open photo alone, with several variants: only its open
             // variant goes (asked first), as in Capture One.
@@ -1264,12 +1264,13 @@ impl Library {
             ui.add(Label::new(RichText::new(text).color(t.text_weak)).wrap());
             return;
         }
-        // Cards grow with the strip, then the strip makes more columns.
+        // A row of cards under the photo, as tall as the strip: drag its top
+        // edge to make them larger.
         let gap = ui.spacing().item_spacing.x;
-        let (columns, card_w) = editor::library::filmstrip_columns(ui.available_width(), gap);
-        let thumb_h = ((card_w - 2.0 * CARD_PAD) / THUMB_ASPECT).max(20.0);
-        let card_h = CARD_PAD + thumb_h + 4.0 + 2.0 * CARD_LINE + CARD_PAD;
-        let row_step = card_h + ui.spacing().item_spacing.y;
+        let card_h = ui.available_height().max(60.0);
+        let thumb_h = (card_h - 2.0 * CARD_PAD - 4.0 - 2.0 * CARD_LINE).max(20.0);
+        let card_w = thumb_h * THUMB_ASPECT + 2.0 * CARD_PAD;
+        let step = card_w + gap;
 
         self.reload_variant_lists();
         let cards = editor::library::strip_cards(&visible, &self.strip.photos, |p| {
@@ -1280,58 +1281,77 @@ impl Library {
                 self.variant_lists.get(p).map(Vec::as_slice)
             }
         });
-        let mut area = egui::ScrollArea::vertical().id_salt("filmstrip").auto_shrink([false, false]);
+        let mut area = egui::ScrollArea::horizontal().id_salt("filmstrip").auto_shrink([false, false]);
         if let Some(target) = self.scroll_to.take()
             && let Some(pos) = cards.iter().position(|c| self.strip.photos[c.index].path == target)
-            && !(self.shown_rows.start < pos / columns && pos / columns + 1 < self.shown_rows.end)
+            && !(self.shown_cards.start < pos && pos + 1 < self.shown_cards.end)
         {
-            // One card above the target stays in view.
-            #[allow(clippy::cast_precision_loss)] // row counts
-            let offset = (pos / columns).saturating_sub(1) as f32 * row_step;
-            area = area.vertical_scroll_offset(offset);
+            // One card before the target stays in view.
+            #[allow(clippy::cast_precision_loss)] // card counts
+            let offset = pos.saturating_sub(1) as f32 * step;
+            area = area.horizontal_scroll_offset(offset);
         }
 
         let mut card_actions = Vec::new();
         let several = self.strip.selection().len() > 1;
-        let Self { strip, thumbs, wanted, shown_rows, presets, albums, collection, catalog, variant_thumbs, .. } = self;
+        let hovered = self.strip_hovered;
+        let Self { strip, thumbs, wanted, shown_cards, presets, albums, collection, catalog, variant_thumbs, .. } =
+            self;
         let presets: &[String] = presets;
         let (albums, collection): (&[Album], Option<&Collection>) = (albums, collection.as_ref());
-        let row_count = cards.len().div_ceil(columns);
-        area.show_rows(ui, card_h, row_count, |ui, rows| {
-            let first = rows.start.saturating_sub(PREFETCH_ROWS) * columns;
-            let last = ((rows.end + PREFETCH_ROWS) * columns).min(cards.len());
+        area.show_viewport(ui, |ui, viewport| {
+            // The wheel moves along the strip.
+            if hovered {
+                let dy = ui.input(|i| i.smooth_scroll_delta.y);
+                if dy != 0.0 {
+                    ui.scroll_with_delta(vec2(dy, 0.0));
+                }
+            }
+            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let (start, end) = {
+                let start = (viewport.min.x / step).floor().max(0.0) as usize;
+                let end = ((viewport.max.x / step).ceil().max(0.0) as usize + 1).min(cards.len());
+                (start.min(end), end)
+            };
+            let first = start.saturating_sub(PREFETCH_CARDS);
+            let last = (end + PREFETCH_CARDS).min(cards.len());
             for c in &cards[first..last] {
                 let path = &strip.photos[c.index].path;
                 if wanted.last() != Some(path) {
                     wanted.push(path.clone());
                 }
             }
-            *shown_rows = rows.clone();
-            for row in rows {
-                ui.horizontal(|ui| {
-                    for c in cards.iter().skip(row * columns).take(columns) {
-                        let photo = &strip.photos[c.index];
-                        let is_current = current == Some(photo.path.as_path());
-                        let state = CardState {
-                            open: is_current && c.variant.as_ref().is_none_or(|v| Some(v.number) == open.number),
-                            selected: strip.is_selected(&photo.path),
-                            several,
-                            variants: variant_blocks,
-                            presets,
-                            albums,
-                            collection,
-                            variant: c.variant.as_ref(),
-                        };
-                        // A variant shows its own stored preview when there is one.
-                        let own = c.variant.as_ref().and_then(|v| {
-                            variant_thumb(ui.ctx(), catalog.as_ref(), variant_thumbs, &photo.path, v.number)
-                        });
-                        let own = own.map(ThumbState::Ready);
-                        let thumb = own.as_ref().or_else(|| thumbs.get(&photo.path));
-                        card(ui, &t, photo, thumb, state, [card_w, card_h], &mut card_actions);
-                    }
-                });
-            }
+            *shown_cards = start..end;
+            ui.horizontal(|ui| {
+                #[allow(clippy::cast_precision_loss)] // card counts
+                let before = start as f32 * step;
+                #[allow(clippy::cast_precision_loss)] // card counts
+                let after = (cards.len() - end) as f32 * step;
+                ui.add_space(before);
+                for c in &cards[start..end] {
+                    let photo = &strip.photos[c.index];
+                    let is_current = current == Some(photo.path.as_path());
+                    let state = CardState {
+                        open: is_current && c.variant.as_ref().is_none_or(|v| Some(v.number) == open.number),
+                        selected: strip.is_selected(&photo.path),
+                        several,
+                        variants: variant_blocks,
+                        presets,
+                        albums,
+                        collection,
+                        variant: c.variant.as_ref(),
+                    };
+                    // A variant shows its own stored preview when there is one.
+                    let own = c
+                        .variant
+                        .as_ref()
+                        .and_then(|v| variant_thumb(ui.ctx(), catalog.as_ref(), variant_thumbs, &photo.path, v.number));
+                    let own = own.map(ThumbState::Ready);
+                    let thumb = own.as_ref().or_else(|| thumbs.get(&photo.path));
+                    card(ui, &t, photo, thumb, state, [card_w, card_h], &mut card_actions);
+                }
+                ui.add_space(after);
+            });
         });
         self.drag_hint(ui.ctx(), &t);
         // The overview of a multiple selection shows its thumbnails too.

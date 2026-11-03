@@ -14,7 +14,7 @@ use std::thread;
 
 use ai_segment::catalog::ModelStore;
 use ai_segment::{OnnxRuntime, Segmenter};
-use core_model::{DevelopSettings, ImageF32, MaskDef, NodeId, Orientation};
+use core_model::{DevelopSettings, ImageF32, LayerId, MaskDef, Orientation};
 
 /// The segmenter, loaded once.
 static SEGMENTER: Mutex<Option<Arc<Segmenter>>> = Mutex::new(None);
@@ -27,8 +27,8 @@ static IDS: Mutex<Vec<(PathBuf, String, String)>> = Mutex::new(Vec::new());
 #[derive(Debug)]
 pub struct AiMaskJob {
     rx: Receiver<Result<MaskDef, String>>,
-    /// The mask node it is for.
-    pub mask: NodeId,
+    /// The layer whose mask it is.
+    pub layer: LayerId,
 }
 
 /// What the job needs about the photo.
@@ -45,13 +45,13 @@ pub struct Photo {
 }
 
 impl AiMaskJob {
-    /// Computes the missing rasters of `def` (the mask of node `mask`).
+    /// Computes the missing rasters of `def` (the mask of `layer`).
     ///
     /// # Errors
     /// The thread could not be started.
     pub fn start(
         photo: Photo,
-        mask: NodeId,
+        layer: LayerId,
         mut def: MaskDef,
         notify: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self> {
@@ -61,7 +61,7 @@ impl AiMaskJob {
             let _ = tx.send(result);
             notify();
         })?;
-        Ok(Self { rx, mask })
+        Ok(Self { rx, layer })
     }
 
     /// The completed definition, or why it failed, once the job is done.

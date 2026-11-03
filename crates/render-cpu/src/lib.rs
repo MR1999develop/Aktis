@@ -1,165 +1,112 @@
 //! Reference renderer on the CPU.
 //!
-//! Evaluates a node graph with each tool's [`Tool::apply`] (its CPU reference,
-//! or its own engine for host tools) and turns the result into display
-//! pixels. It favours clarity over speed: the GPU engine must produce the
-//! same pixels (within a stated tolerance), and this crate
-//! is what its tests compare against. It is also the fallback without a GPU.
+//! Renders a photo's [`Layers`] with each tool's [`Tool::apply`] (its CPU
+//! reference, or its own engine for host tools) and turns the result into
+//! display pixels. It favours clarity over speed: the GPU engine must
+//! produce the same pixels (within a stated tolerance), and this crate is
+//! what its tests compare against. It is also the fallback without a GPU.
 //!
-//! A tool node with something on its key input applies its effect only
-//! where the mask is: `out = in + mask · (tool(in) − in)`. Masks are built by
-//! the `masks` crate, the same code the GPU engine uses, so both engines see
-//! identical masks.
+//! The Background's tools act on the developed image in the fixed order of
+//! the tools; then each layer that is switched on, from the bottom, runs
+//! its own tools on the result and mixes them in through its mask:
+//! `out = in + mask · (tools(in) − in)`. Masks are built from the developed
+//! image by the `masks` crate, the same code the GPU engine uses, so both
+//! engines see identical masks.
 //!
 //! [`Tool::apply`]: tool_api::Tool::apply
-
-use std::collections::BTreeMap;
-use std::fmt;
 
 mod display;
 pub mod resize;
 pub mod tone;
 
-use core_model::{GraphError, ImageF32, MaskImage, NodeGraph, NodeId, NodeKind, Orientation, ToolId};
+use core_model::{ImageF32, LayerId, Layers, MaskImage, Orientation, ToolId, ToolRef, Tools};
 use masks::{NoRasters, RasterSource};
 use tool_api::{ResolvedParams, ToolError, ToolRegistry};
-
-/// Why the graph could not be rendered.
-#[derive(Debug, Clone, PartialEq)]
-pub enum RenderError {
-    /// The graph is not connected from Source to Output.
-    Graph(GraphError),
-    /// A node needed for the output has no image input.
-    MissingInput(NodeId),
-    /// The node kind is not rendered yet in this phase (parallel mixer).
-    NotYetSupported(NodeId),
-    /// A mask node has no mask definition (a corrupted recipe).
-    NoMaskDefinition(NodeId),
-}
-
-impl fmt::Display for RenderError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Graph(e) => e.fmt(f),
-            Self::MissingInput(id) => write!(f, "node {id} has no image input"),
-            Self::NotYetSupported(id) => write!(f, "node {id} cannot be rendered yet"),
-            Self::NoMaskDefinition(id) => write!(f, "mask node {id} has no mask definition"),
-        }
-    }
-}
-
-impl std::error::Error for RenderError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Graph(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<GraphError> for RenderError {
-    fn from(e: GraphError) -> Self {
-        Self::Graph(e)
-    }
-}
 
 /// The rendered image and what could not be applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rendered {
     /// Linear image in the source's working space.
     pub image: ImageF32,
-    /// Tools used by the recipe but missing from this build. Their nodes
-    /// passed the image through unchanged; their parameters are kept.
+    /// Tools used by the recipe but missing from this build. They passed the
+    /// image through unchanged; their parameters are kept.
     pub missing_tools: Vec<ToolId>,
-    /// Nodes whose tool could not run (for example a missing model file).
-    /// They passed the image through unchanged.
-    pub tool_errors: Vec<(NodeId, ToolError)>,
-    /// AI mask components whose raster is not computed: (mask node, component
-    /// index). They counted as empty, so their tools had no effect there.
-    pub missing_masks: Vec<(NodeId, usize)>,
+    /// Tools that could not run (for example a missing model file). They
+    /// passed the image through unchanged.
+    pub tool_errors: Vec<(ToolRef, ToolError)>,
+    /// AI mask components whose raster is not computed: (layer, component
+    /// index). They counted as empty, so the layer had no effect there.
+    pub missing_masks: Vec<(LayerId, usize)>,
 }
 
-/// Evaluates `graph` on `source` (the developed image), with no AI rasters:
+impl Rendered {
+    /// `image` with nothing missing yet.
+    #[must_use]
+    pub fn passing(image: ImageF32) -> Self {
+        Self { image, missing_tools: Vec::new(), tool_errors: Vec::new(), missing_masks: Vec::new() }
+    }
+}
+
+/// Renders `layers` on `source` (the developed image), with no AI rasters:
 /// every AI mask component counts as not computed.
-///
-/// # Errors
-/// [`RenderError`] when the graph cannot be evaluated.
-pub fn render(graph: &NodeGraph, registry: &ToolRegistry, source: &ImageF32) -> Result<Rendered, RenderError> {
-    render_with_masks(graph, registry, source, &NoRasters)
+#[must_use]
+pub fn render(layers: &Layers, registry: &ToolRegistry, source: &ImageF32) -> Rendered {
+    render_with_masks(layers, registry, source, &NoRasters)
 }
 
-/// Evaluates `graph` on `source` (the developed image), taking AI rasters from `rasters`.
-///
-/// # Errors
-/// [`RenderError`] when the graph cannot be evaluated.
+/// Renders `layers` on `source` (the developed image), taking AI rasters from `rasters`.
+#[must_use]
 pub fn render_with_masks(
-    graph: &NodeGraph,
+    layers: &Layers,
     registry: &ToolRegistry,
     source: &ImageF32,
     rasters: &dyn RasterSource,
-) -> Result<Rendered, RenderError> {
-    let order = graph.evaluation_order()?;
-    let mut results: BTreeMap<NodeId, ImageF32> = BTreeMap::new();
-    let mut mask_results: BTreeMap<NodeId, MaskImage> = BTreeMap::new();
-    let mut missing_tools = Vec::new();
-    let mut tool_errors = Vec::new();
-    let mut missing_masks = Vec::new();
-
-    for id in order {
-        let Some(node) = graph.node(id) else { continue };
-        let image_input =
-            || graph.input_link(id, 0).and_then(|l| results.get(&l.from)).cloned().ok_or(RenderError::MissingInput(id));
-        let out = match &node.kind {
-            NodeKind::Source => source.clone(),
-            NodeKind::Output => image_input()?,
-            NodeKind::Mask => {
-                let def = node.mask.as_ref().ok_or(RenderError::NoMaskDefinition(id))?;
-                // A bypassed mask node leaves the key input as if unconnected.
-                if node.enabled {
-                    let evaluated = masks::evaluate(def, rasters, source);
-                    missing_masks.extend(evaluated.missing.iter().map(|c| (id, *c)));
-                    mask_results.insert(id, evaluated.mask);
-                }
-                continue;
-            }
-            NodeKind::Tool(tool_id) => {
-                let mut img = image_input()?;
-                match registry.get(tool_id) {
-                    Some(tool) if node.enabled => {
-                        let params = ResolvedParams::resolve(tool.descriptor(), &node.params);
-                        let key = graph.input_link(id, 1).and_then(|l| mask_results.get(&l.from));
-                        let before = key.map(|_| img.clone());
-                        match tool.apply(&mut img, &params) {
-                            Err(e) => tool_errors.push((id, e)),
-                            Ok(()) => {
-                                if let (Some(mask), Some(before)) = (key, &before) {
-                                    blend(&mut img, before, mask);
-                                }
-                            }
-                        }
-                    }
-                    Some(_) => {}
-                    None => {
-                        if !missing_tools.contains(tool_id) {
-                            missing_tools.push(tool_id.clone());
-                        }
-                    }
-                }
-                img
-            }
-            NodeKind::Parallel { .. } => return Err(RenderError::NotYetSupported(id)),
-        };
-        results.insert(id, out);
+) -> Rendered {
+    let order = registry.pipeline();
+    let mut out = Rendered::passing(source.clone());
+    apply_tools(&layers.background, LayerId::BACKGROUND, &order, registry, &mut out);
+    for layer in layers.layers().iter().filter(|l| l.enabled) {
+        if layer.tools.steps(&order).is_empty() {
+            continue;
+        }
+        let evaluated = masks::evaluate(&layer.mask, rasters, source);
+        out.missing_masks.extend(evaluated.missing.iter().map(|c| (layer.id, *c)));
+        let before = out.image.clone();
+        apply_tools(&layer.tools, layer.id, &order, registry, &mut out);
+        blend(&mut out.image, &before, &evaluated.mask);
     }
+    out
+}
 
-    let image = results.remove(&graph.output()).ok_or(RenderError::MissingInput(graph.output()))?;
-    Ok(Rendered { image, missing_tools, tool_errors, missing_masks })
+/// Runs the tools of one layer on `out.image`, in `order`, noting the
+/// missing tools and the failures in `out`.
+pub fn apply_tools(tools: &Tools, layer: LayerId, order: &[ToolId], registry: &ToolRegistry, out: &mut Rendered) {
+    for (tool_id, slot, params) in tools.steps(order) {
+        let Some(tool) = registry.get(tool_id) else {
+            if !out.missing_tools.contains(tool_id) {
+                out.missing_tools.push(tool_id.clone());
+            }
+            continue;
+        };
+        let params = ResolvedParams::resolve(tool.descriptor(), params);
+        if let Err(e) = tool.apply(&mut out.image, &params) {
+            out.tool_errors.push((ToolRef::new(layer, tool_id.clone()).with_slot(slot), e));
+        }
+    }
 }
 
 /// `after ← before + mask · (after − before)`, every channel. Masks are built
-/// at the source's size and every node keeps that size.
-fn blend(after: &mut ImageF32, before: &ImageF32, mask: &MaskImage) {
-    debug_assert_eq!((mask.width(), mask.height()), (after.width(), after.height()));
+/// at the source's size and every tool keeps that size.
+///
+/// # Panics
+/// When the sizes differ (a bug): mixing only part of the image would show
+/// and export a wrong result without a word. The render workers catch it.
+pub fn blend(after: &mut ImageF32, before: &ImageF32, mask: &MaskImage) {
+    let size = (after.width(), after.height());
+    assert!(
+        (mask.width(), mask.height()) == size && (before.width(), before.height()) == size,
+        "a layer's mask or the image under it does not have the image's size"
+    );
     for ((a, b), m) in after.pixels_mut().iter_mut().zip(before.pixels()).zip(mask.values()) {
         for (x, y) in a.iter_mut().zip(b) {
             *x = y + m * (*x - y);

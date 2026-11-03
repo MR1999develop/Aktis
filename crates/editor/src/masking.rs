@@ -1,5 +1,5 @@
 //! The editing logic of the Masks (brush) and AI Select tools: how a
-//! painted stroke or a click changes a tool node's mask, and the mask as an
+//! painted stroke or a click changes a layer's mask, and the mask as an
 //! overlay on the photo. The drawing and the pointer are in the app.
 
 use core_model::{

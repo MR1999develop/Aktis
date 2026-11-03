@@ -1,14 +1,14 @@
 //! What the window and the command line share.
 //!
 //! - [`builtin_tools`]: the tools of this build (the composition root),
-//!   including the AI denoise node with the `ai-denoise` feature (default).
-//! - [`Engine`]: renders a recipe's node graph on the GPU when there is one,
+//!   including the AI denoise tool with the `ai-denoise` feature (default).
+//! - [`Engine`]: renders a recipe's layers on the GPU when there is one,
 //!   on the CPU otherwise, and falls back to the CPU if the GPU fails mid-way.
 //! - [`downscale`]: a smaller copy of a developed image for the preview.
 //! - [`to_display`]: upright 8-bit sRGB pixels for the screen.
 //! - [`export_jpeg`]: upright JPEG with an sRGB profile, written atomically
 //!   under a name that never overwrites an existing file.
-//! - [`finish_for_export`]: the steps after the node graph for the export
+//! - [`finish_for_export`]: the steps after the layers for the export
 //!   window (geometry, size, 16-bit output pixels, watermark); the file
 //!   formats, names and metadata are in [`export`], re-exported here.
 //! - [`lens_database`] and [`profile_library`]: the lens data and the camera
@@ -31,7 +31,7 @@ use core_color::ProfileLibrary;
 use lens_db::LensDatabase;
 use platform::{APP_DIR, Os};
 
-use core_model::{BaseCurve, Geometry, ImageError, ImageF32, NodeGraph, NodeId, Orientation, ToolId};
+use core_model::{BaseCurve, Geometry, ImageError, ImageF32, LayerId, Layers, Orientation, ToolId, ToolRef};
 use tool_api::{RegistryError, ToolError, ToolRegistry};
 
 /// Every tool compiled into this build, registered once.
@@ -83,7 +83,7 @@ fn ai_denoise() -> std::sync::Arc<tool_denoise_ai::AiDenoise> {
     std::sync::Arc::clone(TOOL.get_or_init(tool_denoise_ai::AiDenoise::from_environment))
 }
 
-/// What the AI denoise node last ran on ("GPU (DirectML), 960 px tiles"),
+/// What the AI denoise tool last ran on ("GPU (DirectML), 960 px tiles"),
 /// or why it could not run; `None` before its first run or without the
 /// `ai-denoise` feature.
 #[cfg(feature = "ai-denoise")]
@@ -92,7 +92,7 @@ pub fn ai_denoise_status() -> Option<String> {
     ai_denoise().status()
 }
 
-/// Without the `ai-denoise` feature there is no AI denoise node.
+/// Without the `ai-denoise` feature there is no AI denoise tool.
 #[cfg(not(feature = "ai-denoise"))]
 #[must_use]
 pub fn ai_denoise_status() -> Option<String> {
@@ -129,8 +129,6 @@ impl fmt::Display for Backend {
 /// Why rendering, conversion or export failed.
 #[derive(Debug)]
 pub enum EngineError {
-    /// The graph cannot be evaluated.
-    Render(render_cpu::RenderError),
     /// An image could not be built (size limits).
     Image(ImageError),
     /// Encoding or writing the file failed.
@@ -140,7 +138,6 @@ pub enum EngineError {
 impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Render(e) => e.fmt(f),
             Self::Image(e) => e.fmt(f),
             Self::Export(e) => e.fmt(f),
         }
@@ -150,7 +147,6 @@ impl fmt::Display for EngineError {
 impl std::error::Error for EngineError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Render(e) => Some(e),
             Self::Image(e) => Some(e),
             Self::Export(e) => Some(e),
         }
@@ -176,19 +172,19 @@ pub struct Rendered {
     pub image: ImageF32,
     /// Tools used by the recipe but missing from this build (passed through).
     pub missing_tools: Vec<ToolId>,
-    /// AI mask components whose raster is not computed: (mask node,
-    /// component index). They selected nothing; the UI offers to compute them.
-    pub missing_masks: Vec<(core_model::NodeId, usize)>,
+    /// AI mask components whose raster is not computed: (layer, component
+    /// index). They selected nothing; the UI offers to compute them.
+    pub missing_masks: Vec<(LayerId, usize)>,
     /// Where it ran.
     pub backend: Backend,
     /// Why the GPU was skipped for this render, if it failed and the CPU took over.
     pub gpu_failure: Option<String>,
-    /// Nodes whose tool could not run (for example the AI denoise node
-    /// without its model); they passed the image through.
-    pub tool_errors: Vec<(NodeId, ToolError)>,
+    /// Tools that could not run (for example the AI denoise tool without
+    /// its model); they passed the image through.
+    pub tool_errors: Vec<(ToolRef, ToolError)>,
 }
 
-/// Renders node graphs with the built-in tools, on the GPU when possible.
+/// Renders layers with the built-in tools, on the GPU when possible.
 ///
 /// Creating it may take a moment (the GPU driver starts): do it on a worker
 /// thread. It is `Send + Sync`; share it with an `Arc`.
@@ -231,50 +227,41 @@ impl Engine {
         self.gpu_problem.as_deref()
     }
 
-    /// Evaluates `graph` on `source`. A GPU failure is not an error: the CPU
+    /// Renders `layers` on `source`. A GPU failure is not an error: the CPU
     /// renders instead and [`Rendered::gpu_failure`] says why.
-    ///
-    /// # Errors
-    /// [`EngineError::Render`] when the graph itself cannot be evaluated.
-    pub fn render(&self, graph: &NodeGraph, source: &ImageF32) -> Result<Rendered, EngineError> {
-        self.render_with_masks(graph, source, &masks::NoRasters)
+    #[must_use]
+    pub fn render(&self, layers: &Layers, source: &ImageF32) -> Rendered {
+        self.render_with_masks(layers, source, &masks::NoRasters)
     }
 
     /// Like [`Self::render`], taking the rasters of AI masks from `rasters`.
-    ///
-    /// # Errors
-    /// [`EngineError::Render`] when the graph itself cannot be evaluated.
-    pub fn render_with_masks(
-        &self,
-        graph: &NodeGraph,
-        source: &ImageF32,
-        rasters: &dyn masks::RasterSource,
-    ) -> Result<Rendered, EngineError> {
+    #[must_use]
+    pub fn render_with_masks(&self, layers: &Layers, source: &ImageF32, rasters: &dyn masks::RasterSource) -> Rendered {
         let mut gpu_failure = None;
         if let Some(g) = &self.gpu {
-            match g.render_with_masks(graph, &self.registry, source, rasters) {
+            match g.render_with_masks(layers, &self.registry, source, rasters) {
                 Ok(r) => {
-                    return Ok(Rendered {
+                    return Rendered {
                         image: r.image,
                         missing_tools: r.missing_tools,
                         missing_masks: r.missing_masks,
                         backend: Backend::Gpu(g.context().adapter_name()),
                         gpu_failure: None,
                         tool_errors: r.tool_errors,
-                    });
+                    };
                 }
                 Err(e) => gpu_failure = Some(e.to_string()),
             }
         }
-        let r = render_cpu::render_with_masks(graph, &self.registry, source, rasters).map_err(EngineError::Render)?;
-        Ok(Rendered {
+        let r = render_cpu::render_with_masks(layers, &self.registry, source, rasters);
+        Rendered {
             image: r.image,
             missing_tools: r.missing_tools,
             missing_masks: r.missing_masks,
             backend: Backend::Cpu,
             gpu_failure,
             tool_errors: r.tool_errors,
-        })
+        }
     }
 }
 
@@ -505,11 +492,35 @@ mod tests {
         let engine = Engine::new(builtin_tools().unwrap(), EngineChoice::CpuOnly);
         assert_eq!(engine.backend(), Backend::Cpu);
         assert_eq!(engine.gpu_problem(), None);
-        let graph = NodeGraph::new();
-        let r = engine.render(&graph, &ramp(3, 2)).unwrap();
+        let r = engine.render(&Layers::new(), &ramp(3, 2));
         assert_eq!(r.backend, Backend::Cpu);
         assert_eq!(r.image, ramp(3, 2));
         assert_eq!(r.gpu_failure, None);
+    }
+
+    #[test]
+    fn the_tools_act_in_the_order_they_declare() {
+        let order: Vec<String> = builtin_tools().unwrap().pipeline().iter().map(ToString::to_string).collect();
+        let mut expected = vec![
+            "retouch",
+            "noise_reduction",
+            "white_balance",
+            "exposure",
+            "hdr",
+            "levels",
+            "curve",
+            "color_balance",
+            "color_editor",
+            "black_white",
+            "dehaze",
+            "clarity",
+            "sharpening",
+            "vignetting",
+        ];
+        if cfg!(feature = "ai-denoise") {
+            expected.insert(1, "denoise_ai");
+        }
+        assert_eq!(order, expected);
     }
 
     #[test]

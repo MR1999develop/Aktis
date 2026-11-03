@@ -35,16 +35,16 @@ pub struct Tokens {
     pub bg_overlay: Color32,
     /// Neutral grey behind the photo, never tinted.
     pub canvas: Color32,
-    /// Background of the node graph.
-    pub graph: Color32,
-    /// Grid lines of the node graph.
-    pub graph_grid: Color32,
+    /// Header of a tool panel.
+    pub panel: Color32,
+    /// Grid lines of curves and scopes.
+    pub grid: Color32,
     /// Filled rating stars.
     pub star: Color32,
-    /// Image ports and links of the node graph.
-    pub port_image: Color32,
-    /// Mask ports and links of the node graph.
-    pub port_mask: Color32,
+    /// Adjustments in the History panel.
+    pub adjust_mark: Color32,
+    /// Masks in the History panel.
+    pub mask_mark: Color32,
     /// Errors (always with text, never colour alone).
     pub error: Color32,
     /// Warnings.
@@ -73,11 +73,11 @@ impl Tokens {
             bg_raised: Color32::from_rgb(0x25, 0x25, 0x26),
             bg_overlay: Color32::from_rgb(0x2e, 0x2e, 0x2e),
             canvas: Color32::from_rgb(0x12, 0x12, 0x12),
-            graph: Color32::from_rgb(0x1c, 0x1c, 0x1c),
-            graph_grid: Color32::from_rgb(0x26, 0x26, 0x26),
+            panel: Color32::from_rgb(0x1c, 0x1c, 0x1c),
+            grid: Color32::from_rgb(0x26, 0x26, 0x26),
             star: Color32::from_rgb(0xe5, 0xa0, 0x0d),
-            port_image: Color32::from_rgb(0x7f, 0xbf, 0x6a),
-            port_mask: Color32::from_rgb(0x5b, 0x8f, 0xd6),
+            adjust_mark: Color32::from_rgb(0x7f, 0xbf, 0x6a),
+            mask_mark: Color32::from_rgb(0x5b, 0x8f, 0xd6),
             error: Color32::from_rgb(0xff, 0x8a, 0x7a),
             warning: Color32::from_rgb(0xe3, 0xb3, 0x41),
             success: Color32::from_rgb(0x5c, 0xbd, 0x50),
@@ -101,11 +101,11 @@ impl Tokens {
             bg_raised: Color32::from_rgb(0xff, 0xff, 0xff),
             bg_overlay: Color32::from_rgb(0xff, 0xff, 0xff),
             canvas: Color32::from_rgb(0x9a, 0x9a, 0x9a),
-            graph: Color32::from_rgb(0xe9, 0xe6, 0xe2),
-            graph_grid: Color32::from_rgb(0xdd, 0xd9, 0xd4),
+            panel: Color32::from_rgb(0xe9, 0xe6, 0xe2),
+            grid: Color32::from_rgb(0xdd, 0xd9, 0xd4),
             star: Color32::from_rgb(0xb7, 0x7c, 0x00),
-            port_image: Color32::from_rgb(0x3f, 0x8a, 0x2a),
-            port_mask: Color32::from_rgb(0x2f, 0x62, 0xb0),
+            adjust_mark: Color32::from_rgb(0x3f, 0x8a, 0x2a),
+            mask_mark: Color32::from_rgb(0x2f, 0x62, 0xb0),
             error: Color32::from_rgb(0xb3, 0x26, 0x1e),
             warning: Color32::from_rgb(0x8a, 0x5a, 0x00),
             success: Color32::from_rgb(0x1e, 0x7a, 0x34),
@@ -226,14 +226,12 @@ pub const FONT: [f32; 6] = [12., 13., 14., 16., 20., 24.];
 pub const RADIUS_CONTROL: u8 = 4;
 /// Corner radius of windows, menus and popups.
 pub const RADIUS_WINDOW: u8 = 8;
-/// Width of the right panel (histogram and node settings): default, minimum, maximum.
+/// Width of the right panel (histogram and tool panels): default, minimum, maximum.
 pub const INSPECTOR_WIDTH: [f32; 3] = [330., 280., 460.];
 /// Width of the left panel (Explorer, with History and Metadata under it): default, minimum, maximum.
 pub const LEFT_WIDTH: [f32; 3] = [250., 180., 480.];
-/// Narrowest filmstrip (and its first width); it can be dragged wider.
-pub const FILMSTRIP_WIDTH: f32 = 172.0;
-/// Height of the node graph under the viewer: default, minimum, maximum.
-pub const GRAPH_HEIGHT: [f32; 3] = [190., 120., 420.];
+/// Height of the filmstrip under the viewer: default, minimum, maximum.
+pub const FILMSTRIP_HEIGHT: [f32; 3] = [128., 84., 260.];
 /// History/Metadata tabs height under the Explorer: default, min, max.
 pub const TABS_HEIGHT: [f32; 3] = [280., 140., 560.];
 /// Height of the histogram (or other scope) above the settings: default,
@@ -365,7 +363,7 @@ mod tests {
     #[test]
     fn the_dark_greys_are_neutral_like_a_photo_viewer() {
         let t = Tokens::dark();
-        for c in [t.text_strong, t.text_weak, t.stroke_strong, t.stroke_weak, t.fill, t.bg, t.bar, t.canvas, t.graph] {
+        for c in [t.text_strong, t.text_weak, t.stroke_strong, t.stroke_weak, t.fill, t.bg, t.bar, t.canvas, t.panel] {
             assert!(c.r() == c.g() && c.g() == c.b(), "{c:?} is tinted");
         }
     }

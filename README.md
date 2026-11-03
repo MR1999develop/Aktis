@@ -1,7 +1,7 @@
 # Aktis
 
-Non-destructive RAW photo editor with a catalog and a DaVinci Resolve–style
-node graph, written in Rust, GPU-accelerated on any vendor.
+Non-destructive RAW photo editor with a catalog, tool panels and layers as
+Capture One's, written in Rust, GPU-accelerated on any vendor.
 Windows and Ubuntu; macOS prepared.
 
 The full design is in the development plan document; this README covers how
@@ -60,22 +60,22 @@ and still open.
 
 | Crate | Responsibility |
 | --- | --- |
-| `crates/core-model` | Domain types: images, sensor data, parameters, node graph, recipe. No I/O. |
+| `crates/core-model` | Domain types: images, sensor data, parameters, layers, recipe. No I/O. |
 | `crates/core-color` | Transfer curves, primaries, camera profiles (dual-illuminant matrices, DCP files). |
 | `crates/tool-api` | The `Tool` contract, parameter descriptors, the tool registry. |
 | `crates/commands` | Edits with validation and undo/redo: the only way UI and MCP change a recipe. |
 | `crates/develop` | Fixed development stage on the CPU (white balance, Bayer demosaic with RCD, X-Trans demosaic with Markesteijn, false-colour suppression, lens corrections, camera profile). |
-| `crates/render-cpu` | Reference renderer: evaluates the graph with each tool's CPU code. |
+| `crates/render-cpu` | Reference renderer: renders the layers with each tool's CPU code. |
 | `crates/platform` | The single place where Windows, Ubuntu and macOS differ. |
 | `crates/raw-io` | RAW/DNG → sensor data with rawler; levels, valid area, CFA, DNG gain maps, colour matrices, lens and shooting data. |
 | `crates/gpu` | GPU engine on wgpu (Vulkan, DirectX 12, Metal); must match `render-cpu`. Software renderers (a virtual machine's) are refused, so the CPU engine runs instead; `AKTIS_SOFTWARE_GPU=1` accepts them. |
 | `crates/export` | JPEG with an embedded sRGB profile, atomic writes, non-destructive names. |
 | `crates/engine` | Shared by window and command line: built-in tools, GPU render with CPU fallback, preview copy, display pixels, JPEG export. |
-| `crates/editor` | The editor without the window: documents and undo, background jobs (open, preview, export, folder listings, thumbnails), viewer zoom and pan, folder tree and filmstrip model, graph layout, histogram. |
+| `crates/editor` | The editor without the window: documents and undo, background jobs (open, preview, export, folder listings, thumbnails), viewer zoom and pan, folder tree and filmstrip model, layers, histogram. |
 | `crates/catalog` | Ratings, colour labels and keywords of each photo (SQLite) and the Explorer's filters. |
-| `crates/app` | The desktop window (egui): tool bar, Explorer, filmstrip, History and Metadata tabs, viewer, node graph, histogram, node settings, status bar. |
+| `crates/app` | The desktop window (egui): tool bar, Explorer, History and Metadata tabs, viewer, filmstrip, histogram, tool panels (docked or floating) with Layers, status bar. |
 | `crates/lens-db` | Lensfun database reader, camera/lens lookup, distortion/TCA/vignetting maths. |
-| `crates/masks` | Mask nodes → mask images: AI rasters refined by colour, brush strokes, add/subtract/intersect, feather, raster cache. |
+| `crates/masks` | Layer masks → mask images: AI rasters refined by colour, brush strokes, add/subtract/intersect, feather, raster cache. |
 | `crates/ai-segment` | AI selection (subject, objects, people, hair/skin/clothes/face features) with ONNX Runtime loaded at run time; model catalog. |
 | `crates/cli` | `aktis-cli` command: develop a RAW file to JPEG without the window. |
 | `crates/tagging` | AI tagging logic: keyword list, embeddings, zero-shot scores, learning from decisions, suggestions. |
@@ -126,9 +126,9 @@ offered. DNG opcodes other than GainMap are not applied anywhere.
 - **Demosaic.** Chosen for each photo, not offered as a setting: RCD for
   Bayer sensors, LMMSE for Bayer sensors from ISO 3200 (it copes better
   with noise), Markesteijn three-pass with VNG in the flat areas for X-Trans.
-- **Colour noise.** A RAW file shot at ISO 400 or more starts with a Noise
-  Reduction node for colour noise only (unless its camera's defaults have
-  their own), which can be changed or removed like any node.
+- **Colour noise.** A RAW file shot at ISO 400 or more starts with Noise
+  Reduction on for colour noise only (unless its camera's defaults have
+  their own), which can be changed or reset like any tool.
 - **Profiles.** By default each camera uses its own calibration matrices
   (illuminant A and D65 for about 740 cameras, from rawler's camera data),
   mixed according to the white balance as the DNG specification describes.
@@ -155,7 +155,7 @@ offered. DNG opcodes other than GainMap are not applied anywhere.
 
 ## Sharpening and noise reduction
 
-Two nodes of the Details group, as Capture One's tools, on the CPU:
+Two tools of the Details group, as Capture One's, on the CPU:
 
 - **Sharpening**: Amount (0–100, 45 to start; 25 adds the edge detail
   once), Radius (0.2–2.5 px of
@@ -171,7 +171,7 @@ Two nodes of the Details group, as Capture One's tools, on the CPU:
   (luminance and two colour differences of square-root encoded values) is
   cleaned with an "à trous" wavelet and the non-negative garrote, which
   keeps edges above the noise. Single pixel removes hot pixels on the
-  full-size photo. Place it first in the graph, before tone and colour.
+  full-size photo. It acts before tone and colour (the fixed order below).
 
 About 2.4 s (noise reduction) and 1 s (sharpening) for 24 MP on two
 cores; a preview copy takes a tenth of that. `tools/adjust/src/filters.rs`
@@ -186,12 +186,11 @@ has the shared Gaussian, wavelet and noise estimate.
 
 ## AI denoise
 
-The `denoise_ai` node removes noise with the SCUNet neural network (trained
+The `denoise_ai` tool removes noise with the SCUNet neural network (trained
 on real camera noise, Apache-2.0). The network runs
 once per input image; its two parameters, *Grain (luminance)* and *Colour
 blotches*, only decide how much of its correction is applied, so moving them
-is instant. Place it after the exposure: the network judges the noise at the
-final brightness.
+is instant. It acts right after retouching, before every other tool.
 
 - **Models** are not in the repository: the editor downloads
   the original SCUNet weights from their authors (KAIR, 72 MB) and makes
@@ -200,7 +199,7 @@ final brightness.
   the Python reference it is tested against). They are looked for in
   `AKTIS_DENOISE_MODELS`, a `models` folder next to the program (or up to
   three folders above it), then the editor's models folder
-  (`%LOCALAPPDATA%\aktis\models`). Without a model the node passes the
+  (`%LOCALAPPDATA%\aktis\models`). Without a model the tool passes the
   image through and says why.
 - **GPU**: on Windows TensorRT for RTX (RTX 30xx and later, with
   `tensorrt_rtx_1_4.dll` and `tensorrt_onnxparser_rtx_1_4.dll` next to `aktis-cli`;
@@ -242,12 +241,32 @@ RAW samples for the ignored real-file test go in `testdata/` (not committed):
 ## The window
 
 Left: the Library (Catalog Collections, Albums, the catalog's Folders, the
-Disk, then rating/label/name/keyword filters and AI keywords) and the
-filmstrip side by side, History and Metadata tabs below. Centre: the
-photo above the node graph (a new photo has only the Source: click a
-node's output port to add a tool after it; drag nodes, drag the background
-to pan). Right: histogram and the settings of the node selected in the
-graph. Filmstrip: click, Ctrl+click and Shift+click select as in a
+Disk, then rating/label/name/keyword filters and AI keywords), History and
+Metadata tabs below. Centre: the photo above the filmstrip (a row of cards;
+drag its top edge to make them larger). Right: the histogram above the tool
+panels, as Capture One's: Layers, Base Characteristics, Lens Correction, one
+panel per tool and the Spots of Heal and Clone. A click on a panel's header
+opens or closes it; dragging the header moves the panel, and dropped outside
+the column it floats in a window of its own (its … menu floats and docks it
+too; closing the window docks it; View ▸ Reset tool panels puts them all
+back). The order, which are closed and which float are kept, also in each
+workspace.
+
+Edits are in layers, as Capture One's: the Background holds the tools that
+act on the whole photo; each layer above it has a mask (brush, gradients, AI
+selection) and tools of its own, which act on the image under it and are
+mixed in through the mask, at the layer's opacity. The tool panels show and
+change the layer chosen in the Layers panel. Masks (B) and AI Select (A) draw
+the mask of the chosen layer; on the Background the first stroke or click
+adds a new layer. Heal and Clone put their spots in the chosen layer. In a
+layer every tool acts once, in a fixed order: retouch, AI denoise, noise
+reduction, white balance, exposure, high dynamic range, levels, curve, colour
+balance, colour editor, black & white, dehaze, clarity, sharpening,
+vignetting. Edits saved before the layers (the node graph of format 1) are
+not read: such a photo starts again from its first settings, and the old
+edit stays in the catalog until the photo is changed.
+
+Filmstrip: click, Ctrl+click and Shift+click select as in a
 file manager (several selected photos show as tiles in the viewer); keys:
 arrows previous/next, 0–5 rating, 6–9 colour label (on the selection), F2
 rename, Delete to the Trash, Ctrl+A select all, Escape back to one photo;

@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
-use core_model::{Recipe, Style, StyleSelection};
-use editor::presets::{BrushSettings, Entry, Library, NodeChoice, Preset};
+use core_model::{LayerId, Recipe, Style, StyleSelection};
+use editor::presets::{BrushSettings, Entry, Library, Preset, ToolChoice};
 use eframe::egui::{self, Button, RichText};
 use tool_api::ToolRegistry;
 
@@ -35,8 +35,9 @@ pub enum PresetAction {
 struct SaveDraft {
     name: String,
     brush: bool,
+    /// The photo's recipe, with the chosen layer's tools as its Background.
     recipe: Recipe,
-    choices: Vec<NodeChoice>,
+    choices: Vec<ToolChoice>,
     selection: StyleSelection,
     settings: BrushSettings,
 }
@@ -126,7 +127,7 @@ impl PresetsUi {
             ui.separator();
             if ui
                 .button("Save style brush\u{2026}")
-                .on_hover_text("Save the selected node's settings as a brush that paints them")
+                .on_hover_text("Save the selected layer's adjustments as a brush that paints them")
                 .clicked()
             {
                 actions.push(PresetAction::Save(true));
@@ -154,25 +155,25 @@ impl PresetsUi {
         }
     }
 
-    /// Opens the Save window on the photo's `recipe`: every tool node
-    /// without a mask chosen, nothing else. For a style brush, only
-    /// `focus` (the selected node) is chosen when given, and `settings` is
-    /// the brush it will paint with.
+    /// Opens the Save window on the photo's `recipe`: every tool of
+    /// `layer` (the selected one) chosen, nothing else; `settings` is the
+    /// brush a style brush will paint with.
     pub fn open_save(
         &mut self,
         recipe: &Recipe,
         registry: &ToolRegistry,
         brush: bool,
-        focus: Option<core_model::NodeId>,
+        layer: LayerId,
         settings: BrushSettings,
     ) {
-        let choices = editor::presets::node_choices(recipe, registry);
-        let mut selection = editor::presets::default_selection(&choices);
-        if brush && let Some(id) = focus.filter(|id| choices.iter().any(|c| c.node == *id)) {
-            selection.nodes = vec![id];
+        let mut recipe = recipe.clone();
+        if let Some(tools) = recipe.layers.tools(layer).cloned() {
+            recipe.layers.background = tools;
         }
+        let choices = editor::presets::tool_choices(&recipe.layers.background, registry);
+        let selection = editor::presets::default_selection(&choices);
         let name = if brush { "My brush" } else { "My preset" }.to_owned();
-        self.save = Some(SaveDraft { name, brush, recipe: recipe.clone(), choices, selection, settings });
+        self.save = Some(SaveDraft { name, brush, recipe, choices, selection, settings });
     }
 
     /// Draws the Save window when open; returns the preset to write once
@@ -206,13 +207,10 @@ impl PresetsUi {
                 }
                 if draft.choices.is_empty() {
                     ui.label(
-                        RichText::new(
-                            "The photo has no adjustment nodes yet: add the tools to save (Image \u{25b8} Add node).",
-                        )
-                        .color(t.text_weak),
+                        RichText::new("This layer has no adjustments yet: change some tools first.").color(t.text_weak),
                     );
                 }
-                include_by_group(ui, &draft.choices, &mut draft.selection.nodes);
+                include_by_group(ui, &draft.choices, &mut draft.selection.tools);
             });
             if draft.brush {
                 ui.add_space(SPACE[1]);
@@ -253,42 +251,39 @@ impl PresetsUi {
     }
 }
 
-/// The style the draft would save (a brush keeps only tool nodes).
-/// The tool nodes of the Save window by kind of tool (exposure and tone,
-/// colour, details…), each group with a tick for all of its nodes.
-fn include_by_group(ui: &mut egui::Ui, choices: &[NodeChoice], chosen: &mut Vec<core_model::NodeId>) {
+/// The tools of the Save window by kind of tool (exposure and tone,
+/// colour, details…), each group with a tick for all of its tools.
+fn include_by_group(ui: &mut egui::Ui, choices: &[ToolChoice], chosen: &mut Vec<core_model::ToolId>) {
     let mut groups: Vec<Option<tool_api::Category>> = Vec::new();
-    let mut ordered: Vec<&NodeChoice> = choices.iter().collect();
-    ordered.sort_by_key(|c| c.category.map_or(u8::MAX, crate::graph_ui::category_rank));
+    let mut ordered: Vec<&ToolChoice> = choices.iter().collect();
+    ordered.sort_by_key(|c| c.category.map_or(u8::MAX, crate::tool_panels::category_rank));
     for c in &ordered {
         if !groups.contains(&c.category) {
             groups.push(c.category);
         }
     }
     for group in groups {
-        let members: Vec<&&NodeChoice> = ordered.iter().filter(|c| c.category == group).collect();
-        let title = group.map_or("Other", crate::graph_ui::category_name);
-        let on = members.iter().filter(|c| chosen.contains(&c.node)).count();
+        let members: Vec<&&ToolChoice> = ordered.iter().filter(|c| c.category == group).collect();
+        let title = group.map_or("Other", crate::tool_panels::category_name);
+        let on = members.iter().filter(|c| chosen.contains(&c.tool)).count();
         let mut all = on == members.len();
         let partly = on > 0 && !all;
         let tick = egui::Checkbox::new(&mut all, RichText::new(title).strong()).indeterminate(partly);
-        if ui.add(tick).on_hover_text("Every node of this group").changed() {
+        if ui.add(tick).on_hover_text("Every tool of this group").changed() {
             for c in &members {
-                chosen.retain(|n| *n != c.node);
+                chosen.retain(|n| *n != c.tool);
                 if all {
-                    chosen.push(c.node);
+                    chosen.push(c.tool.clone());
                 }
             }
         }
         ui.indent(("preset-group", title), |ui| {
             for c in members {
-                let mut on = chosen.contains(&c.node);
-                let label =
-                    if c.masked { format!("{} \u{2014} values only, not its mask", c.name) } else { c.name.clone() };
-                if ui.checkbox(&mut on, label).changed() {
-                    chosen.retain(|n| *n != c.node);
+                let mut on = chosen.contains(&c.tool);
+                if ui.checkbox(&mut on, c.name.as_str()).changed() {
+                    chosen.retain(|n| *n != c.tool);
                     if on {
-                        chosen.push(c.node);
+                        chosen.push(c.tool.clone());
                     }
                 }
             }
@@ -296,6 +291,7 @@ fn include_by_group(ui: &mut egui::Ui, choices: &[NodeChoice], chosen: &mut Vec<
     }
 }
 
+/// The style the draft would save (a brush keeps only the tools).
 fn draft_style(draft: &SaveDraft) -> Style {
     let style = Style::from_recipe(&draft.recipe, &draft.selection);
     if draft.brush { style.local() } else { style }

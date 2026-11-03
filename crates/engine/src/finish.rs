@@ -1,4 +1,4 @@
-//! The last steps of an export, after the node graph: geometry, size,
+//! The last steps of an export, after the layers: geometry, size,
 //! output pixels, watermark. [`finish_for_export`] is the one place they
 //! happen, in this order.
 
@@ -13,8 +13,8 @@ use crate::EngineError;
 /// Output rows below which splitting a pass among threads costs more than it saves.
 const ROWS_PER_THREAD: usize = 16;
 
-/// Finishes a rendered image for export: the linear render of the node
-/// graph (in the sensor's orientation) becomes upright 16-bit sRGB pixels
+/// Finishes a rendered image for export: the linear render of the
+/// layers (in the sensor's orientation) becomes upright 16-bit sRGB pixels
 /// of the requested size, with the watermark drawn in.
 ///
 /// Steps, in order:

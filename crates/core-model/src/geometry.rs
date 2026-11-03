@@ -1,5 +1,5 @@
 //! Geometry of the finished image: perspective (keystone), straightening
-//! and crop, applied after the node graph to the upright image.
+//! and crop, applied after the layers to the upright image.
 //!
 //! Coordinates are normalised to the upright image (0–1 from the top-left
 //! corner), so the same settings work at every resolution. The perspective

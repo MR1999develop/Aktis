@@ -2,9 +2,9 @@
 
 use commands::{Edit, SavedHistory, SavedStep};
 use core_model::{
-    AiTarget, BodyPart, BrushMask, BrushStroke, DevelopSettings, LensSettings, Link, MaskComponent, MaskDef, MaskOp,
-    MaskSource, ModelId, NodeGraph, NodeId, NodeKind, NormPoint, NormRect, ParamId, ParamValue, Params, ProfileChoice,
-    PromptPoint, RasterKey, Recipe, ToolId, WhiteBalance,
+    AiTarget, BodyPart, BrushMask, BrushStroke, DevelopSettings, LayerId, Layers, LensSettings, MaskComponent, MaskDef,
+    MaskOp, MaskSource, ModelId, NormPoint, NormRect, ParamId, ParamValue, Params, ProfileChoice, PromptPoint,
+    RasterKey, Recipe, StyleTool, ToolId, ToolRef, Tools, WhiteBalance,
 };
 
 use super::*;
@@ -81,24 +81,25 @@ fn every_mask() -> MaskDef {
     }
 }
 
-/// A recipe with every kind of node, parameter value and development setting.
+/// A recipe with every kind of layer, parameter value and development setting.
 fn every_recipe() -> Recipe {
-    let mut g = NodeGraph::new();
     let mut values = Params::new();
     values.set(param("exposure"), ParamValue::Float(-1.234_567_9));
     values.set(param("highlights"), ParamValue::Float(0.1));
     values.set(param("enabled_flag"), ParamValue::Bool(true));
     values.set(param("mode"), ParamValue::Choice(3));
-    let a = g.insert_serial(g.source(), tool("exposure"), values).unwrap();
-    let b = g.insert_serial(a, tool("curve"), Params::new()).unwrap();
-    g.node_mut(b).unwrap().set_enabled(false);
-    g.node_mut(b).unwrap().set_label("Contrast \u{e8} \\ / \n".to_owned());
-    let par = g.add_node(NodeKind::Parallel { inputs: 3 }, Params::new()).unwrap();
-    g.connect(Link { from: a, from_port: 0, to: par, to_port: 2 }).unwrap();
-    let m = g.add_mask_node(every_mask());
-    g.connect(Link { from: m, from_port: 0, to: b, to_port: 1 }).unwrap();
-    let gone = g.add_node(NodeKind::Mask, Params::new()).unwrap();
-    g.remove_node(gone).unwrap();
+    let mut layers = Layers::new();
+    *layers.background.params_mut(&tool("exposure"), 0).unwrap() = values.clone();
+    layers.background.params_mut(&tool("retouch"), 0).unwrap();
+    *layers.background.params_mut(&tool("retouch"), 1).unwrap() = values;
+    layers.background.set_enabled(&tool("curve"), false);
+    let gone = layers.add("Gone".to_owned(), MaskDef::default(), Tools::new());
+    let mut tools = Tools::new();
+    tools.params_mut(&tool("clarity"), 0).unwrap().set(param("amount"), ParamValue::Float(0.5));
+    let a = layers.add("Contrast \u{e8} \\ / \n".to_owned(), every_mask(), tools);
+    layers.add("Empty".to_owned(), MaskDef::default(), Tools::new());
+    layers.layer_mut(a).unwrap().enabled = false;
+    layers.remove(gone).unwrap();
     Recipe {
         develop: DevelopSettings {
             white_balance: WhiteBalance::Multipliers([2.1, 1.0, 1.456_789]),
@@ -116,7 +117,7 @@ fn every_recipe() -> Recipe {
                 custom: Some("My zoom".to_owned()),
             },
         },
-        graph: g,
+        layers,
         geometry: core_model::Geometry {
             angle: -3.25,
             vertical: 12.5,
@@ -132,27 +133,31 @@ fn every_recipe() -> Recipe {
 
 /// One edit of every kind.
 fn every_edit() -> Vec<Edit> {
-    let n = NodeId::from_raw(2);
+    let at = ToolRef::new(LayerId::from_raw(2), tool("exposure"));
     let mut values = Params::new();
     values.set(param("exposure"), ParamValue::Float(0.5));
+    let tools = vec![StyleTool { tool: tool("exposure"), params: values.clone() }];
     vec![
-        Edit::SetParam { node: n, param: param("exposure"), value: ParamValue::Float(0.75) },
-        Edit::SetParam { node: n, param: param("auto"), value: ParamValue::Bool(false) },
+        Edit::SetParam { at: at.clone(), param: param("exposure"), value: ParamValue::Float(0.75) },
+        Edit::SetParam { at: at.clone().with_slot(3), param: param("auto"), value: ParamValue::Bool(false) },
         Edit::SetParams {
-            node: n,
+            at: ToolRef::background(tool("white_balance")),
             values: vec![
                 (param("mode"), ParamValue::Choice(1)),
                 (param("kelvin"), ParamValue::Float(5500.0)),
                 (param("mode"), ParamValue::Choice(2)),
             ],
         },
-        Edit::ResetParam { node: n, param: param("exposure") },
-        Edit::InsertSerial { after: NodeId::from_raw(0), tool: tool("exposure"), params: values.clone() },
-        Edit::InsertSerial { after: n, tool: tool("hdr"), params: Params::new() },
-        Edit::RemoveNode { node: n },
-        Edit::Connect(Link { from: NodeId::from_raw(3), from_port: 0, to: n, to_port: 1 }),
-        Edit::Disconnect { to: n, port: 1 },
-        Edit::SetEnabled { node: n, enabled: false },
+        Edit::ResetParam { at, param: param("exposure") },
+        Edit::ResetTool { layer: LayerId::BACKGROUND, tool: tool("hdr") },
+        Edit::SetToolEnabled { layer: LayerId::from_raw(4), tool: tool("curve"), enabled: false },
+        Edit::AddLayer { name: "Dodge".to_owned(), mask: every_mask(), tools: tools.clone() },
+        Edit::AddLayer { name: String::new(), mask: MaskDef::default(), tools: Vec::new() },
+        Edit::RemoveLayer { layer: LayerId::from_raw(2) },
+        Edit::RenameLayer { layer: LayerId::from_raw(3), name: "Sky \u{2014} \"blue\"".to_owned() },
+        Edit::MoveLayer { layer: LayerId::from_raw(3), index: 0 },
+        Edit::SetLayerEnabled { layer: LayerId::from_raw(3), enabled: false },
+        Edit::SetLayerMask { layer: LayerId::from_raw(5), mask: MaskDef::default() },
         Edit::SetWhiteBalance(WhiteBalance::AsShot),
         Edit::SetWhiteBalance(WhiteBalance::Multipliers([1.9, 1.0, 1.3])),
         Edit::SetCameraProfile(ProfileChoice::Builtin),
@@ -161,24 +166,14 @@ fn every_edit() -> Vec<Edit> {
         Edit::SetLensCorrection(LensSettings::default()),
         Edit::SetGeometry(core_model::Geometry { angle: 2.0, ..core_model::Geometry::default() }),
         Edit::SetBaseCurve(core_model::BaseCurve::Linear),
-        Edit::AddMask { to: n, def: every_mask() },
-        Edit::SetMask { node: NodeId::from_raw(5), def: MaskDef::default() },
         Edit::ApplyStyle {
             name: "Warm".to_owned(),
             style: Box::new(core_model::Style {
                 white_balance: Some(WhiteBalance::AsShot),
                 geometry: Some(core_model::Geometry { angle: -1.0, ..core_model::Geometry::default() }),
-                nodes: vec![core_model::StyleNode { tool: tool("exposure"), params: values.clone() }],
+                tools,
                 ..core_model::Style::default()
             }),
-        },
-        Edit::AddStyleBrush {
-            name: "Dodge".to_owned(),
-            style: Box::new(core_model::Style {
-                nodes: vec![core_model::StyleNode { tool: tool("exposure"), params: values.clone() }],
-                ..core_model::Style::default()
-            }),
-            mask: every_mask(),
         },
     ]
 }
@@ -190,24 +185,19 @@ fn every_variant() -> Variant {
         .enumerate()
         .map(|(i, edit)| SavedStep {
             edit,
-            created: if i % 4 == 0 { vec![NodeId::from_raw(7), NodeId::from_raw(8)] } else { vec![] },
-            skipped: (i == 3).then(|| "it acts on a node made by a removed step".to_owned()),
+            created: if i % 4 == 0 { vec![LayerId::from_raw(7), LayerId::from_raw(8)] } else { vec![] },
+            skipped: (i == 3).then(|| "it acts on a layer made by a removed step".to_owned()),
         })
         .collect();
     let history = SavedHistory { base: Recipe::default(), steps, redo: every_edit() };
-    let layout = Layout {
-        nodes: vec![(NodeId::from_raw(0), [24.0, 24.0]), (NodeId::from_raw(2), [202.5, -13.25])],
-        pan: [-40.0, 12.5],
-        zoom: 1.25,
-    };
-    Variant { name: "Variant 2 \u{b7} \u{1f642}".to_owned(), recipe, history: Some(history), layout: Some(layout) }
+    Variant { name: "Variant 2 \u{b7} \u{1f642}".to_owned(), recipe, history: Some(history) }
 }
 
 #[test]
-fn every_edit_node_and_mask_kind_round_trips() {
+fn every_edit_layer_and_mask_kind_round_trips() {
     let v = every_variant();
     let text = encode(&v);
-    assert!(text.starts_with("{\"format\":1,"), "{}", &text[..40]);
+    assert!(text.starts_with("{\"format\":2,"), "{}", &text[..40]);
     assert_eq!(decode(&text), Ok(v));
 }
 
@@ -221,21 +211,18 @@ fn each_edit_round_trips_on_its_own() {
 }
 
 #[test]
-fn a_variant_without_history_or_layout_round_trips() {
-    let v = Variant { name: String::new(), recipe: Recipe::default(), history: None, layout: None };
+fn a_variant_without_history_round_trips() {
+    let v = Variant { name: String::new(), recipe: Recipe::default(), history: None };
     assert_eq!(decode(&encode(&v)), Ok(v));
 }
 
 #[test]
-fn a_variant_from_when_the_demosaic_could_be_chosen_still_opens() {
-    let old_step = r#"{"edit":{"op":"set_demosaic","method":"bilinear"},"created":[],"skipped":null},"#;
-    let old_redo = r#"{"op":"set_demosaic","method":"xtrans_fast"},"#;
-    let text = encode(&every_variant())
-        .replacen("\"white_balance\":", "\"demosaic\":\"bilinear\",\"white_balance\":", 1)
-        .replacen("\"steps\":[", &format!("\"steps\":[{old_step}"), 1)
-        .replacen("\"redo\":[", &format!("\"redo\":[{old_redo}"), 1);
-    assert_eq!(text.matches("demosaic").count(), 3, "the old fields were added: {text}");
-    assert_eq!(decode(&text), Ok(every_variant()), "the retired choice is left out");
+fn an_edit_of_the_node_graph_format_is_obsolete_and_not_shown() {
+    let text = r#"{"format":1,"name":"Variant 1","recipe":{"develop":{},"graph":{"next_id":2,"nodes":[],"links":[]}},"history":null,"layout":null}"#;
+    assert_eq!(decode(text), Err(DecodeError::Obsolete(1)));
+    assert_eq!(format_of(text), Some(1));
+    assert_eq!(decode_recipe_lenient(text), None);
+    assert!(DecodeError::Obsolete(1).to_string().contains("no longer reads"));
 }
 
 #[test]
@@ -245,13 +232,13 @@ fn encoding_is_deterministic() {
 
 #[test]
 fn a_newer_format_is_refused_but_its_recipe_can_still_be_shown() {
-    let text = encode(&every_variant()).replacen("\"format\":1", "\"format\":7", 1);
+    let text = encode(&every_variant()).replacen("\"format\":2", "\"format\":7", 1);
     assert_eq!(decode(&text), Err(DecodeError::NewerVersion(7)));
     assert_eq!(format_of(&text), Some(7));
     let (name, recipe) = decode_recipe_lenient(&text).unwrap();
     assert_eq!((name, recipe), (every_variant().name, every_recipe()));
-    // A newer kind of node cannot be shown.
-    let unknown = text.replacen("{\"tool\":\"curve\"}", "{\"spline\":\"curve\"}", 1);
+    // A newer kind of layer cannot be shown.
+    let unknown = text.replacen("\"background\":", "\"ground\":", 1);
     assert_ne!(unknown, text);
     assert_eq!(decode_recipe_lenient(&unknown), None);
     assert!(DecodeError::NewerVersion(7).to_string().contains("newer version"));
@@ -264,9 +251,9 @@ fn broken_texts_are_refused_with_a_reason() {
         String::new(),
         "[]".to_owned(),
         "{}".to_owned(),
-        good.replacen("\"format\":1", "\"format\":0", 1),
-        good.replacen("\"format\":1", "\"format\":\"1\"", 1),
-        good.replacen("\"kind\":\"source\"", "\"kind\":\"output\"", 1),
+        good.replacen("\"format\":2", "\"format\":0", 1),
+        good.replacen("\"format\":2", "\"format\":\"2\"", 1),
+        good.replacen("\"slots\":[{", "\"slots\":[],\"x\":[{", 1),
         good.replacen("\"op\":\"set_param\"", "\"op\":\"paint\"", 1),
         good.replacen("\"next_id\":", "\"next\":", 1),
         good[..good.len() - 1].to_owned(),
@@ -277,15 +264,13 @@ fn broken_texts_are_refused_with_a_reason() {
 }
 
 #[test]
-fn a_graph_with_a_loop_is_refused() {
+fn layers_with_the_same_id_are_refused() {
     let mut r = Recipe::default();
-    let a = r.graph.insert_serial(r.graph.source(), tool("exposure"), Params::new()).unwrap();
-    let b = r.graph.insert_serial(a, tool("exposure"), Params::new()).unwrap();
-    assert_eq!((a.get(), b.get()), (2, 3));
-    let v = Variant { name: "x".to_owned(), recipe: r, history: None, layout: None };
-    // Source → a becomes b → a: a loop a → b → a.
-    let text = encode(&v);
-    let looped = text.replacen("[0,0,2,0]", "[3,0,2,0]", 1);
-    assert_ne!(looped, text);
-    assert!(matches!(decode(&looped), Err(DecodeError::Malformed(_))));
+    let a = r.layers.add("A".to_owned(), MaskDef::default(), Tools::new());
+    let b = r.layers.add("B".to_owned(), MaskDef::default(), Tools::new());
+    assert_eq!((a.get(), b.get()), (1, 2));
+    let text = encode(&Variant { name: "x".to_owned(), recipe: r, history: None });
+    let twice = text.replacen("\"id\":2,", "\"id\":1,", 1);
+    assert_ne!(twice, text);
+    assert!(matches!(decode(&twice), Err(DecodeError::Malformed(_))));
 }

@@ -83,9 +83,7 @@ impl Library {
         let mut chosen = None;
         // Search by name in the whole catalog, as typed.
         let field = ui.add(
-            TextEdit::singleline(&mut self.search)
-                .hint_text("\u{1f50d} Search the catalog by name")
-                .desired_width(f32::INFINITY),
+            TextEdit::singleline(&mut self.search).hint_text("Search the catalog by name").desired_width(f32::INFINITY),
         );
         let mut searched = false;
         if field.changed() {

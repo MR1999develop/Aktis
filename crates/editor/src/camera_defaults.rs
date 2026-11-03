@@ -1,12 +1,12 @@
 //! Tool defaults per camera model, as Capture One's Save as Defaults: one
 //! `.aktisdefaults` file per camera in the editor's `Defaults` folder. A photo
-//! of that camera never edited starts with the saved nodes; a node of a
-//! saved tool starts with the saved values; resetting goes back to them.
+//! of that camera never edited starts with the saved tools on its
+//! Background; resetting goes back to them.
 
 use std::path::{Path, PathBuf};
 
 use commands::{Edit, EditSession};
-use core_model::{CameraDefaults, LensSettings, ParamId, ParamValue, Params, Recipe, Style, StyleNode, ToolId};
+use core_model::{CameraDefaults, LensSettings, ParamId, ParamValue, Params, Recipe, Style, StyleTool, ToolId};
 use engine::export;
 use recipe_store::{CAMERA_DEFAULTS_EXTENSION, decode_camera_defaults, encode_camera_defaults};
 use tool_api::ToolRegistry;
@@ -37,7 +37,7 @@ pub fn start_purple_fringing(camera: &str) -> f32 {
 }
 
 /// ISO from which a camera's RAW file starts with colour noise reduction:
-/// below it colour noise is rarely visible, and the node costs time.
+/// below it colour noise is rarely visible, and the tool costs time.
 pub const COLOR_NOISE_FROM_ISO: u32 = 400;
 
 /// Tool id of the noise reduction.
@@ -49,13 +49,13 @@ const NOISE_REDUCTION: &str = "noise_reduction";
 /// `None` for a JPEG or TIFF (`raw_iso` is then `None`) and below
 /// [`COLOR_NOISE_FROM_ISO`].
 #[must_use]
-pub fn start_noise_reduction(raw_iso: Option<u32>) -> Option<StyleNode> {
+pub fn start_noise_reduction(raw_iso: Option<u32>) -> Option<StyleTool> {
     if raw_iso? < COLOR_NOISE_FROM_ISO {
         return None;
     }
     let mut params = Params::new();
     params.set(ParamId::new("luminance").ok()?, ParamValue::Float(0.0));
-    Some(StyleNode { tool: ToolId::new(NOISE_REDUCTION).ok()?, params })
+    Some(StyleTool { tool: ToolId::new(NOISE_REDUCTION).ok()?, params })
 }
 
 /// The recipe a photo of `camera` ("Maker Model") never edited starts with:
@@ -63,28 +63,27 @@ pub fn start_noise_reduction(raw_iso: Option<u32>) -> Option<StyleNode> {
 /// one, the camera's purple fringing, [`start_purple_fringing`]), colour
 /// noise reduction for a RAW file shot at a high ISO (`raw_iso`, `None`
 /// for a JPEG or TIFF; [`start_noise_reduction`]) unless the camera's
-/// defaults have their own, and the nodes of its camera's defaults
-/// (`nodes`, those this build has), in their order after the Source.
+/// defaults have their own, and the tools of its camera's defaults
+/// (`tools`, those this build has) on its Background.
 #[must_use]
 pub fn start_recipe(
     registry: &ToolRegistry,
     camera: &str,
     raw_iso: Option<u32>,
     lens: Option<LensSettings>,
-    nodes: &[StyleNode],
+    tools: &[StyleTool],
 ) -> Recipe {
     let mut recipe = Recipe::default();
     match lens {
         Some(lens) => recipe.develop.lens = lens,
         None => recipe.develop.lens.purple_fringing = start_purple_fringing(camera),
     }
-    // Noise first: it is taken away before any other node acts.
-    let own_noise_reduction = nodes.iter().any(|n| n.tool.as_str() == NOISE_REDUCTION);
+    let own_noise_reduction = tools.iter().any(|n| n.tool.as_str() == NOISE_REDUCTION);
     let noise = start_noise_reduction(raw_iso).filter(|_| !own_noise_reduction);
-    let nodes: Vec<StyleNode> = noise.into_iter().chain(nodes.iter().cloned()).collect();
-    let style = Style { nodes, ..Style::default() };
+    let tools: Vec<StyleTool> = noise.into_iter().chain(tools.iter().cloned()).collect();
+    let style = Style { tools, ..Style::default() };
     let (style, _) = crate::presets::usable(&style, registry);
-    if style.nodes.is_empty() {
+    if style.tools.is_empty() {
         return recipe;
     }
     let mut session = EditSession::new(recipe.clone());
@@ -134,10 +133,10 @@ impl AllCameraDefaults {
         self.cameras.iter().map(|(d, _)| d).find(|d| core_model::same_lens(&d.camera, camera))
     }
 
-    /// The nodes a photo of `camera` never edited starts with.
+    /// The tools a photo of `camera` never edited starts with.
     #[must_use]
-    pub fn start_nodes(&self, camera: &str) -> Vec<StyleNode> {
-        self.of(camera).map(|d| d.nodes.clone()).unwrap_or_default()
+    pub fn start_tools(&self, camera: &str) -> Vec<StyleTool> {
+        self.of(camera).map(|d| d.tools.clone()).unwrap_or_default()
     }
 
     /// The saved values of `tool` for `camera`.
@@ -230,20 +229,20 @@ mod tests {
     }
 
     #[test]
-    fn a_photo_never_edited_starts_with_its_camera_s_nodes_and_custom_lens() {
+    fn a_photo_never_edited_starts_with_its_camera_s_tools_and_custom_lens() {
         let reg = engine::builtin_tools().unwrap();
         let mut p = Params::new();
         p.set(ParamId::new("exposure").unwrap(), ParamValue::Float(0.5));
-        let nodes = vec![
-            StyleNode { tool: tool("exposure"), params: p },
-            StyleNode { tool: tool("no_such_tool"), params: Params::new() },
+        let tools = vec![
+            StyleTool { tool: tool("exposure"), params: p },
+            StyleTool { tool: tool("no_such_tool"), params: Params::new() },
         ];
         let lens = LensSettings { vignetting: false, ..LensSettings::default() };
-        let r = start_recipe(&reg, "FUJIFILM X-T5", None, Some(lens.clone()), &nodes);
+        let r = start_recipe(&reg, "FUJIFILM X-T5", None, Some(lens.clone()), &tools);
         assert_eq!(r.develop.lens, lens);
-        let tools: Vec<_> = core_model::tool_nodes(&r.graph).into_iter().filter_map(|id| r.graph.node(id)).collect();
-        assert_eq!(tools.len(), 1, "unknown tools are left out");
-        assert_eq!(tools[0].params.get(&ParamId::new("exposure").unwrap()), Some(ParamValue::Float(0.5)));
+        let found: Vec<_> = r.layers.background.iter().collect();
+        assert_eq!(found.len(), 1, "unknown tools are left out");
+        assert_eq!(found[0].1.params().get(&ParamId::new("exposure").unwrap()), Some(ParamValue::Float(0.5)));
         assert_eq!(start_recipe(&reg, "NIKON CORPORATION NIKON D3S", None, None, &[]), Recipe::default());
     }
 
@@ -251,14 +250,7 @@ mod tests {
     fn a_raw_file_at_a_high_iso_starts_with_colour_noise_reduction() {
         let reg = engine::builtin_tools().unwrap();
         let tools = |r: &Recipe| -> Vec<(String, Params)> {
-            core_model::tool_nodes(&r.graph)
-                .into_iter()
-                .filter_map(|id| r.graph.node(id))
-                .filter_map(|n| match &n.kind {
-                    core_model::NodeKind::Tool(t) => Some((t.as_str().to_owned(), n.params.clone())),
-                    _ => None,
-                })
-                .collect()
+            r.layers.background.iter().map(|(t, s)| (t.as_str().to_owned(), s.params().clone())).collect()
         };
         let canon = "Canon EOS R6";
         let high = start_recipe(&reg, canon, Some(3200), None, &[]);
@@ -268,11 +260,11 @@ mod tests {
         assert_eq!(found[0].1.get(&ParamId::new("luminance").unwrap()), Some(ParamValue::Float(0.0)));
         assert_eq!(tools(&start_recipe(&reg, canon, Some(200), None, &[])), vec![], "low ISO: nothing");
         assert_eq!(tools(&start_recipe(&reg, canon, None, None, &[])), vec![], "JPEG or TIFF: nothing");
-        // The camera's own noise reduction is kept instead, after nothing else.
+        // The camera's own noise reduction is kept instead.
         let mut own = Params::new();
         own.set(ParamId::new("color").unwrap(), ParamValue::Float(80.0));
-        let nodes = vec![StyleNode { tool: tool(NOISE_REDUCTION), params: own.clone() }];
-        let mine = tools(&start_recipe(&reg, canon, Some(6400), None, &nodes));
+        let defaults = vec![StyleTool { tool: tool(NOISE_REDUCTION), params: own.clone() }];
+        let mine = tools(&start_recipe(&reg, canon, Some(6400), None, &defaults));
         assert_eq!(mine.len(), 1);
         assert_eq!(mine[0].1.get(&ParamId::new("color").unwrap()), Some(ParamValue::Float(80.0)));
     }
@@ -299,17 +291,17 @@ mod tests {
         all.save("Sony ILCE-7M3", tool("dehaze"), Params::new()).unwrap();
         all.save("Canon EOS R5", tool("exposure"), Params::new()).unwrap();
         assert_eq!(all.value("sony  ilce-7m3", &tool("exposure"), &exposure), Some(ParamValue::Float(0.5)));
-        assert_eq!(all.start_nodes("Sony ILCE-7M3").len(), 2);
-        assert!(all.start_nodes("Nikon Z 8").is_empty());
+        assert_eq!(all.start_tools("Sony ILCE-7M3").len(), 2);
+        assert!(all.start_tools("Nikon Z 8").is_empty());
 
         let again = AllCameraDefaults::load(Some(dir.clone()));
         assert_eq!(again.of("Sony ILCE-7M3"), all.of("Sony ILCE-7M3"));
-        assert_eq!(again.start_nodes("Canon EOS R5").len(), 1);
+        assert_eq!(again.start_tools("Canon EOS R5").len(), 1);
 
         all.remove("Canon EOS R5", &tool("exposure")).unwrap();
         assert!(all.of("Canon EOS R5").is_none(), "an empty camera goes");
         all.remove("Sony ILCE-7M3", &tool("dehaze")).unwrap();
-        assert_eq!(AllCameraDefaults::load(Some(dir.clone())).start_nodes("Sony ILCE-7M3").len(), 1);
+        assert_eq!(AllCameraDefaults::load(Some(dir.clone())).start_tools("Sony ILCE-7M3").len(), 1);
         std::fs::write(dir.join("broken.aktisdefaults"), "{").unwrap();
         assert_eq!(AllCameraDefaults::load(Some(dir.clone())).problems().len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();

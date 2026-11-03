@@ -9,15 +9,6 @@ use core_model::{ParamId, ParamValue, Params, ToolId};
 /// its control points).
 pub const MAX_PARAMS: usize = 128;
 
-/// Where a tool lives in the recipe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stage {
-    /// In the fixed development stage, at this position (lower runs first).
-    Development(u16),
-    /// As a node in the free graph.
-    Graph,
-}
-
 /// Group shown in the UI's tool tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
@@ -61,7 +52,7 @@ pub enum ParamKind {
         min: f32,
         /// Highest accepted value.
         max: f32,
-        /// Value of a fresh node and after "Reset".
+        /// Value of a tool not yet used and after "Reset".
         default: f32,
         /// Step for arrow keys (Shift = 10 steps).
         step: f32,
@@ -70,7 +61,7 @@ pub enum ParamKind {
     },
     /// An on/off switch.
     Bool {
-        /// Value of a fresh node.
+        /// Value of a tool not yet used.
         default: bool,
     },
     /// One option from a fixed list.
@@ -104,8 +95,9 @@ pub struct ToolDescriptor {
     pub name: &'static str,
     /// UI group.
     pub category: Category,
-    /// Development stage or graph node.
-    pub stage: Stage,
+    /// Position in the fixed order the tools of a layer act in (lower
+    /// first); unique among the registered tools.
+    pub order: u16,
     /// Parameters, in UI order (also the GPU uniform order).
     pub params: Vec<ParamDescriptor>,
 }
@@ -204,7 +196,7 @@ impl ParamDescriptor {
     }
 }
 
-/// A node's parameters checked against its tool: every declared parameter
+/// A tool's parameters checked against the tool: every declared parameter
 /// has a valid value, in descriptor order. Tools read only this type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedParams {
@@ -304,7 +296,7 @@ mod tests {
             version: 1,
             name: "Demo",
             category: Category::Exposure,
-            stage: Stage::Graph,
+            order: 10,
             params: vec![
                 ParamDescriptor {
                     id: pid("amount"),

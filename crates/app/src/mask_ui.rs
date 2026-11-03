@@ -1,5 +1,7 @@
-//! The Masks (B) and AI Select (A) tools: they build the mask of the tool
-//! node selected in the graph, so that node acts only where the mask is.
+//! The Masks (B) and AI Select (A) tools: they build the mask of the layer
+//! selected in the Layers panel, so its tools act only where the mask is.
+//! On the Background, the first stroke or click adds a new layer with it,
+//! as in Capture One.
 //!
 //! - **Masks** (B), with the brush of Capture One: B paints, E erases, Alt
 //!   held swaps them; Shift draws a straight line (Shift-click: from the
@@ -21,13 +23,13 @@
 //!
 //! - **Style brushes** (as in Capture One): choosing one in the options bar
 //!   (or Image \u{25b8} Style brushes) arms the brush with its settings; the
-//!   first stroke adds the brush's adjustments behind a new mask, named
-//!   after the brush, which further strokes extend.
+//!   first stroke adds a layer with the brush's adjustments and the stroke
+//!   as its mask, named after the brush; further strokes extend it.
 //!
 //! The editing logic is in [`editor::masking`]; this module draws and turns
 //! pointer input into [`MaskEdit`]s.
 
-use core_model::{LinearGradient, MaskDef, MaskSource, NodeId, NormPoint, RadialGradient, Style};
+use core_model::{LayerId, LinearGradient, MaskDef, MaskSource, NormPoint, RadialGradient, Style};
 use editor::masking::Brush;
 use eframe::egui::{self, Align2, CornerRadius, Id, Order, Pos2, Rect, Response, RichText, Stroke, TextureHandle};
 
@@ -44,8 +46,8 @@ const MIN_OPACITY: f32 = 0.05;
 pub enum MaskEdit {
     /// A painted stroke (developed-image points).
     Stroke {
-        /// The tool node the mask restricts.
-        node: NodeId,
+        /// The layer whose mask it is.
+        layer: LayerId,
         /// The path.
         points: Vec<NormPoint>,
         /// Remove instead of add.
@@ -53,8 +55,8 @@ pub enum MaskEdit {
     },
     /// An AI Select click.
     Click {
-        /// The tool node.
-        node: NodeId,
+        /// The layer.
+        layer: LayerId,
         /// Where (developed image).
         at: NormPoint,
         /// On the object (`false`: a part to leave out).
@@ -64,23 +66,23 @@ pub enum MaskEdit {
     },
     /// "Select subject".
     Subject {
-        /// The tool node.
-        node: NodeId,
+        /// The layer.
+        layer: LayerId,
     },
     /// Fill Mask: the whole image, to erase from.
     Fill {
-        /// The tool node.
-        node: NodeId,
+        /// The layer.
+        layer: LayerId,
     },
     /// Feather, invert or clear: the whole new definition.
     Def {
-        /// The tool node.
-        node: NodeId,
+        /// The layer.
+        layer: LayerId,
         /// The definition.
         def: MaskDef,
     },
-    /// The first stroke of an armed style brush: its adjustments are added
-    /// behind a new mask holding the stroke.
+    /// The first stroke of an armed style brush: a new layer with its
+    /// adjustments and the stroke as its mask.
     StyleStroke {
         /// The brush's name.
         name: String,
@@ -156,8 +158,8 @@ pub struct MaskUi {
     /// The stroke being painted: developed points and screen points.
     stroke: Vec<NormPoint>,
     stroke_screen: Vec<Pos2>,
-    /// The overlay texture and what it was made for (document generation, node, cropped).
-    overlay: Option<((u64, NodeId, bool), TextureHandle)>,
+    /// The overlay texture and what it was made for (document generation, layer, cropped).
+    overlay: Option<((u64, LayerId, bool), TextureHandle)>,
     /// The style brush the next stroke adds.
     armed: Option<ArmedBrush>,
     /// Where the brush settings popup is open (right-click), in points.
@@ -330,7 +332,7 @@ impl MaskUi {
         ui: &egui::Ui,
         response: &Response,
         tool: ViewerTool,
-        node: Option<NodeId>,
+        layer: Option<LayerId>,
         def: Option<&MaskDef>,
         long_side: f32,
         to_developed: &dyn Fn(Pos2) -> Option<NormPoint>,
@@ -339,16 +341,16 @@ impl MaskUi {
     ) -> bool {
         let t = Tokens::of(ui.ctx().theme());
         let painting_style = tool == ViewerTool::Masks && self.armed.is_some();
-        if node.is_none() && !painting_style {
+        if layer.is_none() && !painting_style {
             return false;
         }
         let painter = ui.painter_at(response.rect);
         let alt = ui.input(|i| i.modifiers.alt) && !painting_style;
         match tool {
             ViewerTool::Masks if !painting_style && self.shape != Shape::Brush => {
-                let Some(node) = node else { return false };
+                let Some(layer) = layer else { return false };
                 let map = Mapping { long_side, to_developed, to_screen };
-                self.gradient_input(ui, response, node, def, &map, alt, edits);
+                self.gradient_input(ui, response, layer, def, &map, alt, edits);
                 true
             }
             ViewerTool::Masks => {
@@ -406,8 +408,8 @@ impl MaskUi {
                     if !points.is_empty() {
                         if let Some(armed) = self.armed.take() {
                             edits.push(MaskEdit::StyleStroke { name: armed.name, style: armed.style, points });
-                        } else if let Some(node) = node {
-                            edits.push(MaskEdit::Stroke { node, points, erase: self.erase || alt });
+                        } else if let Some(layer) = layer {
+                            edits.push(MaskEdit::Stroke { layer, points, erase: self.erase || alt });
                         }
                     }
                     self.stroke_screen.clear();
@@ -423,11 +425,11 @@ impl MaskUi {
                     });
                 }
                 if response.clicked()
-                    && let Some(node) = node
+                    && let Some(layer) = layer
                     && let Some(at) = response.interact_pointer_pos().and_then(to_developed)
                 {
                     let shift = ui.input(|i| i.modifiers.shift);
-                    edits.push(MaskEdit::Click { node, at, include: !alt, new_object: shift });
+                    edits.push(MaskEdit::Click { layer, at, include: !alt, new_object: shift });
                 }
                 false
             }
@@ -443,7 +445,7 @@ impl MaskUi {
         &mut self,
         ui: &egui::Ui,
         response: &Response,
-        node: NodeId,
+        layer: LayerId,
         def: Option<&MaskDef>,
         map: &Mapping<'_>,
         alt: bool,
@@ -512,19 +514,19 @@ impl MaskUi {
                 _ => None,
             };
             if let Some(def) = next {
-                edits.push(MaskEdit::Def { node, def });
+                edits.push(MaskEdit::Def { layer, def });
             }
         }
     }
 
     /// Draws the mask overlay over `screen`, making its texture when the
-    /// mask changed (`key`: document generation, node, cropped); `values`
+    /// mask changed (`key`: document generation, layer, cropped); `values`
     /// computes the mask as shown (width, height, values 0–1).
     pub fn draw_overlay(
         &mut self,
         ui: &egui::Ui,
         screen: Rect,
-        key: (u64, NodeId, bool),
+        key: (u64, LayerId, bool),
         values: impl FnOnce() -> Option<(u32, u32, Vec<f32>)>,
     ) {
         if !self.show {
@@ -557,7 +559,7 @@ impl MaskUi {
         ctx: &egui::Context,
         viewer: Rect,
         tool: ViewerTool,
-        node: Option<(NodeId, String)>,
+        layer: Option<(LayerId, String)>,
         def: Option<&MaskDef>,
         busy: bool,
         brushes: &[String],
@@ -594,8 +596,8 @@ impl MaskUi {
                                 }
                                 return;
                             }
-                            let Some((node, name)) = node else {
-                                ui.label(RichText::new("Select a node in the graph: its mask is what you draw").color(t.text_weak));
+                            let Some((layer, name)) = layer else {
+                                ui.label(RichText::new("Select a layer: its mask is what you draw").color(t.text_weak));
                                 return;
                             };
                             ui.label(RichText::new(format!("Mask of {name}")).strong());
@@ -625,7 +627,7 @@ impl MaskUi {
                                     }
                                     if self.shape != Shape::Brush {
                                         ui.separator();
-                                        self.gradient_options(ui, node, def, edits);
+                                        self.gradient_options(ui, layer, def, edits);
                                     } else {
                                     ui.label("Size");
                                     let mut size = self.brush.radius * 100.0;
@@ -647,7 +649,7 @@ impl MaskUi {
                                 _ => {
                                     ui.label(RichText::new("Click an object \u{b7} Alt-click: leave out \u{b7} Shift-click: another object").color(t.text_weak));
                                     if ui.button("Select subject").clicked() {
-                                        edits.push(MaskEdit::Subject { node });
+                                        edits.push(MaskEdit::Subject { layer });
                                     }
                                     if busy {
                                         ui.spinner();
@@ -656,7 +658,7 @@ impl MaskUi {
                             }
                             ui.separator();
                             if ui.button("Fill").on_hover_text("Select the whole image, then erase (E) what to leave out").clicked() {
-                                edits.push(MaskEdit::Fill { node });
+                                edits.push(MaskEdit::Fill { layer });
                             }
                             ui.checkbox(&mut self.show, "Show").on_hover_text("Show the mask in red (M)");
                             if let Some(def) = def {
@@ -669,10 +671,10 @@ impl MaskUi {
                                 let inverted = ui.checkbox(&mut next.invert, "Invert").changed();
                                 if changed_feather || inverted {
                                     next.feather = feather / 100.0;
-                                    edits.push(MaskEdit::Def { node, def: next.sanitized() });
+                                    edits.push(MaskEdit::Def { layer, def: next.sanitized() });
                                 }
                                 if ui.button("Clear").on_hover_text("Remove everything from this mask").clicked() {
-                                    edits.push(MaskEdit::Def { node, def: MaskDef { components: Vec::new(), ..def.clone() } });
+                                    edits.push(MaskEdit::Def { layer, def: MaskDef { components: Vec::new(), ..def.clone() } });
                                 }
                             }
                         });
@@ -684,7 +686,13 @@ impl MaskUi {
 impl MaskUi {
     /// The options of the gradients: the radial one's feather (written when
     /// let go), and a hint.
-    fn gradient_options(&mut self, ui: &mut egui::Ui, node: NodeId, def: Option<&MaskDef>, edits: &mut Vec<MaskEdit>) {
+    fn gradient_options(
+        &mut self,
+        ui: &mut egui::Ui,
+        layer: LayerId,
+        def: Option<&MaskDef>,
+        edits: &mut Vec<MaskEdit>,
+    ) {
         let last = def.and_then(editor::masking::last_gradient);
         match (self.shape, last) {
             (Shape::Radial, Some((i, MaskSource::Radial(mut g)))) => {
@@ -697,7 +705,7 @@ impl MaskUi {
                     && let Some(d) = def
                 {
                     g.feather = v / 100.0;
-                    edits.push(MaskEdit::Def { node, def: editor::masking::with_source(d, i, MaskSource::Radial(g)) });
+                    edits.push(MaskEdit::Def { layer, def: editor::masking::with_source(d, i, MaskSource::Radial(g)) });
                 }
             }
             _ => {
@@ -727,10 +735,9 @@ impl MaskUi {
                 }
             })
             .response
-            .on_hover_text(
-                "Paint adjustments: the first stroke adds a new masked node, as Capture One's style brushes",
-            );
-        if self.armed.is_some() && ui.button("Cancel").on_hover_text("Paint the selected node's mask instead").clicked()
+            .on_hover_text("Paint adjustments: the first stroke adds a new layer, as Capture One's style brushes");
+        if self.armed.is_some()
+            && ui.button("Cancel").on_hover_text("Paint the selected layer's mask instead").clicked()
         {
             self.armed = None;
         }

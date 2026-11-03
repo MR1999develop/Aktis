@@ -22,8 +22,8 @@
 //! pickers set in [`editor::adjust`]; this module draws and turns pointer
 //! input into [`UiEdit`]s, one undo step per gesture.
 
-use core_model::{NodeId, ParamId, ParamValue};
-use editor::NodeRow;
+use core_model::{ParamId, ParamValue};
+use editor::ToolRow;
 use editor::adjust::{Pick, PickKind};
 use editor::color_wheel::{self, Arc, WedgeGrab};
 use eframe::egui::{
@@ -51,12 +51,12 @@ const RINGS: u16 = 3;
 // ---------------------------------------------------------------------------
 // Shared pieces
 
-fn boolean(row: &NodeRow, id: &str) -> bool {
+fn boolean(row: &ToolRow, id: &str) -> bool {
     matches!(param(row, id).map(|p| p.value), Some(ParamValue::Bool(true)))
 }
 
 /// The lowest and highest value of float parameter `id`.
-fn bounds(row: &NodeRow, id: &str) -> [f32; 2] {
+fn bounds(row: &ToolRow, id: &str) -> [f32; 2] {
     match param(row, id).map(|p| &p.descriptor.kind) {
         Some(ParamKind::Float { min, max, .. }) => [*min, *max],
         _ => [0.0, 100.0],
@@ -91,7 +91,7 @@ fn hue_stops(from: f32, to: f32, saturation: f32) -> Vec<Color32> {
 /// its tool names it), with a strip through `colors` under its track.
 fn slider(
     ui: &mut egui::Ui,
-    row: &NodeRow,
+    row: &ToolRow,
     id: &str,
     label: Option<&str>,
     colors: &[Color32],
@@ -101,7 +101,7 @@ fn slider(
     let Some(p) = param(row, id) else { return };
     let ParamValue::Float(v) = p.value else { return };
     ui.label(RichText::new(label.unwrap_or(p.descriptor.label)).color(t.text_weak));
-    let (response, track) = float_slider(ui, row.node, &p.descriptor, v, edits);
+    let (response, track) = float_slider(ui, &p.descriptor, v, edits);
     if colors.len() >= 2 {
         let r = response.rect;
         gradient(ui.painter(), Rect::from_min_size(pos2(r.left(), r.bottom() + 1.0), vec2(track, 3.0)), colors);
@@ -111,40 +111,39 @@ fn slider(
 }
 
 /// A checkbox for bool parameter `id`.
-fn check(ui: &mut egui::Ui, row: &NodeRow, id: &str, label: &str, edits: &mut Vec<UiEdit>) {
+fn check(ui: &mut egui::Ui, row: &ToolRow, id: &str, label: &str, edits: &mut Vec<UiEdit>) {
     let mut on = boolean(row, id);
     if ui.checkbox(&mut on, label).changed() {
-        edits.push(UiEdit::Set { node: row.node, param: pid(id), value: ParamValue::Bool(on), in_drag: false });
+        edits.push(UiEdit::Set { param: pid(id), value: ParamValue::Bool(on), in_drag: false });
     }
 }
 
 /// A labelled menu for choice parameter `id`.
-fn combo(ui: &mut egui::Ui, row: &NodeRow, id: &str, options: &[&str], edits: &mut Vec<UiEdit>) {
+fn combo(ui: &mut egui::Ui, row: &ToolRow, id: &str, options: &[&str], edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
-    let node = row.node;
+    let tool = &row.at;
     let current = choice(row, id);
     let label = param(row, id).map_or("", |p| p.descriptor.label);
     ui.horizontal(|ui| {
         ui.label(RichText::new(label).color(t.text_weak));
-        egui::ComboBox::from_id_salt((node, id))
+        egui::ComboBox::from_id_salt((tool, id))
             .selected_text(options.get(current as usize).copied().unwrap_or(""))
             .show_ui(ui, |ui| {
                 for (i, option) in (0_u32..).zip(options) {
                     if ui.selectable_label(i == current, *option).clicked() && i != current {
-                        edits.push(UiEdit::Set { node, param: pid(id), value: ParamValue::Choice(i), in_drag: false });
+                        edits.push(UiEdit::Set { param: pid(id), value: ParamValue::Choice(i), in_drag: false });
                     }
                 }
             });
     });
 }
 
-/// Makes `edits` also turn on the switch `on` of `node` in the same step: a
+/// Makes `edits` also turn on the switch `on` of the tool in the same step: a
 /// range edited while off is turned on, as in Capture One.
-fn turning_on(edits: &mut [UiEdit], node: NodeId, on: &str) {
+fn turning_on(edits: &mut [UiEdit], on: &str) {
     for e in edits {
         let with_on = match e {
-            UiEdit::Set { node: n, param, value, in_drag } if *n == node => Some(UiEdit::SetMany {
-                node,
+            UiEdit::Set { param, value, in_drag } => Some(UiEdit::SetMany {
                 key: param.clone(),
                 values: vec![(param.clone(), *value), (pid(on), ParamValue::Bool(true))],
                 in_drag: *in_drag,
@@ -158,15 +157,15 @@ fn turning_on(edits: &mut [UiEdit], node: NodeId, on: &str) {
 }
 
 /// A "Reset …" button for the parameters `ids`.
-fn reset_button(ui: &mut egui::Ui, node: NodeId, text: &str, ids: &[String], edits: &mut Vec<UiEdit>) {
+fn reset_button(ui: &mut egui::Ui, text: &str, ids: &[String], edits: &mut Vec<UiEdit>) {
     if ui.small_button(text).on_hover_text("These settings back to their defaults").clicked() {
-        edits.extend(ids.iter().map(|id| UiEdit::Reset { node, param: pid(id) }));
+        edits.extend(ids.iter().map(|id| UiEdit::Reset { param: pid(id) }));
     }
 }
 
 /// The hint shown while picker `pick` waits for a click in the viewer.
 fn pick_hint(ui: &mut egui::Ui, cx: PanelContext<'_>, pick: Pick, text: &str) {
-    if cx.pick == Some(pick) {
+    if cx.pick == Some(&pick) {
         let t = Tokens::of(ui.ctx().theme());
         ui.label(RichText::new(text).size(FONT[0]).color(t.accent_text));
     }
@@ -324,9 +323,9 @@ enum WheelPart {
 /// right (shown but locked in the master). With the pointer over the wheel
 /// ←/→ turn the hue and ↑/↓ change the amount (Shift: ten times); a
 /// double-click on the wheel puts the puck back in the centre.
-fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits: &mut Vec<UiEdit>) {
+fn balance_wheel(ui: &mut egui::Ui, row: &ToolRow, band: &Band, size: f32, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
-    let node = row.node;
+    let tool = &row.at;
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
     let painter = ui.painter_at(rect.expand(2.0));
     let center = rect.center();
@@ -392,14 +391,14 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
             WheelPart::None => Vec::new(),
         }
     };
-    let drag_id = Id::unique(("aktis-balance-drag", node, band.hue.as_str()));
+    let drag_id = Id::unique(("aktis-balance-drag", tool, band.hue.as_str()));
     if response.drag_started()
         && let Some(p) = response.interact_pointer_pos()
     {
         let part = part_at(p);
         remember(ui, drag_id, part);
         if let Some(param) = key_of(part) {
-            edits.push(UiEdit::BeginDrag { node, param });
+            edits.push(UiEdit::BeginDrag { param });
         }
     }
     let held = remembered::<WheelPart>(ui, drag_id);
@@ -407,7 +406,7 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
         && let Some(key) = key_of(held)
         && let Some(p) = response.interact_pointer_pos()
     {
-        edits.push(UiEdit::SetMany { node, key, values: values_at(held, p), in_drag: true });
+        edits.push(UiEdit::SetMany { key, values: values_at(held, p), in_drag: true });
     }
     if response.drag_stopped() {
         remember(ui, drag_id, WheelPart::None);
@@ -422,11 +421,11 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
                 WheelPart::Lightness => vec![band.lightness.clone()],
                 WheelPart::Amount => vec![band.amount.clone()],
             };
-            edits.extend(ids.iter().map(|id| UiEdit::Reset { node, param: pid(id) }));
+            edits.extend(ids.iter().map(|id| UiEdit::Reset { param: pid(id) }));
         } else if response.clicked()
             && let Some(key) = key_of(part)
         {
-            edits.push(UiEdit::SetMany { node, key, values: values_at(part, p), in_drag: false });
+            edits.push(UiEdit::SetMany { key, values: values_at(part, p), in_drag: false });
         }
     }
 
@@ -446,11 +445,11 @@ fn balance_wheel(ui: &mut egui::Ui, row: &NodeRow, band: &Band, size: f32, edits
         let more = f32::from(u8::from(up)) - f32::from(u8::from(down));
         if turn != 0.0 {
             let h = (hue + turn * step).rem_euclid(360.0);
-            edits.push(UiEdit::Set { node, param: pid(&band.hue), value: ParamValue::Float(h), in_drag: false });
+            edits.push(UiEdit::Set { param: pid(&band.hue), value: ParamValue::Float(h), in_drag: false });
         }
         if more != 0.0 {
             let a = (amount + more * step).clamp(amount_range[0], amount_range[1]);
-            edits.push(UiEdit::Set { node, param: pid(&band.amount), value: ParamValue::Float(a), in_drag: false });
+            edits.push(UiEdit::Set { param: pid(&band.amount), value: ParamValue::Float(a), in_drag: false });
         }
     }
 
@@ -488,7 +487,7 @@ pub fn arrows_taken(ctx: &egui::Context) -> bool {
 }
 
 /// The values of a band in one line.
-fn band_readout(row: &NodeRow, band: &Band) -> String {
+fn band_readout(row: &ToolRow, band: &Band) -> String {
     let (h, a, l) = (float(row, &band.hue), float(row, &band.amount), float(row, &band.lightness));
     format!("{h:.0}\u{b0}  {a:.0}  L {l:+.0}")
 }
@@ -496,10 +495,10 @@ fn band_readout(row: &NodeRow, band: &Band) -> String {
 const BALANCE_TABS: [&str; 5] = ["Master", "3-Way", "Shadow", "Midtone", "Highlight"];
 
 /// Master, 3-Way and one tab per tone band.
-pub fn color_balance(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
+pub fn color_balance(ui: &mut egui::Ui, row: &ToolRow, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
-    let node = row.node;
-    let tab_id = Id::unique(("aktis-balance-tab", node));
+    let tool = &row.at;
+    let tab_id = Id::unique(("aktis-balance-tab", tool));
     let tab = tabs(ui, &BALANCE_TABS, remembered::<usize>(ui, tab_id)).min(BALANCE_TABS.len() - 1);
     remember(ui, tab_id, tab);
     ui.add_space(SPACE[0]);
@@ -519,7 +518,7 @@ pub fn color_balance(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) 
             }
         });
         let three: Vec<String> = (0..color_balance::ZONES.len()).flat_map(|z| Band::zone(z).ids()).collect();
-        balance_reset(ui, node, &three, edits);
+        balance_reset(ui, &three, edits);
         return;
     }
     let band = if tab == 0 { Band::master() } else { Band::zone(tab - 2) };
@@ -533,13 +532,13 @@ pub fn color_balance(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) 
     if band.lightness_enabled {
         slider(ui, row, &band.lightness, None, &LIGHTNESS_STRIP, edits);
     }
-    balance_reset(ui, node, &band.ids(), edits);
+    balance_reset(ui, &band.ids(), edits);
 }
 
 /// Reset as in Capture One: every wheel (master, shadows, midtones,
 /// highlights); with Ctrl (⌘ on macOS) only `this_tab`, the 3-Way tab
 /// leaving the master alone.
-fn balance_reset(ui: &mut egui::Ui, node: NodeId, this_tab: &[String], edits: &mut Vec<UiEdit>) {
+fn balance_reset(ui: &mut egui::Ui, this_tab: &[String], edits: &mut Vec<UiEdit>) {
     let clicked = ui
         .small_button("Reset")
         .on_hover_text("Every colour wheel back to neutral; Ctrl+click: only this tab")
@@ -554,7 +553,7 @@ fn balance_reset(ui: &mut egui::Ui, node: NodeId, this_tab: &[String], edits: &m
                 .flat_map(|b| b.ids())
                 .collect()
         };
-        edits.extend(ids.iter().map(|id| UiEdit::Reset { node, param: pid(id) }));
+        edits.extend(ids.iter().map(|id| UiEdit::Reset { param: pid(id) }));
     }
 }
 
@@ -580,8 +579,8 @@ fn chip(ui: &mut egui::Ui, fill: Color32, selected: bool, changed: bool, name: &
 }
 
 /// Basic, Advanced and Skin Tone tabs.
-pub fn color_editor(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
-    let tab_id = Id::unique(("aktis-color-editor-tab", row.node));
+pub fn color_editor(ui: &mut egui::Ui, row: &ToolRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
+    let tab_id = Id::unique(("aktis-color-editor-tab", &row.at));
     let tab = tabs(ui, &["Basic", "Advanced", "Skin Tone"], remembered::<usize>(ui, tab_id)).min(2);
     remember(ui, tab_id, tab);
     ui.add_space(SPACE[0]);
@@ -593,10 +592,10 @@ pub fn color_editor(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edit
 }
 
 /// The six range chips and the chosen range's sliders.
-fn color_editor_basic(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
+fn color_editor_basic(ui: &mut egui::Ui, row: &ToolRow, edits: &mut Vec<UiEdit>) {
     use color_editor::{RANGES, hue_id, lightness_id, saturation_id};
-    let node = row.node;
-    let chosen_id = Id::unique(("aktis-color-editor-range", node));
+    let tool = &row.at;
+    let chosen_id = Id::unique(("aktis-color-editor-range", tool));
     let mut r = remembered::<usize>(ui, chosen_id).min(RANGES.len() - 1);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = SPACE[0];
@@ -615,14 +614,14 @@ fn color_editor_basic(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>)
     slider(ui, row, &saturation_id(r), None, &[hue_color(h, 0.0, HUE_VALUE), hue_color(h, 1.0, HUE_VALUE)], edits);
     slider(ui, row, &lightness_id(r), None, &[hue_color(h, 0.8, 0.2), hue_color(h, 0.35, 1.0)], edits);
     let ids = [hue_id(r), saturation_id(r), lightness_id(r)];
-    reset_button(ui, node, &format!("Reset {}", RANGES[r].1), &ids, edits);
+    reset_button(ui, &format!("Reset {}", RANGES[r].1), &ids, edits);
 }
 
 /// The list of Advanced ranges (on/off, colour, choose) and the chosen one's controls.
-fn color_editor_advanced(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
+fn color_editor_advanced(ui: &mut egui::Ui, row: &ToolRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
-    let node = row.node;
-    let chosen_id = Id::unique(("aktis-color-editor-advanced", node));
+    let tool = &row.at;
+    let chosen_id = Id::unique(("aktis-color-editor-advanced", tool));
     let mut n = remembered::<usize>(ui, chosen_id).min(color_editor::ADVANCED - 1);
     for k in 0..color_editor::ADVANCED {
         let id = |v: &str| color_editor::advanced_id(k, v);
@@ -640,16 +639,16 @@ fn color_editor_advanced(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>,
     }
     remember(ui, chosen_id, n);
     ui.add_space(SPACE[0]);
-    let pick = Pick { node, kind: PickKind::ColorRange, channel: n };
+    let pick = Pick { at: tool.clone(), kind: PickKind::ColorRange, channel: n };
     range_controls(ui, row, cx, &|v: &str| color_editor::advanced_id(n, v), pick, edits);
 }
 
 /// The skin tone range: switch, controls and uniformity.
-fn color_editor_skin(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
+fn color_editor_skin(ui: &mut egui::Ui, row: &ToolRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
     use color_editor::skin_id;
-    let node = row.node;
+    let tool = &row.at;
     check(ui, row, &skin_id("on"), "Skin tone range", edits);
-    let pick = Pick { node, kind: PickKind::ColorRange, channel: color_editor::ADVANCED };
+    let pick = Pick { at: tool.clone(), kind: PickKind::ColorRange, channel: color_editor::ADVANCED };
     range_controls(ui, row, cx, &skin_id, pick, edits);
     ui.add_space(SPACE[1]);
     ui.label(RichText::new("Uniformity").size(FONT[2]).strong());
@@ -658,28 +657,27 @@ fn color_editor_skin(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edi
     for (v, label) in uniform {
         slider(ui, row, &skin_id(v), Some(label), &[], edits);
     }
-    turning_on(&mut edits[start..], node, &skin_id("on"));
+    turning_on(&mut edits[start..], &skin_id("on"));
     let ids: Vec<String> = uniform.iter().map(|(v, _)| skin_id(v)).collect();
-    reset_button(ui, node, "Reset uniformity", &ids, edits);
+    reset_button(ui, "Reset uniformity", &ids, edits);
 }
 
 /// The wheel, picker, centre and width, and sliders of a picked range
 /// whose parameter ids `id` gives.
 fn range_controls(
     ui: &mut egui::Ui,
-    row: &NodeRow,
+    row: &ToolRow,
     cx: PanelContext<'_>,
     id: &dyn Fn(&str) -> String,
     pick: Pick,
     edits: &mut Vec<UiEdit>,
 ) {
     let t = Tokens::of(ui.ctx().theme());
-    let node = row.node;
     let size = (ui.available_width() - 40.0).clamp(140.0, 220.0);
     ui.horizontal_top(|ui| {
         range_wheel(ui, row, cx, id, size, edits);
-        if picker_button(ui, cx.pick == Some(pick), "Click a colour in the photo: the range is centred on its hue") {
-            edits.push(toggle_pick(cx.pick, pick));
+        if picker_button(ui, cx.pick == Some(&pick), "Click a colour in the photo: the range is centred on its hue") {
+            edits.push(toggle_pick(cx.pick, &pick));
         }
     });
     pick_hint(ui, cx, pick, "Click a colour in the photo (Esc to stop).");
@@ -687,7 +685,7 @@ fn range_controls(
     ui.horizontal(|ui| {
         for (v, label) in [("center", "Centre"), ("width", "Width")] {
             ui.label(RichText::new(label).color(t.text_weak));
-            number(ui, node, &id(v), float(row, &id(v)), bounds(row, &id(v)), edits);
+            number(ui, &id(v), float(row, &id(v)), bounds(row, &id(v)), edits);
         }
     });
     let c = float(row, &id("center"));
@@ -695,8 +693,8 @@ fn range_controls(
     slider(ui, row, &id("hue"), None, &hue_stops(c - 30.0, c + 30.0, 0.8), edits);
     slider(ui, row, &id("saturation"), None, &[hue_color(c, 0.0, HUE_VALUE), hue_color(c, 1.0, HUE_VALUE)], edits);
     slider(ui, row, &id("lightness"), None, &[hue_color(c, 0.8, 0.2), hue_color(c, 0.35, 1.0)], edits);
-    turning_on(&mut edits[start..], node, &id("on"));
-    reset_button(ui, node, "Reset range", &color_editor::RANGE_VALUES.map(id), edits);
+    turning_on(&mut edits[start..], &id("on"));
+    reset_button(ui, "Reset range", &color_editor::RANGE_VALUES.map(id), edits);
 }
 
 /// The colour wheel of a picked range: the range as a wedge (fading out
@@ -704,14 +702,14 @@ fn range_controls(
 /// dragging an edge; the colour under the pointer in the viewer as a ring.
 fn range_wheel(
     ui: &mut egui::Ui,
-    row: &NodeRow,
+    row: &ToolRow,
     cx: PanelContext<'_>,
     id: &dyn Fn(&str) -> String,
     size: f32,
     edits: &mut Vec<UiEdit>,
 ) {
     let t = Tokens::of(ui.ctx().theme());
-    let node = row.node;
+    let tool = &row.at;
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
     let painter = ui.painter_at(rect.expand(2.0));
     let center = rect.center();
@@ -758,18 +756,18 @@ fn range_wheel(
         };
         vec![(set.0, ParamValue::Float(set.1)), (pid(&id("on")), ParamValue::Bool(true))]
     };
-    let drag_id = Id::unique(("aktis-range-drag", node, id("center")));
+    let drag_id = Id::unique(("aktis-range-drag", tool, id("center")));
     if response.drag_started()
         && let Some(h) = response.interact_pointer_pos().and_then(hue_at)
     {
         remember(ui, drag_id, Some(color_wheel::wedge_grab(h, c, w, 8.0)));
-        edits.push(UiEdit::BeginDrag { node, param: key.clone() });
+        edits.push(UiEdit::BeginDrag { param: key.clone() });
     }
     if let Some(grab) = remembered::<Option<WedgeGrab>>(ui, drag_id)
         && (response.dragged() || response.drag_started())
         && let Some(h) = response.interact_pointer_pos().and_then(hue_at)
     {
-        edits.push(UiEdit::SetMany { node, key: key.clone(), values: values(grab, h), in_drag: true });
+        edits.push(UiEdit::SetMany { key: key.clone(), values: values(grab, h), in_drag: true });
     }
     if response.drag_stopped() {
         remember(ui, drag_id, None::<WedgeGrab>);
@@ -778,7 +776,7 @@ fn range_wheel(
     if response.clicked()
         && let Some(h) = response.interact_pointer_pos().and_then(hue_at)
     {
-        edits.push(UiEdit::SetMany { node, key: key.clone(), values: values(WedgeGrab::Center, h), in_drag: false });
+        edits.push(UiEdit::SetMany { key: key.clone(), values: values(WedgeGrab::Center, h), in_drag: false });
     }
     response.on_hover_text("Drag inside the range to turn it, drag an edge to widen it; click a colour to centre it");
 }
@@ -787,17 +785,17 @@ fn range_wheel(
 // Black & white
 
 /// The switch, then the Color Sensitivity and Split Tones tabs.
-pub fn black_white(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
+pub fn black_white(ui: &mut egui::Ui, row: &ToolRow, edits: &mut Vec<UiEdit>) {
     use black_white::{
         BALANCE, COLORS, ENABLE, HIGHLIGHT_HUE, HIGHLIGHT_SATURATION, SHADOW_HUE, SHADOW_SATURATION, TONE_AMOUNT,
         TONE_HUE,
     };
     let t = Tokens::of(ui.ctx().theme());
-    let node = row.node;
+    let tool = &row.at;
     check(ui, row, ENABLE, "Enable Black & White", edits);
     ui.add_space(SPACE[0]);
     ui.add_enabled_ui(boolean(row, ENABLE), |ui| {
-        let tab_id = Id::unique(("aktis-black-white-tab", node));
+        let tab_id = Id::unique(("aktis-black-white-tab", tool));
         let tab = tabs(ui, &["Color Sensitivity", "Split Tones"], remembered::<usize>(ui, tab_id)).min(1);
         remember(ui, tab_id, tab);
         ui.add_space(SPACE[0]);
@@ -807,7 +805,7 @@ pub fn black_white(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
                 slider(ui, row, id, None, &[hue_color(h, 0.9, 0.2), hue_color(h, 0.9, 1.0)], edits);
             }
             let ids: Vec<String> = COLORS.iter().map(|(id, _)| (*id).to_owned()).collect();
-            reset_button(ui, node, "Reset sensitivity", &ids, edits);
+            reset_button(ui, "Reset sensitivity", &ids, edits);
             return;
         }
         let tone = |hue: &str, sat: &str| (float(row, hue), float(row, sat) / bounds(row, sat)[1].max(1.0));
@@ -832,7 +830,7 @@ pub fn black_white(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
             .iter()
             .map(|id| (*id).to_owned())
             .collect();
-        reset_button(ui, node, "Reset split tones", &ids, edits);
+        reset_button(ui, "Reset split tones", &ids, edits);
     });
 }
 
@@ -840,7 +838,7 @@ pub fn black_white(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
 // Clarity, dehaze, vignetting
 
 /// Method, clarity and structure.
-pub fn clarity(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
+pub fn clarity(ui: &mut egui::Ui, row: &ToolRow, edits: &mut Vec<UiEdit>) {
     combo(ui, row, clarity::METHOD, &clarity::METHODS, edits);
     ui.add_space(SPACE[0]);
     slider(ui, row, clarity::CLARITY, None, &[], edits);
@@ -848,12 +846,12 @@ pub fn clarity(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
 }
 
 /// Amount and shadow tone: Auto, or a colour typed or picked on the photo.
-pub fn dehaze(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
+pub fn dehaze(ui: &mut egui::Ui, row: &ToolRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
-    let node = row.node;
+    let tool = &row.at;
     slider(ui, row, dehaze::AMOUNT, None, &[], edits);
     let custom = choice(row, dehaze::SHADOW_TONE) == dehaze::CUSTOM_TONE;
-    let pick = Pick { node, kind: PickKind::ShadowTone, channel: 0 };
+    let pick = Pick { at: tool.clone(), kind: PickKind::ShadowTone, channel: 0 };
     ui.horizontal(|ui| {
         combo(ui, row, dehaze::SHADOW_TONE, &dehaze::SHADOW_TONES, edits);
         let tone = dehaze::TONE_RGB.map(|id| float(row, id));
@@ -863,8 +861,9 @@ pub fn dehaze(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mu
         ui.painter().rect_stroke(swatch, CornerRadius::same(4), Stroke::new(1.0, t.stroke_strong), StrokeKind::Inside);
         let tip = if custom { "The colour the shadows are taken to" } else { "Auto: the shadows are made neutral" };
         response.on_hover_text(tip);
-        if picker_button(ui, cx.pick == Some(pick), "Click a shadow in the photo: its colour becomes the shadow tone") {
-            edits.push(toggle_pick(cx.pick, pick));
+        if picker_button(ui, cx.pick == Some(&pick), "Click a shadow in the photo: its colour becomes the shadow tone")
+        {
+            edits.push(toggle_pick(cx.pick, &pick));
         }
     });
     pick_hint(ui, cx, pick, "Click a shadow in the photo (Esc to stop).");
@@ -876,7 +875,7 @@ pub fn dehaze(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mu
 }
 
 /// Amount, method, midpoint, feather, and roundness for the elliptic method.
-pub fn vignetting(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
+pub fn vignetting(ui: &mut egui::Ui, row: &ToolRow, edits: &mut Vec<UiEdit>) {
     slider(ui, row, vignetting::AMOUNT, None, &LIGHTNESS_STRIP, edits);
     combo(ui, row, vignetting::METHOD, &vignetting::METHODS, edits);
     ui.add_space(SPACE[0]);

@@ -12,7 +12,7 @@ use core_model::{CurveFit, ImageF32};
 pub const FIT_SIDE: u32 = 512;
 
 /// The curve that makes `developed` (the photo as developed, before any
-/// node) look like the camera's picture inside `path`, or `None` when the
+/// tool) look like the camera's picture inside `path`, or `None` when the
 /// file has no picture or no film curve comes close.
 #[must_use]
 pub fn camera_curve(path: &Path, developed: &ImageF32) -> Option<CurveFit> {

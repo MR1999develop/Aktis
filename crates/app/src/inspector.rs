@@ -1,40 +1,39 @@
-//! The settings of the node selected in the graph, on the right under the
-//! histogram: the lens corrections for the Source, the parameters of a
-//! tool (with panels of their own for white balance, levels and curve, in
+//! The bodies of the tool panels on the right: the parameters of a tool
+//! (with panels of their own for white balance, levels and curve, in
 //! [`crate::adjust_ui`], for the colour editor, colour balance, black &
 //! white, clarity, dehaze and vignetting, in [`crate::color_ui`], and the
-//! list of spots of a retouch node, in [`crate::retouch_ui`]), a note for
-//! the other nodes.
+//! list of spots of the retouch tool, in [`crate::retouch_ui`]), and the
+//! development panels: base characteristics and lens corrections.
+//!
+//! A body reports what the user did as [`UiEdit`]s without saying which
+//! tool: the panel around it knows ([`crate::tool_panels`]).
 
 use commands::GestureId;
-use core_model::{BaseCurve, CustomLens, LensSettings, NodeId, NodeKind, ParamId, ParamValue, SensorKind};
+use core_model::{BaseCurve, CustomLens, LensSettings, ParamId, ParamValue, SensorKind, ToolRef};
 use editor::adjust::Pick;
 use editor::custom_lenses::CustomLenses;
-use editor::{Document, Histogram};
+use editor::{Document, Histogram, ToolRow};
 use eframe::egui::{self, Align, Layout, RichText};
 use tool_api::{ParamDescriptor, ParamKind, ToolRegistry, Unit};
 
-use crate::graph_ui::{node_title, section_title};
 use crate::theme::{FONT, SPACE, Tokens};
 
 /// An ongoing slider drag: its changes form one undo step.
 #[derive(Debug, Clone)]
 pub struct Drag {
-    /// The node.
-    pub node: NodeId,
+    /// The tool.
+    pub at: ToolRef,
     /// The parameter.
     pub param: ParamId,
     /// The gesture its changes join.
     pub gesture: GestureId,
 }
 
-/// What the user did in the settings, applied after drawing.
+/// What the user did in a panel, applied after drawing.
 #[derive(Debug, Clone)]
 pub enum UiEdit {
     /// A slider drag started.
     BeginDrag {
-        /// The node.
-        node: NodeId,
         /// The parameter.
         param: ParamId,
     },
@@ -42,8 +41,6 @@ pub enum UiEdit {
     EndDrag,
     /// A new value.
     Set {
-        /// The node.
-        node: NodeId,
         /// The parameter.
         param: ParamId,
         /// The value.
@@ -53,15 +50,13 @@ pub enum UiEdit {
     },
     /// Back to the default value.
     Reset {
-        /// The node.
-        node: NodeId,
         /// The parameter.
         param: ParamId,
     },
-    /// Turn a node on or off.
+    /// Every value of the tool back to its default.
+    ResetAll,
+    /// Turn the tool on or off.
     Enabled {
-        /// The node.
-        node: NodeId,
         /// On.
         on: bool,
     },
@@ -69,19 +64,17 @@ pub enum UiEdit {
     Lens(LensSettings),
     /// Save the lens corrections as a custom lens (opens the window).
     SaveCustomLens,
-    /// Save this node's values as its tool's defaults for the photo's camera.
-    SaveDefaults(NodeId),
-    /// Forget the saved defaults of this node's tool for the photo's camera.
-    ForgetDefaults(NodeId),
+    /// Save the tool's values as its defaults for the photo's camera.
+    SaveDefaults,
+    /// Forget the saved defaults of the tool for the photo's camera.
+    ForgetDefaults,
     /// Delete the custom lens with this name (asks first).
     DeleteCustomLens(String),
     /// Another base curve (Base Characteristics).
     Curve(BaseCurve),
-    /// Several values of one node at once (one undo step; while dragging,
+    /// Several values of the tool at once (one undo step; while dragging,
     /// merged with the drag started with `key`).
     SetMany {
-        /// The node.
-        node: NodeId,
         /// The parameter the drag was started with.
         key: ParamId,
         /// The values.
@@ -91,8 +84,6 @@ pub enum UiEdit {
     },
     /// A white-balance mode was chosen: the editor sets its kelvin and tint.
     WbMode {
-        /// The white-balance node.
-        node: NodeId,
         /// The mode.
         mode: tool_adjust::white_balance::Mode,
     },
@@ -100,167 +91,93 @@ pub enum UiEdit {
     Pick(Option<Pick>),
 }
 
-/// What the settings panel needs besides the document.
+/// What the panels need besides the document.
 #[derive(Debug, Clone, Copy)]
 pub struct Context<'a> {
     /// The tools of this build.
     pub registry: &'a ToolRegistry,
-    /// The node whose settings are shown.
-    pub selected: Option<NodeId>,
     /// Lens corrections are being applied.
     pub developing: bool,
-    /// The export settings in one line ("JPEG, quality 92, full size").
-    pub export_summary: &'a str,
     /// Levels of the image on screen, for the levels and curve panels.
     pub histogram: Option<&'a Histogram>,
     /// The picker waiting for a click in the viewer.
-    pub pick: Option<Pick>,
-    /// The colour entering the selected node under the pointer in the viewer.
-    pub probe: Option<[f32; 3]>,
+    pub pick: Option<&'a Pick>,
+    /// The colour entering the tool under the pointer in the viewer, and the tool.
+    pub probe: Option<(&'a ToolRef, [f32; 3])>,
     /// The custom lenses saved on this computer.
     pub custom_lenses: &'a CustomLenses,
     /// The tool defaults saved per camera.
     pub camera_defaults: &'a editor::camera_defaults::AllCameraDefaults,
 }
 
-/// The settings of the selected node.
-pub fn settings(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut Vec<UiEdit>) {
+/// The body of a tool's panel: its own controls, or a slider, tick or
+/// menu per parameter, then Reset all.
+pub fn tool_body(ui: &mut egui::Ui, row: &ToolRow, cx: Context<'_>, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
-    let node = cx.selected.and_then(|id| doc.recipe().graph.node(id));
-    let Some(node) = node else {
-        ui.add_space(SPACE[4]);
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new("No node selected").size(FONT[3]).strong());
-            ui.add_space(SPACE[0]);
-            ui.label(RichText::new("Select a node in the graph to edit its settings here.").color(t.text_weak));
-        });
+    if row.params.is_empty() {
+        ui.label(RichText::new("This tool is missing from this build.").color(t.text_weak));
         return;
-    };
-    match &node.kind {
-        NodeKind::Source => {
-            section_title(ui, "Source");
-            ui.label(
-                RichText::new(
-                    "RAW development: demosaicing, camera profile and lens corrections, \
-                     with the camera's white balance.",
-                )
-                .color(t.text_weak),
-            );
-            ui.label(
-                RichText::new("To change the white balance, add a White balance node after the Source.")
-                    .size(FONT[1])
-                    .color(t.text_weak),
-            );
-            ui.add_space(SPACE[2]);
-            base_characteristics(ui, doc, edits);
-            ui.add_space(SPACE[2]);
-            lens_section(ui, doc, cx, edits);
-        }
-        NodeKind::Tool(_) => {
-            let Some(row) = doc.node_rows(cx.registry).into_iter().find(|r| r.node == node.id) else { return };
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(node_title(node, cx.registry)).size(FONT[3]).strong());
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if let NodeKind::Tool(tool) = &node.kind {
-                        defaults_menu(
-                            ui,
-                            doc.camera(),
-                            cx.camera_defaults.params(doc.camera(), tool).is_some(),
-                            row.node,
-                            edits,
-                        );
-                    }
-                    let mut on = row.enabled;
-                    if ui.checkbox(&mut on, "Enabled").on_hover_text("Turn this node on or off").changed() {
-                        edits.push(UiEdit::Enabled { node: row.node, on });
-                    }
-                });
-            });
-            ui.add_space(SPACE[1]);
-            if row.params.is_empty() {
-                ui.label(RichText::new("This tool is missing from this build.").color(t.text_weak));
-            }
-            // A one-parameter tool named like its parameter needs no second label.
-            let hide_label = row.params.len() == 1 && row.params.iter().all(|p| p.descriptor.label == row.name);
-            let panel = crate::adjust_ui::PanelContext { histogram: cx.histogram, pick: cx.pick, probe: cx.probe };
-            let tool = match &node.kind {
-                NodeKind::Tool(id) => id.as_str(),
-                _ => "",
-            };
-            ui.add_enabled_ui(row.enabled, |ui| match tool {
-                "white_balance" => crate::adjust_ui::white_balance(ui, &row, panel, edits),
-                "levels" => crate::adjust_ui::levels(ui, &row, panel, edits),
-                "curve" => crate::adjust_ui::curve(ui, &row, panel, edits),
-                "color_editor" => crate::color_ui::color_editor(ui, &row, panel, edits),
-                "color_balance" => crate::color_ui::color_balance(ui, &row, edits),
-                "black_white" => crate::color_ui::black_white(ui, &row, edits),
-                "clarity" => crate::color_ui::clarity(ui, &row, edits),
-                "dehaze" => crate::color_ui::dehaze(ui, &row, panel, edits),
-                "vignetting" => crate::color_ui::vignetting(ui, &row, edits),
-                "retouch" => crate::retouch_ui::panel(ui, &row, edits),
-                _ => {
-                    for p in &row.params {
-                        param_widget(ui, row.node, p, !hide_label, edits);
-                    }
-                }
-            });
-            if !row.params.is_empty() {
-                ui.add_space(SPACE[1]);
-                if ui
-                    .small_button("Reset all")
-                    .on_hover_text("Every setting of this node back to its default (the camera's, when saved)")
-                    .clicked()
-                {
-                    for p in &row.params {
-                        edits.push(UiEdit::Reset { node: row.node, param: p.descriptor.id.clone() });
-                    }
-                }
+    }
+    // A one-parameter tool named like its parameter needs no second label.
+    let hide_label = row.params.len() == 1 && row.params.iter().all(|p| p.descriptor.label == row.name);
+    let probe = cx.probe.filter(|(at, _)| **at == row.at).map(|(_, rgb)| rgb);
+    let pick = cx.pick.filter(|p| p.at == row.at);
+    let panel = crate::adjust_ui::PanelContext { histogram: cx.histogram, pick, probe };
+    ui.add_enabled_ui(row.enabled, |ui| match row.at.tool.as_str() {
+        "white_balance" => crate::adjust_ui::white_balance(ui, row, panel, edits),
+        "levels" => crate::adjust_ui::levels(ui, row, panel, edits),
+        "curve" => crate::adjust_ui::curve(ui, row, panel, edits),
+        "color_editor" => crate::color_ui::color_editor(ui, row, panel, edits),
+        "color_balance" => crate::color_ui::color_balance(ui, row, edits),
+        "black_white" => crate::color_ui::black_white(ui, row, edits),
+        "clarity" => crate::color_ui::clarity(ui, row, edits),
+        "dehaze" => crate::color_ui::dehaze(ui, row, panel, edits),
+        "vignetting" => crate::color_ui::vignetting(ui, row, edits),
+        _ => {
+            for p in &row.params {
+                param_widget(ui, p, !hide_label, edits);
             }
         }
-        NodeKind::Output => {
-            section_title(ui, "Output");
-            ui.label(RichText::new(format!("Export: {}.", cx.export_summary)).color(t.text_weak));
-            ui.label(RichText::new("Change it in the Export window.").color(t.text_weak));
-        }
-        NodeKind::Mask => {
-            section_title(ui, "Mask");
-            ui.label(
-                RichText::new(
-                    "Select the node this mask restricts, then paint with Masks (B) or click with AI Select (A).",
-                )
-                .color(t.text_weak),
-            );
-        }
-        NodeKind::Parallel { .. } => {
-            section_title(ui, "Parallel");
-            ui.label(RichText::new("Adds the effects of its branches.").color(t.text_weak));
-        }
+    });
+    ui.add_space(SPACE[1]);
+    if ui
+        .small_button("Reset all")
+        .on_hover_text("Every setting of this tool back to its default (the camera's, when saved)")
+        .clicked()
+    {
+        edits.push(UiEdit::ResetAll);
     }
 }
 
-/// The tool's action menu (…), as in Capture One: Save as Defaults for the
-/// photo's camera, and Reset Defaults when some are saved.
-fn defaults_menu(ui: &mut egui::Ui, camera: &str, saved: bool, node: NodeId, edits: &mut Vec<UiEdit>) {
-    ui.menu_button("\u{2026}", |ui| {
-        let save = ui.button(format!("Save as defaults for {camera}")).on_hover_text(
-            "New photos of this camera start with this node and these values; nodes of this tool added later start \
-             with them, and resetting goes back to them",
-        );
-        if save.clicked() {
-            edits.push(UiEdit::SaveDefaults(node));
-            ui.close();
-        }
-        let reset = ui
-            .add_enabled(saved, egui::Button::new(format!("Reset defaults for {camera}")))
-            .on_hover_text("Back to the editor's own defaults for this tool; photos keep their values")
-            .on_disabled_hover_text("No defaults are saved for this tool and camera");
-        if reset.clicked() {
-            edits.push(UiEdit::ForgetDefaults(node));
-            ui.close();
-        }
-    })
-    .response
-    .on_hover_text("Defaults for this camera");
+/// The tool's action menu items, as in Capture One: Save as Defaults for
+/// the photo's camera, and Reset Defaults when some are saved.
+pub fn defaults_items(ui: &mut egui::Ui, camera: &str, saved: bool, edits: &mut Vec<UiEdit>) {
+    let save = ui.button(format!("Save as defaults for {camera}")).on_hover_text(
+        "New photos of this camera start with this tool and these values, and resetting goes back to them",
+    );
+    if save.clicked() {
+        edits.push(UiEdit::SaveDefaults);
+        ui.close();
+    }
+    let reset = ui
+        .add_enabled(saved, egui::Button::new(format!("Reset defaults for {camera}")))
+        .on_hover_text("Back to the editor's own defaults for this tool; photos keep their values")
+        .on_disabled_hover_text("No defaults are saved for this tool and camera");
+    if reset.clicked() {
+        edits.push(UiEdit::ForgetDefaults);
+        ui.close();
+    }
+}
+
+/// The Base Characteristics panel: the curve under every adjustment, the
+/// demosaic method and the camera profile.
+pub fn base_panel(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdit>) {
+    base_characteristics(ui, doc, edits);
+}
+
+/// The Lens Correction panel.
+pub fn lens_panel(ui: &mut egui::Ui, doc: &Document, cx: Context<'_>, edits: &mut Vec<UiEdit>) {
+    lens_section(ui, doc, cx, edits);
 }
 
 /// Lens corrections (lensfun data built into the editor): on/off, what to
@@ -269,8 +186,6 @@ fn defaults_menu(ui: &mut egui::Ui, camera: &str, saved: bool, node: NodeId, edi
 /// its basic look, under every adjustment.
 fn base_characteristics(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
-    ui.label(RichText::new("Base characteristics").size(FONT[2]).strong());
-    ui.add_space(SPACE[0]);
     let current = doc.recipe().curve;
     ui.horizontal(|ui| {
         ui.label("Curve");
@@ -289,7 +204,7 @@ fn base_characteristics(ui: &mut egui::Ui, doc: &Document, edits: &mut Vec<UiEdi
     demosaic_line(ui, doc);
     // Not in a horizontal row: a long description must wrap, not widen the panel.
     ui.label(RichText::new(format!("Profile: {}", doc.profile_description())).size(FONT[1]).color(t.text_weak))
-        .on_hover_text("The camera profile applied when the photo is developed, before every node");
+        .on_hover_text("The camera profile applied when the photo is developed, before every tool");
     ui.label(
         RichText::new("Developed into linear Rec. 2020; shown and exported in sRGB through the curve above.")
             .size(FONT[0])
@@ -489,6 +404,17 @@ fn manual_row(
     });
 }
 
+/// [`released`] for a slider that is always enabled, for other panels.
+pub(crate) fn released_slider(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    stored: f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+) -> Option<f32> {
+    released(ui, id, stored, true, range, suffix)
+}
+
 /// A whole-number slider over `range` starting at `stored`: while it is
 /// dragged the value shown is kept under `id`; the new value is returned
 /// once the drag ends, or at once for a click or a typed value.
@@ -637,7 +563,6 @@ pub fn double_clicked(ui: &egui::Ui, response: &egui::Response) -> bool {
 /// response and the width of its track (where it starts on the left).
 pub fn float_slider(
     ui: &mut egui::Ui,
-    node: NodeId,
     d: &ParamDescriptor,
     mut v: f32,
     edits: &mut Vec<UiEdit>,
@@ -663,11 +588,19 @@ pub fn float_slider(
         .inner
         .on_hover_text("Drag, or click the number to type a value. Double-click or right-click to reset.");
     if response.drag_started() {
-        edits.push(UiEdit::BeginDrag { node, param: param.clone() });
+        edits.push(UiEdit::BeginDrag { param: param.clone() });
     }
-    if response.changed() {
+    // Only what the user did: a slider drawn with a value off its step
+    // rounds it and says it changed, which is not an edit.
+    let touched = response.dragged()
+        || response.drag_started()
+        || response.drag_stopped()
+        || response.clicked()
+        || response.has_focus()
+        || response.lost_focus();
+    if response.changed() && touched {
         let in_drag = response.dragged() || response.drag_started();
-        edits.push(UiEdit::Set { node, param: param.clone(), value: ParamValue::Float(v), in_drag });
+        edits.push(UiEdit::Set { param: param.clone(), value: ParamValue::Float(v), in_drag });
     }
     if response.drag_stopped() {
         edits.push(UiEdit::EndDrag);
@@ -675,11 +608,11 @@ pub fn float_slider(
     // As in Capture One, a double-click goes back to the default (the
     // slider itself only senses drags, so the pointer is asked).
     if double_clicked(ui, &response) {
-        edits.push(UiEdit::Reset { node, param: param.clone() });
+        edits.push(UiEdit::Reset { param: param.clone() });
     }
     response.context_menu(|ui| {
         if ui.button("Reset to default").clicked() {
-            edits.push(UiEdit::Reset { node, param: param.clone() });
+            edits.push(UiEdit::Reset { param: param.clone() });
             ui.close();
         }
     });
@@ -687,13 +620,7 @@ pub fn float_slider(
 }
 
 /// The widget of one parameter: a labelled slider, a checkbox or a menu.
-pub fn param_widget(
-    ui: &mut egui::Ui,
-    node: NodeId,
-    row: &editor::ParamRow,
-    show_label: bool,
-    edits: &mut Vec<UiEdit>,
-) {
+pub fn param_widget(ui: &mut egui::Ui, row: &editor::ParamRow, show_label: bool, edits: &mut Vec<UiEdit>) {
     let d = &row.descriptor;
     let param = d.id.clone();
     match (&d.kind, row.value) {
@@ -701,11 +628,11 @@ pub fn param_widget(
             if show_label {
                 ui.label(RichText::new(d.label).color(ui.visuals().weak_text_color()));
             }
-            float_slider(ui, node, d, v, edits);
+            float_slider(ui, d, v, edits);
         }
         (ParamKind::Bool { .. }, ParamValue::Bool(mut b)) => {
             if ui.checkbox(&mut b, d.label).changed() {
-                edits.push(UiEdit::Set { node, param, value: ParamValue::Bool(b), in_drag: false });
+                edits.push(UiEdit::Set { param, value: ParamValue::Bool(b), in_drag: false });
             }
         }
         (ParamKind::Choice { options, .. }, ParamValue::Choice(mut c)) => {
@@ -714,13 +641,13 @@ pub fn param_widget(
             }
             let current = options.get(c as usize).copied().unwrap_or("");
             let before = c;
-            egui::ComboBox::from_id_salt((node, d.id.as_str())).selected_text(current).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt(d.id.as_str()).selected_text(current).show_ui(ui, |ui| {
                 for (i, option) in (0_u32..).zip(options.iter()) {
                     ui.selectable_value(&mut c, i, *option);
                 }
             });
             if c != before {
-                edits.push(UiEdit::Set { node, param, value: ParamValue::Choice(c), in_drag: false });
+                edits.push(UiEdit::Set { param, value: ParamValue::Choice(c), in_drag: false });
             }
         }
         _ => {

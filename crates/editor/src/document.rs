@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use commands::{Edit, EditError, EditSession, GestureId, HistoryItem, RewriteReport, SavedHistory};
 use core_model::{
-    CaptureInfo, DevelopSettings, GraphError, ImageF32, LensSettings, NodeId, NodeKind, Orientation, ParamId,
-    ParamValue, Params, Recipe, SensorImage, ToolId,
+    CaptureInfo, DevelopSettings, ImageF32, LayerId, LensSettings, MaskDef, Orientation, ParamId, ParamValue, Params,
+    Recipe, SensorImage, StyleTool, ToolId, ToolRef, Tools,
 };
 use tool_api::{ParamDescriptor, ToolRegistry};
 
@@ -78,7 +78,7 @@ pub struct Opened {
     pub camera_curve: Option<core_model::CurveFit>,
 }
 
-/// One parameter of a node, ready to draw.
+/// One parameter of a tool, ready to draw.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamRow {
     /// Type, range, label.
@@ -87,15 +87,17 @@ pub struct ParamRow {
     pub value: ParamValue,
 }
 
-/// One tool node, ready to draw in the inspector.
+/// One tool of a layer, ready to draw in its panel.
 #[derive(Debug, Clone, PartialEq)]
-pub struct NodeRow {
-    /// The node.
-    pub node: NodeId,
+pub struct ToolRow {
+    /// The tool, its layer and slot.
+    pub at: ToolRef,
     /// Tool name ("Exposure").
     pub name: &'static str,
-    /// `false` when bypassed.
+    /// `false` when switched off.
     pub enabled: bool,
+    /// `true` when the layer holds the tool (`false`: every value at its default).
+    pub used: bool,
     /// Parameters in UI order.
     pub params: Vec<ParamRow>,
 }
@@ -111,9 +113,8 @@ pub struct Document {
 }
 
 impl Document {
-    /// A document for a freshly opened image: the graph holds only the
-    /// Source (and the Output it feeds); tools are added from the node graph.
-    /// The history starts empty. `first_generation` should be above every
+    /// A document for a freshly opened image: no tool is used yet and there
+    /// is no layer. The history starts empty. `first_generation` should be above every
     /// generation of earlier documents, so their late renders are recognised.
     #[must_use]
     pub fn new(opened: Opened, first_generation: u64) -> Self {
@@ -167,29 +168,18 @@ impl Document {
         if self.read_only { Err(EditError::ReadOnly) } else { Ok(()) }
     }
 
-    /// A document whose graph starts with `tools` (id, enabled) in a chain
-    /// after the Source, those this build has; not part of the history.
-    ///
-    /// # Errors
-    /// [`GraphError`] only if the graph cannot be built (a bug).
-    pub fn with_tools(
-        opened: Opened,
-        registry: &ToolRegistry,
-        tools: &[(&str, bool)],
-        first_generation: u64,
-    ) -> Result<Self, GraphError> {
+    /// A document whose Background starts with `tools` (id, on or off),
+    /// those this build has; not part of the history.
+    #[must_use]
+    pub fn with_tools(opened: Opened, registry: &ToolRegistry, tools: &[(&str, bool)], first_generation: u64) -> Self {
         let mut recipe = Recipe::default();
-        let mut last = recipe.graph.source();
         for &(name, enabled) in tools {
             let Ok(id) = ToolId::new(name) else { continue };
             if registry.get(&id).is_some() {
-                last = recipe.graph.insert_serial(last, id, Params::new())?;
-                if let Some(mut node) = recipe.graph.node_mut(last) {
-                    node.set_enabled(enabled);
-                }
+                recipe.layers.background.set_enabled(&id, enabled);
             }
         }
-        Ok(Self { opened, session: EditSession::new(recipe), generation: first_generation, read_only: false })
+        Self { opened, session: EditSession::new(recipe), generation: first_generation, read_only: false }
     }
 
     /// The RAW file.
@@ -389,32 +379,41 @@ impl Document {
         [p.x(), p.y()]
     }
 
-    /// The colour entering `node` at the upright point `at` (0–1 from the
-    /// top-left corner): a 5 × 5 average of the developed preview, passed
-    /// through the enabled tools between the Source and `node` (those that
-    /// work pixel by pixel; the others, and masks, are left out). `None`
-    /// outside the image.
+    /// The colour entering the tool `at` at the upright point `at_point`
+    /// (0–1 from the top-left corner): a 5 × 5 average of the developed
+    /// preview, passed through the tools that act before it (those that
+    /// work pixel by pixel): on the Background those before it in the fixed
+    /// order, for a layer every Background tool and then the layer's own
+    /// before it (layers below and masks are left out). `None` outside the
+    /// image.
     #[must_use]
-    pub fn probe(&self, registry: &ToolRegistry, node: NodeId, at: [f32; 2]) -> Option<[f32; 3]> {
-        let rgb = self.sample_preview(at)?;
-        let graph = &self.recipe().graph;
-        let mut chain = Vec::new();
-        let mut cur = node;
-        while let Some(link) = graph.input_link(cur, 0) {
-            let from = graph.node(link.from)?;
-            match &from.kind {
-                NodeKind::Tool(id) => chain.push((from, id)),
-                _ => break,
-            }
-            cur = link.from;
-        }
+    pub fn probe(&self, registry: &ToolRegistry, at: &ToolRef, at_point: [f32; 2]) -> Option<[f32; 3]> {
+        let rgb = self.sample_preview(at_point)?;
+        let layers = &self.recipe().layers;
+        let order = registry.pipeline();
+        let pos = |t: &ToolId| order.iter().position(|o| o == t).unwrap_or(usize::MAX);
+        let target = pos(&at.tool);
+        let before = |tools: &Tools| -> Vec<(ToolId, Params)> {
+            tools
+                .steps(&order)
+                .into_iter()
+                .filter(|(t, slot, _)| pos(t) < target || (**t == at.tool && *slot < at.slot))
+                .map(|(t, _, p)| (t.clone(), p.clone()))
+                .collect()
+        };
+        let chain: Vec<(ToolId, Params)> = if at.layer.is_background() {
+            before(&layers.background)
+        } else {
+            let all = layers.background.steps(&order).into_iter().map(|(t, _, p)| (t.clone(), p.clone()));
+            all.chain(before(layers.tools(at.layer)?)).collect()
+        };
         let mut px = ImageF32::from_pixels(1, 1, self.preview().space(), vec![[rgb[0], rgb[1], rgb[2], 1.0]]).ok()?;
-        for (n, id) in chain.into_iter().rev() {
-            let Some(tool) = registry.get(id) else { continue };
-            if !n.enabled || tool.gpu_kernel() == tool_api::GpuKernel::Host {
+        for (id, params) in chain {
+            let Some(tool) = registry.get(&id) else { continue };
+            if tool.gpu_kernel() == tool_api::GpuKernel::Host {
                 continue;
             }
-            tool.apply_cpu(&mut px, &tool_api::ResolvedParams::resolve(tool.descriptor(), &n.params));
+            tool.apply_cpu(&mut px, &tool_api::ResolvedParams::resolve(tool.descriptor(), &params));
         }
         let p = px.pixels()[0];
         Some([p[0], p[1], p[2]])
@@ -528,37 +527,46 @@ impl Document {
         self.generation
     }
 
-    /// Tool nodes in processing order with their parameters, for the inspector.
-    /// Nodes of tools missing from this build are listed without parameters.
+    /// One tool of a layer with its parameters, for its panel; `None` when
+    /// the layer does not exist. A tool missing from this build is listed
+    /// without parameters.
     #[must_use]
-    pub fn node_rows(&self, registry: &ToolRegistry) -> Vec<NodeRow> {
-        let graph = &self.recipe().graph;
-        let order = graph.evaluation_order().unwrap_or_default();
-        order
-            .into_iter()
-            .filter_map(|id| graph.node(id))
-            .filter_map(|node| {
-                let NodeKind::Tool(tool_id) = &node.kind else { return None };
-                let Some(tool) = registry.get(tool_id) else {
-                    return Some(NodeRow {
-                        node: node.id,
-                        name: "Missing tool",
-                        enabled: node.enabled,
-                        params: vec![],
-                    });
-                };
-                let d = tool.descriptor();
-                let params = d
-                    .params
-                    .iter()
-                    .map(|p| {
-                        let value = node.params.get(&p.id).map_or_else(|| p.default_value(), |v| p.sanitize(v));
-                        ParamRow { descriptor: p.clone(), value }
-                    })
-                    .collect();
-                Some(NodeRow { node: node.id, name: d.name, enabled: node.enabled, params })
+    pub fn tool_row(&self, registry: &ToolRegistry, at: &ToolRef) -> Option<ToolRow> {
+        let tools = self.recipe().layers.tools(at.layer)?;
+        let settings = tools.get(&at.tool);
+        let first = crate::adjust::initial_params(self, at.tool.as_str());
+        let values = tools.params(&at.tool, at.slot).or_else(|| settings.is_none().then_some(&first));
+        let enabled = settings.is_none_or(|s| s.enabled);
+        let Some(tool) = registry.get(&at.tool) else {
+            return Some(ToolRow {
+                at: at.clone(),
+                name: "Missing tool",
+                enabled,
+                used: settings.is_some(),
+                params: vec![],
+            });
+        };
+        let d = tool.descriptor();
+        let params = d
+            .params
+            .iter()
+            .map(|p| {
+                let value = values.and_then(|v| v.get(&p.id)).map_or_else(|| p.default_value(), |v| p.sanitize(v));
+                ParamRow { descriptor: p.clone(), value }
             })
-            .collect()
+            .collect();
+        Some(ToolRow { at: at.clone(), name: d.name, enabled, used: settings.is_some(), params })
+    }
+
+    /// The tools a layer holds, in the order they act, for the inspector
+    /// and the tests. Tools missing from this build come last.
+    #[must_use]
+    pub fn tool_rows(&self, registry: &ToolRegistry, layer: LayerId) -> Vec<ToolRow> {
+        let Some(tools) = self.recipe().layers.tools(layer) else { return Vec::new() };
+        let order = registry.pipeline();
+        let mut ids: Vec<&ToolId> = order.iter().filter(|t| tools.get(t).is_some()).collect();
+        ids.extend(tools.iter().map(|(t, _)| t).filter(|t| !order.contains(t)));
+        ids.into_iter().filter_map(|t| self.tool_row(registry, &ToolRef::new(layer, t.clone()))).collect()
     }
 
     /// Starts a continuous gesture (a slider drag): its changes become one undo step.
@@ -566,48 +574,74 @@ impl Document {
         self.session.begin_gesture()
     }
 
-    /// Sets a parameter. A value equal to the current one changes nothing
-    /// (no undo step, no new render).
+    /// Applies `edit` as one undo step (merged with the previous one in the
+    /// same `gesture` when it changes the same thing).
+    fn edit(&mut self, registry: &ToolRegistry, edit: Edit, gesture: Option<GestureId>) -> Result<(), EditError> {
+        self.writable()?;
+        self.session.apply_in_gesture(registry, edit, gesture)?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// The values a tool starts with when a layer first uses it (see
+    /// [`crate::adjust::initial_params`]), with `values` over them; `None`
+    /// when the layer holds the tool or it starts at its defaults.
+    fn with_first_values(&self, at: &ToolRef, values: &[(ParamId, ParamValue)]) -> Option<Vec<(ParamId, ParamValue)>> {
+        let held = self.recipe().layers.tools(at.layer).is_some_and(|t| t.get(&at.tool).is_some());
+        if held || at.slot > 0 {
+            return None;
+        }
+        let first = crate::adjust::initial_params(self, at.tool.as_str());
+        first.iter().next()?;
+        let mut all: Vec<(ParamId, ParamValue)> =
+            first.iter().filter(|(p, _)| !values.iter().any(|(q, _)| q == *p)).map(|(p, v)| (p.clone(), *v)).collect();
+        all.extend(values.iter().cloned());
+        Some(all)
+    }
+
+    /// Sets a parameter (the tool joins the layer when it was not there,
+    /// with its first values). A value equal to the current one changes
+    /// nothing (no undo step, no new render).
     ///
     /// # Errors
-    /// [`EditError`] when the node or parameter does not exist; nothing changes.
+    /// [`EditError`] when the layer, tool or parameter does not exist; nothing changes.
     pub fn set_param(
         &mut self,
         registry: &ToolRegistry,
-        node: NodeId,
+        at: &ToolRef,
         param: ParamId,
         value: ParamValue,
         gesture: Option<GestureId>,
     ) -> Result<(), EditError> {
         self.writable()?;
-        if self.current_value(node, &param) == Some(value) {
+        if self.current_value(at, &param) == Some(value) {
             return Ok(());
         }
-        self.session.apply_in_gesture(registry, Edit::SetParam { node, param, value }, gesture)?;
-        self.generation += 1;
-        Ok(())
+        if let Some(values) = self.with_first_values(at, &[(param.clone(), value)]) {
+            return self.edit(registry, Edit::SetParams { at: at.clone(), values }, gesture);
+        }
+        self.edit(registry, Edit::SetParam { at: at.clone(), param, value }, gesture)
     }
 
-    /// Sets several parameters of one node in one undo step (merged with
+    /// Sets several parameters of one tool in one undo step (merged with
     /// the previous step when it set the same parameters in `gesture`).
     /// Values equal to the current ones change nothing.
     ///
     /// # Errors
-    /// [`EditError`] when the node or a parameter does not exist; nothing changes.
+    /// [`EditError`] when the layer, tool or a parameter does not exist; nothing changes.
     pub fn set_params(
         &mut self,
         registry: &ToolRegistry,
-        node: NodeId,
+        at: &ToolRef,
         values: Vec<(ParamId, ParamValue)>,
         gesture: Option<GestureId>,
     ) -> Result<(), EditError> {
         self.writable()?;
-        if values.iter().all(|(p, v)| self.current_value(node, p) == Some(*v)) {
+        if values.iter().all(|(p, v)| self.current_value(at, p) == Some(*v)) {
             return Ok(());
         }
-        self.session.apply_in_gesture(registry, Edit::SetParams { node, values }, gesture)?;
-        self.generation += 1;
-        Ok(())
+        let values = self.with_first_values(at, &values).unwrap_or(values);
+        self.edit(registry, Edit::SetParams { at: at.clone(), values }, gesture)
     }
 
     /// Changes the perspective, straightening and crop (one undo step,
@@ -650,35 +684,96 @@ impl Document {
         self.opened.raw.as_ref().map(|r| r.sensor.cfa().kind())
     }
 
-    /// The mask node feeding the key input of tool node `node`, with its definition.
+    /// The mask of a layer (`None` for the Background and missing layers).
     #[must_use]
-    pub fn mask_of(&self, node: NodeId) -> Option<(NodeId, &core_model::MaskDef)> {
-        let graph = &self.recipe().graph;
-        let port = graph
-            .node(node)?
-            .kind
-            .inputs()
-            .iter()
-            .position(|k| *k == core_model::PortKind::Mask)
-            .and_then(|p| u8::try_from(p).ok())?;
-        let link = graph.input_link(node, port)?;
-        let mask = graph.node(link.from)?;
-        Some((mask.id, mask.mask.as_ref()?))
+    pub fn mask_of(&self, layer: LayerId) -> Option<&MaskDef> {
+        self.recipe().layers.layer(layer).map(|l| &l.mask)
     }
 
-    /// Gives tool node `to` a new mask (one undo step); returns the mask node.
+    /// Adds a layer at the top with `mask` and the values of `tools` (a
+    /// style brush's; none for an empty layer), one undo step; returns it.
     ///
     /// # Errors
-    /// [`EditError`] when `to` has no mask input; nothing changes.
-    pub fn add_mask(
+    /// [`EditError`] when a tool is not in this build, or the photo is
+    /// read-only; nothing changes.
+    pub fn add_layer(
         &mut self,
         registry: &ToolRegistry,
-        to: NodeId,
-        def: core_model::MaskDef,
-    ) -> Result<NodeId, EditError> {
-        self.session.apply(registry, Edit::AddMask { to, def })?;
-        self.generation += 1;
-        self.mask_of(to).map(|(id, _)| id).ok_or(EditError::NoMaskInput(to))
+        name: &str,
+        mask: MaskDef,
+        tools: Vec<StyleTool>,
+    ) -> Result<LayerId, EditError> {
+        self.edit(registry, Edit::AddLayer { name: name.to_owned(), mask, tools }, None)?;
+        // AddLayer always puts the new layer at the top.
+        self.recipe().layers.layers().last().map(|l| l.id).ok_or(EditError::Layer(core_model::LayerError::Background))
+    }
+
+    /// A name for a new layer that no other layer has ("Layer 3").
+    #[must_use]
+    pub fn new_layer_name(&self, base: &str) -> String {
+        let taken = |name: &str| self.recipe().layers.layers().iter().any(|l| l.name == name);
+        (1..).map(|n| format!("{base} {n}")).find(|n| !taken(n)).unwrap_or_else(|| base.to_owned())
+    }
+
+    /// Deletes a layer (one undo step).
+    ///
+    /// # Errors
+    /// [`EditError`] for the Background or a missing layer; nothing changes.
+    pub fn remove_layer(&mut self, registry: &ToolRegistry, layer: LayerId) -> Result<(), EditError> {
+        self.edit(registry, Edit::RemoveLayer { layer }, None)
+    }
+
+    /// Renames a layer (one undo step); the same name changes nothing.
+    ///
+    /// # Errors
+    /// [`EditError`] for the Background or a missing layer; nothing changes.
+    pub fn rename_layer(&mut self, registry: &ToolRegistry, layer: LayerId, name: &str) -> Result<(), EditError> {
+        if self.recipe().layers.layer(layer).is_some_and(|l| l.name == name.trim()) {
+            return Ok(());
+        }
+        self.edit(registry, Edit::RenameLayer { layer, name: name.to_owned() }, None)
+    }
+
+    /// Moves a layer to `index` in the list (one undo step); its own place changes nothing.
+    ///
+    /// # Errors
+    /// [`EditError`] for the Background or a missing layer; nothing changes.
+    pub fn move_layer(&mut self, registry: &ToolRegistry, layer: LayerId, index: usize) -> Result<(), EditError> {
+        if self.recipe().layers.index_of(layer) == Some(index) {
+            return Ok(());
+        }
+        self.edit(registry, Edit::MoveLayer { layer, index }, None)
+    }
+
+    /// Switches a layer on or off (one undo step).
+    ///
+    /// # Errors
+    /// [`EditError`] for the Background or a missing layer; nothing changes.
+    pub fn set_layer_enabled(
+        &mut self,
+        registry: &ToolRegistry,
+        layer: LayerId,
+        enabled: bool,
+    ) -> Result<(), EditError> {
+        if self.recipe().layers.layer(layer).is_some_and(|l| l.enabled == enabled) {
+            return Ok(());
+        }
+        self.edit(registry, Edit::SetLayerEnabled { layer, enabled }, None)
+    }
+
+    /// Replaces a layer's mask (one undo step, merged with the previous one
+    /// in the same `gesture`).
+    ///
+    /// # Errors
+    /// [`EditError`] for the Background or a missing layer; nothing changes.
+    pub fn set_layer_mask(
+        &mut self,
+        registry: &ToolRegistry,
+        layer: LayerId,
+        mask: MaskDef,
+        gesture: Option<GestureId>,
+    ) -> Result<(), EditError> {
+        self.edit(registry, Edit::SetLayerMask { layer, mask }, gesture)
     }
 
     /// Applies a style (a preset) to the photo (one undo step): see
@@ -693,136 +788,50 @@ impl Document {
         name: &str,
         style: core_model::Style,
     ) -> Result<(), EditError> {
-        self.writable()?;
-        self.session.apply(registry, Edit::ApplyStyle { name: name.to_owned(), style: Box::new(style) })?;
-        self.generation += 1;
-        Ok(())
-    }
-
-    /// Paints style brush `name` (one undo step): its tools are added
-    /// behind a new mask `mask` (see [`Edit::AddStyleBrush`]). Returns the
-    /// first new tool node, whose mask further strokes extend.
-    ///
-    /// # Errors
-    /// [`EditError`] as for [`Edit::AddStyleBrush`], or the photo is
-    /// read-only; nothing changes.
-    pub fn add_style_brush(
-        &mut self,
-        registry: &ToolRegistry,
-        name: &str,
-        style: core_model::Style,
-        mask: core_model::MaskDef,
-    ) -> Result<NodeId, EditError> {
-        self.writable()?;
-        let before: Vec<NodeId> = core_model::tool_nodes(&self.recipe().graph);
-        let edit = Edit::AddStyleBrush { name: name.to_owned(), style: Box::new(style), mask };
-        self.session.apply(registry, edit)?;
-        self.generation += 1;
-        core_model::tool_nodes(&self.recipe().graph)
-            .into_iter()
-            .find(|id| !before.contains(id))
-            .ok_or(EditError::EmptyStyle)
-    }
-
-    /// Replaces the definition of mask node `mask` (one undo step, merged
-    /// with the previous one in the same `gesture`).
-    ///
-    /// # Errors
-    /// [`EditError`] when `mask` is not a mask node; nothing changes.
-    pub fn set_mask(
-        &mut self,
-        registry: &ToolRegistry,
-        mask: NodeId,
-        def: core_model::MaskDef,
-        gesture: Option<GestureId>,
-    ) -> Result<(), EditError> {
-        self.session.apply_in_gesture(registry, Edit::SetMask { node: mask, def }, gesture)?;
-        self.generation += 1;
-        Ok(())
+        self.edit(registry, Edit::ApplyStyle { name: name.to_owned(), style: Box::new(style) }, None)
     }
 
     /// Returns a parameter to its default (one undo step).
     ///
     /// # Errors
-    /// [`EditError`] when the node or parameter does not exist; nothing changes.
-    pub fn reset_param(&mut self, registry: &ToolRegistry, node: NodeId, param: ParamId) -> Result<(), EditError> {
+    /// [`EditError`] when the layer, tool or parameter does not exist; nothing changes.
+    pub fn reset_param(&mut self, registry: &ToolRegistry, at: &ToolRef, param: ParamId) -> Result<(), EditError> {
         self.writable()?;
-        if self.recipe().graph.node(node).is_some_and(|n| n.params.get(&param).is_none()) {
+        if self.current_value(at, &param).is_none() && self.recipe().layers.contains(at.layer) {
             return Ok(());
         }
-        self.session.apply(registry, Edit::ResetParam { node, param })?;
-        self.generation += 1;
-        Ok(())
+        self.edit(registry, Edit::ResetParam { at: at.clone(), param }, None)
     }
 
-    /// Enables or bypasses a node (one undo step).
+    /// Takes a tool out of a layer: all its values back to their defaults
+    /// (one undo step). A tool not in the layer changes nothing.
     ///
     /// # Errors
-    /// [`EditError`] when the node does not exist; nothing changes.
-    pub fn set_enabled(&mut self, registry: &ToolRegistry, node: NodeId, enabled: bool) -> Result<(), EditError> {
+    /// [`EditError`] when the layer does not exist; nothing changes.
+    pub fn reset_tool(&mut self, registry: &ToolRegistry, layer: LayerId, tool: &ToolId) -> Result<(), EditError> {
         self.writable()?;
-        if self.recipe().graph.node(node).is_some_and(|n| n.enabled == enabled) {
+        if self.recipe().layers.tools(layer).is_some_and(|t| t.get(tool).is_none()) {
             return Ok(());
         }
-        self.session.apply(registry, Edit::SetEnabled { node, enabled })?;
-        self.generation += 1;
-        Ok(())
+        self.edit(registry, Edit::ResetTool { layer, tool: tool.clone() }, None)
     }
 
-    /// Adds a node running `tool` right after `after` (what `after` fed now
-    /// receives the new node's image); returns the new node.
+    /// Switches a tool of a layer on or off (one undo step).
     ///
     /// # Errors
-    /// [`EditError`] for an unknown node or tool; nothing changes.
-    pub fn add_node(&mut self, registry: &ToolRegistry, after: NodeId, tool: ToolId) -> Result<NodeId, EditError> {
-        self.add_node_with(registry, after, tool, Params::new())
-    }
-
-    /// Where a node added from the menu goes: after `selected` when it has
-    /// an image output (not the Output), else at the end of the chain, just
-    /// before the Output.
-    #[must_use]
-    pub fn insertion_point(&self, selected: Option<NodeId>) -> NodeId {
-        let graph = &self.recipe().graph;
-        let gives_image = |id: NodeId| {
-            id != graph.output()
-                && graph.node(id).is_some_and(|n| n.kind.outputs().first() == Some(&core_model::PortKind::Image))
-        };
-        selected
-            .filter(|id| gives_image(*id))
-            .or_else(|| graph.input_link(graph.output(), 0).map(|l| l.from).filter(|id| gives_image(*id)))
-            .unwrap_or_else(|| graph.source())
-    }
-
-    /// Like [`Self::add_node`], with the new node's first values (one undo step).
-    ///
-    /// # Errors
-    /// [`EditError`] for an unknown node or tool; nothing changes.
-    pub fn add_node_with(
+    /// [`EditError`] when the layer or tool does not exist; nothing changes.
+    pub fn set_tool_enabled(
         &mut self,
         registry: &ToolRegistry,
-        after: NodeId,
-        tool: ToolId,
-        params: Params,
-    ) -> Result<NodeId, EditError> {
-        self.writable()?;
-        let before: Vec<NodeId> = self.recipe().graph.nodes().map(|n| n.id).collect();
-        self.session.apply(registry, Edit::InsertSerial { after, tool, params })?;
-        self.generation += 1;
-        let created = self.recipe().graph.nodes().map(|n| n.id).find(|id| !before.contains(id));
-        // InsertSerial always creates one node; its id is the new one.
-        Ok(created.unwrap_or(after))
-    }
-
-    /// Removes a node, joining the chain around it.
-    ///
-    /// # Errors
-    /// [`EditError`] for an unknown node, the Source or the Output; nothing changes.
-    pub fn remove_node(&mut self, registry: &ToolRegistry, node: NodeId) -> Result<(), EditError> {
-        self.writable()?;
-        self.session.apply(registry, Edit::RemoveNode { node })?;
-        self.generation += 1;
-        Ok(())
+        layer: LayerId,
+        tool: &ToolId,
+        enabled: bool,
+    ) -> Result<(), EditError> {
+        let current = self.recipe().layers.tools(layer).and_then(|t| t.get(tool)).map(|s| s.enabled);
+        if current == Some(enabled) || (current.is_none() && enabled) {
+            return Ok(());
+        }
+        self.edit(registry, Edit::SetToolEnabled { layer, tool: tool.clone(), enabled }, None)
     }
 
     /// Undoes the last change; returns its label.
@@ -862,8 +871,8 @@ impl Document {
         folder.join(format!("{stem}.jpg"))
     }
 
-    fn current_value(&self, node: NodeId, param: &ParamId) -> Option<ParamValue> {
-        self.recipe().graph.node(node)?.params.get(param)
+    fn current_value(&self, at: &ToolRef, param: &ParamId) -> Option<ParamValue> {
+        self.recipe().layers.params(at)?.get(param)
     }
 }
 
@@ -902,56 +911,80 @@ mod tests {
         }
     }
 
-    /// The chain the tests start from (the window starts from the Source alone).
+    /// The tools the tests start from (the window starts with none).
     const STARTING: &[(&str, bool)] = &[("exposure", true), ("denoise_ai", false)];
 
     fn exposure_param() -> ParamId {
-        ParamId::new(tool_exposure_id()).unwrap()
+        ParamId::new("exposure").unwrap()
     }
 
-    fn tool_exposure_id() -> &'static str {
-        "exposure"
+    fn exposure() -> ToolRef {
+        ToolRef::background(ToolId::new("exposure").unwrap())
+    }
+
+    fn exposure_value(doc: &Document, reg: &ToolRegistry) -> ParamValue {
+        doc.tool_row(reg, &exposure()).unwrap().params[0].value
     }
 
     #[test]
-    fn a_new_document_has_only_the_source_and_nodes_are_added_after_a_port() {
+    fn a_new_document_has_no_tools_and_a_tool_joins_when_first_set() {
         let reg = registry();
         let mut doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), 1);
-        assert!(doc.node_rows(&reg).is_empty());
-        assert_eq!(doc.recipe().graph.nodes().count(), 2, "Source and Output");
-        let source = doc.recipe().graph.source();
-        let exposure = ToolId::new(tool_exposure_id()).unwrap();
-        let a = doc.add_node(&reg, source, exposure.clone()).unwrap();
-        let b = doc.add_node(&reg, source, exposure).unwrap();
-        // b went between the Source and a.
-        let rows: Vec<NodeId> = doc.node_rows(&reg).iter().map(|r| r.node).collect();
-        assert_eq!(rows, vec![b, a]);
-        doc.remove_node(&reg, b).unwrap();
-        assert_eq!(doc.node_rows(&reg).len(), 1);
-        assert!(doc.remove_node(&reg, source).is_err(), "the Source stays");
+        assert!(doc.tool_rows(&reg, LayerId::BACKGROUND).is_empty());
+        let row = doc.tool_row(&reg, &exposure()).unwrap();
+        assert!(!row.used && row.enabled, "shown with its defaults");
+        doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(1.5), None).unwrap();
+        assert!(doc.tool_row(&reg, &exposure()).unwrap().used);
+        assert_eq!(exposure_value(&doc, &reg), ParamValue::Float(1.5));
+        doc.reset_tool(&reg, LayerId::BACKGROUND, &exposure().tool).unwrap();
+        assert!(doc.tool_rows(&reg, LayerId::BACKGROUND).is_empty());
         doc.undo();
-        assert_eq!(doc.node_rows(&reg).len(), 2);
-        assert!(doc.add_node(&reg, source, ToolId::new("no_such_tool").unwrap()).is_err());
+        assert_eq!(exposure_value(&doc, &reg), ParamValue::Float(1.5));
+        let unknown = ToolRef::background(ToolId::new("no_such_tool").unwrap());
+        assert!(doc.set_param(&reg, &unknown, exposure_param(), ParamValue::Float(1.0), None).is_err());
     }
 
     #[test]
-    fn a_node_can_start_with_values_in_one_undo_step() {
+    fn tools_are_listed_in_the_order_they_act() {
         let reg = registry();
         let mut doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), 1);
-        let source = doc.recipe().graph.source();
-        let mut p = Params::new();
-        p.set(exposure_param(), ParamValue::Float(1.5));
-        p.set(ParamId::new("not_a_param").unwrap(), ParamValue::Float(9.0));
-        let id = doc.add_node_with(&reg, source, ToolId::new("exposure").unwrap(), p).unwrap();
-        let node = doc.recipe().graph.node(id).unwrap();
-        assert_eq!(node.params.get(&exposure_param()), Some(ParamValue::Float(1.5)));
-        assert_eq!(node.params.get(&ParamId::new("not_a_param").unwrap()), None, "unknown keys are dropped");
-        doc.undo();
-        assert!(doc.recipe().graph.node(id).is_none());
+        for name in ["vignetting", "exposure", "retouch"] {
+            doc.set_tool_enabled(&reg, LayerId::BACKGROUND, &ToolId::new(name).unwrap(), false).unwrap();
+        }
+        let rows = doc.tool_rows(&reg, LayerId::BACKGROUND);
+        let names: Vec<&str> = rows.iter().map(|r| r.at.tool.as_str()).collect();
+        assert_eq!(names, ["retouch", "exposure", "vignetting"]);
     }
 
     #[test]
-    fn probing_reads_the_preview_upright_through_the_tools_before_the_node() {
+    fn layers_are_added_renamed_moved_and_removed_with_undo() {
+        let reg = registry();
+        let mut doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), 1);
+        assert_eq!(doc.new_layer_name("Layer"), "Layer 1");
+        let a = doc.add_layer(&reg, "Layer 1", MaskDef::default(), Vec::new()).unwrap();
+        assert_eq!(doc.new_layer_name("Layer"), "Layer 2");
+        let b = doc.add_layer(&reg, "Layer 2", MaskDef::default(), Vec::new()).unwrap();
+        doc.move_layer(&reg, b, 0).unwrap();
+        assert_eq!(doc.recipe().layers.index_of(b), Some(0));
+        let g = doc.generation();
+        doc.move_layer(&reg, b, 0).unwrap();
+        assert_eq!(doc.generation(), g, "its own place is not a change");
+        doc.rename_layer(&reg, a, " Sky ").unwrap();
+        assert_eq!(doc.recipe().layers.layer(a).unwrap().name, "Sky");
+        doc.set_layer_enabled(&reg, a, false).unwrap();
+        let on_a = ToolRef::new(a, ToolId::new("exposure").unwrap());
+        doc.set_param(&reg, &on_a, exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        assert_eq!(doc.tool_rows(&reg, a).len(), 1);
+        assert!(doc.tool_rows(&reg, LayerId::BACKGROUND).is_empty());
+        doc.remove_layer(&reg, a).unwrap();
+        assert_eq!(doc.tool_row(&reg, &on_a), None);
+        doc.undo();
+        assert!(doc.tool_row(&reg, &on_a).is_some());
+        assert!(doc.remove_layer(&reg, LayerId::BACKGROUND).is_err());
+    }
+
+    #[test]
+    fn probing_reads_the_preview_upright_through_the_tools_before_the_one_probed() {
         let reg = registry();
         // 6 × 4 stored image, shown rotated 90° clockwise: upright it is 4 × 6.
         let mut px = vec![[0.1_f32, 0.1, 0.1, 1.0]; 24];
@@ -960,43 +993,30 @@ mod tests {
         let mut o = opened("a/DSC_1.NEF", Orientation::Rotate90);
         o.image.preview = Arc::clone(&img);
         let mut doc = Document::new(o, 1);
-        let source = doc.recipe().graph.source();
-        let exposure = doc.add_node(&reg, source, ToolId::new("exposure").unwrap()).unwrap();
-        doc.set_param(&reg, exposure, exposure_param(), ParamValue::Float(1.0), None).unwrap();
-        let after = doc.add_node(&reg, exposure, ToolId::new("hdr").unwrap()).unwrap();
+        doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        let hdr = ToolRef::background(ToolId::new("hdr").unwrap());
         // Rotated 90° clockwise, the stored top-left corner is at the upright top-right.
-        let at_exposure = doc.probe(&reg, exposure, [0.99, 0.01]).unwrap();
-        let at_after = doc.probe(&reg, after, [0.99, 0.01]).unwrap();
-        assert!(at_after[0] > at_exposure[0] * 1.9, "{at_exposure:?} {at_after:?}");
+        let at_exposure = doc.probe(&reg, &exposure(), [0.99, 0.01]).unwrap();
+        let at_hdr = doc.probe(&reg, &hdr, [0.99, 0.01]).unwrap();
+        assert!(at_hdr[0] > at_exposure[0] * 1.9, "{at_exposure:?} {at_hdr:?}");
         assert!(at_exposure[0] > at_exposure[2], "the corner's colour is in the average");
-        assert_eq!(doc.probe(&reg, after, [1.5, 0.0]), None);
+        // A layer sees the whole Background.
+        let layer = doc.add_layer(&reg, "L", MaskDef::default(), Vec::new()).unwrap();
+        let in_layer = doc.probe(&reg, &ToolRef::new(layer, exposure().tool), [0.99, 0.01]).unwrap();
+        assert_eq!(in_layer, at_hdr);
+        assert_eq!(doc.probe(&reg, &hdr, [1.5, 0.0]), None);
         assert_eq!(doc.shot_light(), None, "no RAW data in this test");
-    }
-
-    #[test]
-    fn a_node_from_the_menu_goes_after_the_selection_or_at_the_end_of_the_chain() {
-        let reg = registry();
-        let mut doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), 1);
-        let source = doc.recipe().graph.source();
-        assert_eq!(doc.insertion_point(None), source, "an empty chain grows from the Source");
-        let exposure = ToolId::new(tool_exposure_id()).unwrap();
-        let a = doc.add_node(&reg, source, exposure.clone()).unwrap();
-        let b = doc.add_node(&reg, a, exposure).unwrap();
-        assert_eq!(doc.insertion_point(None), b, "after the last node");
-        assert_eq!(doc.insertion_point(Some(a)), a, "after the selected node");
-        let output = doc.recipe().graph.output();
-        assert_eq!(doc.insertion_point(Some(output)), b, "never after the Output");
     }
 
     #[test]
     fn a_document_with_tools_has_them_and_an_empty_history() {
         let reg = registry();
-        let doc = Document::with_tools(opened("a/DSC_1.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
-        let rows = doc.node_rows(&reg);
-        assert_eq!(rows[0].name, "Exposure");
-        assert!(rows[0].enabled);
-        assert_eq!(rows[0].params[0].value, ParamValue::Float(0.0));
-        // The AI denoise node, when this build has it, comes after and starts bypassed.
+        let doc = Document::with_tools(opened("a/DSC_1.NEF", Orientation::Normal), &reg, STARTING, 1);
+        let rows = doc.tool_rows(&reg, LayerId::BACKGROUND);
+        let exposure_row = rows.iter().find(|r| r.name == "Exposure").unwrap();
+        assert!(exposure_row.enabled);
+        assert_eq!(exposure_row.params[0].value, ParamValue::Float(0.0));
+        // The AI denoise tool, when this build has it, starts switched off.
         let denoise: Vec<_> = rows.iter().filter(|r| r.name == "AI denoise").collect();
         assert!(denoise.iter().all(|r| !r.enabled));
         assert_eq!(rows.len(), 1 + denoise.len());
@@ -1007,9 +1027,8 @@ mod tests {
     #[test]
     fn a_renamed_file_keeps_its_edits() {
         let reg = registry();
-        let mut doc = Document::with_tools(opened("a/DSC_1.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
-        let node = doc.node_rows(&reg)[0].node;
-        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(0.5), None).unwrap();
+        let mut doc = Document::with_tools(opened("a/DSC_1.NEF", Orientation::Normal), &reg, STARTING, 1);
+        doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(0.5), None).unwrap();
         doc.file_renamed(PathBuf::from("a/Como.NEF"));
         assert_eq!(doc.file_name(), "Como.NEF");
         assert_eq!(doc.path(), Path::new("a/Como.NEF"));
@@ -1019,30 +1038,28 @@ mod tests {
     #[test]
     fn a_slider_drag_is_one_undo_step_and_each_change_is_a_new_generation() {
         let reg = registry();
-        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
-        let node = doc.node_rows(&reg)[0].node;
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1);
         let g0 = doc.generation();
         let drag = doc.begin_gesture();
         for v in [0.1, 0.5, 1.2] {
-            doc.set_param(&reg, node, exposure_param(), ParamValue::Float(v), Some(drag)).unwrap();
+            doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(v), Some(drag)).unwrap();
         }
         assert_eq!(doc.generation(), g0 + 3);
         assert_eq!(doc.undo_label().as_deref(), Some("Change exposure"));
         assert_eq!(doc.undo().as_deref(), Some("Change exposure"));
-        assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(0.0));
+        assert_eq!(exposure_value(&doc, &reg), ParamValue::Float(0.0));
         assert_eq!(doc.undo(), None);
         assert!(doc.redo().is_some());
-        assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(1.2));
+        assert_eq!(exposure_value(&doc, &reg), ParamValue::Float(1.2));
     }
 
     #[test]
     fn setting_the_same_value_changes_nothing() {
         let reg = registry();
-        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
-        let node = doc.node_rows(&reg)[0].node;
-        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1);
+        doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(1.0), None).unwrap();
         let g = doc.generation();
-        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(1.0), None).unwrap();
         assert_eq!(doc.generation(), g);
         doc.undo();
         assert_eq!(doc.undo_label(), None);
@@ -1051,43 +1068,42 @@ mod tests {
     #[test]
     fn out_of_range_values_are_clamped_and_reset_returns_to_default() {
         let reg = registry();
-        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
-        let node = doc.node_rows(&reg)[0].node;
-        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(99.0), None).unwrap();
-        assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(4.0));
-        doc.reset_param(&reg, node, exposure_param()).unwrap();
-        assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(0.0));
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1);
+        doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(99.0), None).unwrap();
+        assert_eq!(exposure_value(&doc, &reg), ParamValue::Float(4.0));
+        doc.reset_param(&reg, &exposure(), exposure_param()).unwrap();
+        assert_eq!(exposure_value(&doc, &reg), ParamValue::Float(0.0));
         assert_eq!(doc.undo_label().as_deref(), Some("Reset exposure"));
         let g = doc.generation();
-        doc.reset_param(&reg, node, exposure_param()).unwrap();
+        doc.reset_param(&reg, &exposure(), exposure_param()).unwrap();
         assert_eq!(doc.generation(), g, "resetting a default value is not a change");
     }
 
     #[test]
-    fn bypass_is_undoable() {
+    fn switching_a_tool_off_is_undoable() {
         let reg = registry();
-        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
-        let node = doc.node_rows(&reg)[0].node;
-        doc.set_enabled(&reg, node, false).unwrap();
-        assert!(!doc.node_rows(&reg)[0].enabled);
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1);
+        doc.set_tool_enabled(&reg, LayerId::BACKGROUND, &exposure().tool, false).unwrap();
+        assert!(!doc.tool_row(&reg, &exposure()).unwrap().enabled);
         doc.undo();
-        assert!(doc.node_rows(&reg)[0].enabled);
+        assert!(doc.tool_row(&reg, &exposure()).unwrap().enabled);
     }
 
     #[test]
-    fn unknown_nodes_are_refused_without_changes() {
+    fn unknown_layers_are_refused_without_changes() {
         let reg = registry();
-        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1);
         let g = doc.generation();
-        let source = doc.recipe().graph.source();
-        assert!(doc.set_param(&reg, source, exposure_param(), ParamValue::Float(1.0), None).is_err());
+        let nowhere = ToolRef::new(LayerId::from_raw(9), exposure().tool);
+        assert!(doc.set_param(&reg, &nowhere, exposure_param(), ParamValue::Float(1.0), None).is_err());
         assert_eq!(doc.generation(), g);
+        assert_eq!(doc.tool_row(&reg, &nowhere), None);
     }
 
     #[test]
     fn upright_size_and_export_name_follow_the_file() {
         let reg = registry();
-        let doc = Document::with_tools(opened("dir/IMG 7.CR3", Orientation::Rotate90), &reg, STARTING, 1).unwrap();
+        let doc = Document::with_tools(opened("dir/IMG 7.CR3", Orientation::Rotate90), &reg, STARTING, 1);
         assert_eq!(doc.upright_size(), (4, 6));
         assert_eq!(doc.export_path(Path::new("out")), Path::new("out").join("IMG 7.jpg"));
         assert!(!doc.preview_is_reduced());
@@ -1096,30 +1112,28 @@ mod tests {
     #[test]
     fn deleting_a_history_step_is_a_new_generation_and_can_be_undone() {
         let reg = registry();
-        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
-        let node = doc.node_rows(&reg)[0].node;
-        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(1.0), None).unwrap();
-        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(2.0), None).unwrap();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1);
+        doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(2.0), None).unwrap();
         assert_eq!(doc.history().len(), 2);
         let g = doc.generation();
         let report = doc.rewrite_history(&reg, &[0]).unwrap();
         assert_eq!(report.removed, 1);
         assert!(doc.generation() > g);
-        assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(1.0));
+        assert_eq!(exposure_value(&doc, &reg), ParamValue::Float(1.0));
         let g = doc.generation();
         doc.rewrite_history(&reg, &[0]).unwrap();
         assert_eq!(doc.generation(), g, "the same order changes nothing");
         assert_eq!(doc.undo().as_deref(), Some("Delete a history step"));
-        assert_eq!(doc.node_rows(&reg)[0].params[0].value, ParamValue::Float(2.0));
+        assert_eq!(exposure_value(&doc, &reg), ParamValue::Float(2.0));
     }
 
     #[test]
     fn a_restored_document_has_the_same_recipe_and_history() {
         let reg = registry();
-        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
-        let node = doc.node_rows(&reg)[0].node;
-        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(1.0), None).unwrap();
-        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(2.0), None).unwrap();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1);
+        doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(2.0), None).unwrap();
         doc.undo();
         let o = doc.opened().clone();
         let (mut back, kept) = Document::restored(o, 9, &reg, doc.recipe().clone(), Some(doc.saved_history()));
@@ -1127,7 +1141,7 @@ mod tests {
         assert_eq!((back.recipe(), back.history()), (doc.recipe(), doc.history()));
         assert_eq!(back.generation(), 9);
         assert_eq!(back.redo().as_deref(), Some("Change exposure"));
-        assert_eq!(back.node_rows(&reg)[0].params[0].value, ParamValue::Float(2.0));
+        assert_eq!(exposure_value(&back, &reg), ParamValue::Float(2.0));
 
         // A history that does not lead to the recipe is dropped; the recipe stays.
         let o = doc.opened().clone();
@@ -1140,20 +1154,22 @@ mod tests {
     #[test]
     fn a_read_only_document_refuses_every_change() {
         let reg = registry();
-        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
-        let node = doc.node_rows(&reg)[0].node;
-        doc.set_param(&reg, node, exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        let mut doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1);
+        doc.set_param(&reg, &exposure(), exposure_param(), ParamValue::Float(1.0), None).unwrap();
+        let layer = doc.add_layer(&reg, "L", MaskDef::default(), Vec::new()).unwrap();
         doc.set_read_only(true);
         assert!(doc.is_read_only());
         let (recipe, g) = (doc.recipe().clone(), doc.generation());
-        let source = doc.recipe().graph.source();
         let ro = Err(EditError::ReadOnly);
-        assert_eq!(doc.set_param(&reg, node, exposure_param(), ParamValue::Float(2.0), None), ro);
-        assert_eq!(doc.set_params(&reg, node, vec![(exposure_param(), ParamValue::Float(2.0))], None), ro);
-        assert_eq!(doc.reset_param(&reg, node, exposure_param()), ro);
-        assert_eq!(doc.set_enabled(&reg, node, false), ro);
-        assert_eq!(doc.add_node(&reg, source, ToolId::new("exposure").unwrap()), Err(EditError::ReadOnly));
-        assert_eq!(doc.remove_node(&reg, node), ro);
+        let at = exposure();
+        assert_eq!(doc.set_param(&reg, &at, exposure_param(), ParamValue::Float(2.0), None), ro);
+        assert_eq!(doc.set_params(&reg, &at, vec![(exposure_param(), ParamValue::Float(2.0))], None), ro);
+        assert_eq!(doc.reset_param(&reg, &at, exposure_param()), ro);
+        assert_eq!(doc.reset_tool(&reg, LayerId::BACKGROUND, &at.tool), ro);
+        assert_eq!(doc.set_tool_enabled(&reg, LayerId::BACKGROUND, &at.tool, false), ro);
+        assert_eq!(doc.add_layer(&reg, "x", MaskDef::default(), Vec::new()), Err(EditError::ReadOnly));
+        assert_eq!(doc.remove_layer(&reg, layer), ro);
+        assert_eq!(doc.set_layer_mask(&reg, layer, MaskDef::default(), None), ro);
         assert_eq!(doc.set_lens_correction(&reg, LensSettings::off()), ro);
         assert_eq!(doc.rewrite_history(&reg, &[]), Err(EditError::ReadOnly));
         assert_eq!((doc.undo(), doc.undo_label(), doc.redo(), doc.redo_label()), (None, None, None, None));
@@ -1163,9 +1179,9 @@ mod tests {
     #[test]
     fn missing_tools_are_listed_without_parameters() {
         let reg = registry();
-        let doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1).unwrap();
-        let rows = doc.node_rows(&ToolRegistry::new());
-        assert_eq!(rows.len(), doc.node_rows(&reg).len(), "one row per starting node");
+        let doc = Document::with_tools(opened("x.NEF", Orientation::Normal), &reg, STARTING, 1);
+        let rows = doc.tool_rows(&ToolRegistry::new(), LayerId::BACKGROUND);
+        assert_eq!(rows.len(), doc.tool_rows(&reg, LayerId::BACKGROUND).len(), "one row per starting tool");
         assert!(rows.iter().all(|r| r.name == "Missing tool" && r.params.is_empty()));
     }
 
@@ -1183,7 +1199,7 @@ mod tests {
         )
         .unwrap();
         o.raw = Some(Arc::new(RawData { sensor, capture: CaptureInfo::default(), file_notes: Vec::new() }));
-        let mut doc = Document::with_tools(o, &reg, STARTING, 1).unwrap();
+        let mut doc = Document::with_tools(o, &reg, STARTING, 1);
         assert!(!doc.needs_develop());
 
         let off = LensSettings::off();

@@ -76,14 +76,12 @@ impl ViewerBackground {
 pub struct Layout {
     /// Explorer, left.
     pub explorer_width: Option<f32>,
-    /// Filmstrip, next to the Explorer.
-    pub filmstrip_width: Option<f32>,
-    /// Settings, right.
+    /// Filmstrip, under the photo.
+    pub filmstrip_height: Option<f32>,
+    /// Tool panels, right.
     pub inspector_width: Option<f32>,
     /// History and Metadata tabs under the Explorer.
     pub tabs_height: Option<f32>,
-    /// Node graph under the photo.
-    pub graph_height: Option<f32>,
     /// Scope above the settings: histogram, waveform or parade.
     pub scope: crate::scopes::ScopeKind,
     /// Its height; `None`: the default.
@@ -101,6 +99,9 @@ pub struct Workspace {
     pub name: String,
     /// What it restores.
     pub layout: Layout,
+    /// The order of the tool panels, which are closed and which float.
+    #[serde(default)]
+    pub panels: crate::tool_panels::PanelLayout,
 }
 
 impl Settings {
@@ -112,21 +113,22 @@ impl Settings {
             return;
         }
         self.workspaces.retain(|w| !w.name.eq_ignore_ascii_case(name));
-        self.workspaces.push(Workspace { name: name.to_owned(), layout: self.layout });
+        self.workspaces.push(Workspace { name: name.to_owned(), layout: self.layout, panels: self.panels.clone() });
         self.workspaces.sort_by_key(|w| w.name.to_lowercase());
     }
 
     /// Makes workspace `index` the current layout (`None`: the default
     /// layout); the panels take its sizes at the next frame.
     pub fn apply_workspace(&mut self, index: Option<usize>) {
-        let layout = match index {
+        let (layout, panels) = match index {
             Some(i) => match self.workspaces.get(i) {
-                Some(w) => w.layout,
+                Some(w) => (w.layout, w.panels.clone()),
                 None => return,
             },
-            None => Layout::default(),
+            None => (Layout::default(), crate::tool_panels::PanelLayout::default()),
         };
         self.layout = layout;
+        self.panels = panels;
         self.layout_generation = self.layout_generation.wrapping_add(1);
     }
 }
@@ -288,6 +290,9 @@ pub struct Settings {
     pub warning: WarningSettings,
     /// Sizes of the panels and the left tab shown, as the window was left.
     pub layout: Layout,
+    /// The tool panels on the right: their order, which are closed and
+    /// which float, as the window was left.
+    pub panels: crate::tool_panels::PanelLayout,
     /// Layouts saved under a name (Window ▸ Workspace), as in Capture One.
     pub workspaces: Vec<Workspace>,
     /// Bumped when a workspace is applied, so the panels start again from its sizes.
@@ -297,9 +302,6 @@ pub struct Settings {
     /// Folder of the presets and style brushes; `None`: `Presets` in the
     /// editor's data folder.
     pub presets_dir: Option<PathBuf>,
-    /// The node selected in the photo open when the editor was closed (the
-    /// first of `recent`), selected again when it reopens.
-    pub last_node: Option<u32>,
     /// The catalog folder (`*.aktiscatalog`) open when the editor was closed.
     pub catalog: Option<PathBuf>,
     /// Folder where new catalogs are made (Preferences ▸ Catalog); `None`:
@@ -564,7 +566,7 @@ impl ExportSettings {
         }
     }
 
-    /// One line for the Output node: "JPEG, quality 92, full size".
+    /// The export settings in one line: "JPEG, quality 92, full size".
     #[must_use]
     pub fn summary(&self) -> String {
         let format = match self.format {

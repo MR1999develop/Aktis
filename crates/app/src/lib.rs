@@ -22,7 +22,6 @@ mod color_ui;
 mod dialog;
 mod export_ui;
 mod geometry_ui;
-mod graph_ui;
 mod history_ui;
 mod icons;
 mod import_window;
@@ -38,6 +37,7 @@ mod scopes;
 mod settings;
 mod tagging_job;
 mod theme;
+mod tool_panels;
 mod toolbar;
 mod zoom_bar;
 

@@ -10,8 +10,6 @@
 //!   or many, with progress and cancel;
 //! - [`view`]: zoom and pan geometry of the viewer;
 //! - [`library`]: the Explorer's folder tree and the filmstrip with its filters;
-//! - [`graph_layout`] and [`graph_view`]: where the node graph's nodes are
-//!   drawn, moved and hit;
 //! - [`overview`]: the viewer's grid when several photos are selected;
 //! - [`thumbs`]: the filmstrip's thumbnail cache;
 //! - [`variants`]: saving edits in the catalog and reopening them, per variant;
@@ -36,8 +34,6 @@ pub mod crop;
 pub mod custom_lenses;
 pub mod document;
 pub mod export_job;
-pub mod graph_layout;
-pub mod graph_view;
 pub mod histogram;
 pub mod history_order;
 pub mod import_job;
@@ -54,10 +50,8 @@ pub mod variants;
 pub mod view;
 pub mod worker;
 
-pub use document::{DevelopedImage, Document, NodeRow, Opened, ParamRow, RawData};
+pub use document::{DevelopedImage, Document, Opened, ParamRow, RawData, ToolRow};
 pub use export_job::{ExportHandle, ExportJob, ExportPhoto, ExportSummary, OpenPhoto};
-pub use graph_layout::{NodePlace, layout};
-pub use graph_view::GraphView;
 pub use histogram::Histogram;
 pub use library::{
     Filmstrip, FolderListing, FolderNode, FolderTree, RenameError, StripPhoto, file_stem, rename_target,

@@ -101,31 +101,6 @@ string_id!(
     ModelId
 );
 
-/// Identifier of a node inside one graph. Never reused within that graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NodeId(pub(crate) u32);
-
-impl NodeId {
-    /// The raw number, for display and serialisation.
-    #[must_use]
-    pub fn get(self) -> u32 {
-        self.0
-    }
-
-    /// Rebuilds an id read back from storage. Only the graph decides whether
-    /// the node exists.
-    #[must_use]
-    pub fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-}
-
-impl fmt::Display for NodeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:02}", self.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

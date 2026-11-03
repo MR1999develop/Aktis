@@ -15,7 +15,7 @@
 use std::sync::LazyLock;
 
 use core_model::ImageF32;
-use tool_api::{Category, GpuKernel, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId, Unit};
+use tool_api::{Category, GpuKernel, ResolvedParams, Tool, ToolDescriptor, ToolId, Unit};
 
 use crate::common::{blur, choice, float, luma, slider, smoothstep};
 
@@ -38,7 +38,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     version: 2,
     name: "Dehaze",
     category: Category::Details,
-    stage: Stage::Graph,
+    order: 120,
     params: vec![
         slider(AMOUNT, "Amount"),
         choice(SHADOW_TONE, "Shadow tone", &SHADOW_TONES, 0),

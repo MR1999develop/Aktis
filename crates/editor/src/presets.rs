@@ -4,8 +4,9 @@
 //!   a file of its own ([`recipe_store::PRESET_EXTENSION`]); applying it
 //!   to a photo sets the tools it holds (one undo step).
 //! - A **style brush** is the same with a brush: choosing one arms the
-//!   Masks tool, and the first stroke adds the brush's tools behind a new
-//!   mask, named after the brush ([`recipe_store::BRUSH_EXTENSION`]).
+//!   Masks tool, and the first stroke adds a layer with the brush's tools
+//!   and that stroke as its mask, named after the brush
+//!   ([`recipe_store::BRUSH_EXTENSION`]).
 //!
 //! Both live in one folder the user chooses (default `Presets` in the
 //! editor's data folder), sub-folders being groups. A few style brushes are
@@ -15,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use core_model::{NodeId, NodeKind, ParamId, ParamValue, Params, Recipe, Style, StyleNode, StyleSelection, ToolId};
+use core_model::{ParamId, ParamValue, Params, Style, StyleSelection, StyleTool, ToolId, Tools};
 use engine::export;
 use recipe_store::{BRUSH_EXTENSION, PRESET_EXTENSION};
 pub use recipe_store::{BrushSettings, Preset};
@@ -162,58 +163,44 @@ pub fn save(folder: &Path, preset: &Preset) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-/// One tool node offered in the Save Preset window.
+/// One tool of the Background offered in the Save Preset window.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeChoice {
-    /// The node.
-    pub node: NodeId,
-    /// Its name (label, or the tool's name).
+pub struct ToolChoice {
+    /// The tool.
+    pub tool: ToolId,
+    /// Its name.
     pub name: String,
-    /// It has a mask: the mask is not saved, only the values.
-    pub masked: bool,
     /// The kind of tool, to group the window's list; `None` for a tool
     /// this build lacks.
     pub category: Option<tool_api::Category>,
 }
 
-/// The tool nodes of `recipe` that can go into a preset, in acting order
-/// (not the retouch nodes, whose spots belong to one photo).
+/// The tools of a layer (`tools`) that can go into a preset, in the order
+/// they act (not retouch, whose spots belong to one photo).
 #[must_use]
-pub fn node_choices(recipe: &Recipe, registry: &ToolRegistry) -> Vec<NodeChoice> {
-    let g = &recipe.graph;
-    core_model::tool_nodes(g)
+pub fn tool_choices(tools: &Tools, registry: &ToolRegistry) -> Vec<ToolChoice> {
+    let background = tools;
+    let order = registry.pipeline();
+    let mut tools: Vec<&ToolId> = order.iter().filter(|t| background.get(t).is_some()).collect();
+    tools.extend(background.iter().map(|(t, _)| t).filter(|t| !order.contains(t)));
+    tools
         .into_iter()
-        .filter_map(|id| {
-            let node = g.node(id)?;
-            let NodeKind::Tool(tool) = &node.kind else { return None };
-            // Heal and clone spots are places in one photo: never in a preset.
-            if tool.as_str() == "retouch" {
-                return None;
-            }
+        // Heal and clone spots are places in one photo: never in a preset.
+        .filter(|tool| tool.as_str() != "retouch")
+        .map(|tool| {
             let found = registry.get(tool);
-            let tool_name = found.map_or_else(|| tool.as_str().to_owned(), |t| t.descriptor().name.to_owned());
+            let name = found.map_or_else(|| tool.as_str().to_owned(), |t| t.descriptor().name.to_owned());
             let category = found.map(|t| t.descriptor().category);
-            let name = if node.label.is_empty() { tool_name } else { format!("{} ({tool_name})", node.label) };
-            let masked = node
-                .kind
-                .inputs()
-                .iter()
-                .position(|k| *k == core_model::PortKind::Mask)
-                .and_then(|p| u8::try_from(p).ok())
-                .is_some_and(|p| g.input_link(id, p).is_some());
-            Some(NodeChoice { node: id, name, masked, category })
+            ToolChoice { tool: tool.clone(), name, category }
         })
         .collect()
 }
 
-/// What the Save Preset window starts with: every tool node without a mask
-/// (masks belong to one photo), no development settings or geometry.
+/// What the Save Preset window starts with: every tool offered, no
+/// development settings or geometry.
 #[must_use]
-pub fn default_selection(choices: &[NodeChoice]) -> StyleSelection {
-    StyleSelection {
-        nodes: choices.iter().filter(|c| !c.masked).map(|c| c.node).collect(),
-        ..StyleSelection::default()
-    }
+pub fn default_selection(choices: &[ToolChoice]) -> StyleSelection {
+    StyleSelection { tools: choices.iter().map(|c| c.tool.clone()).collect(), ..StyleSelection::default() }
 }
 
 /// `style` without the tools this build lacks (a preset made by a newer
@@ -222,7 +209,7 @@ pub fn default_selection(choices: &[NodeChoice]) -> StyleSelection {
 pub fn usable(style: &Style, registry: &ToolRegistry) -> (Style, Vec<ToolId>) {
     let mut kept = style.clone();
     let mut missing = Vec::new();
-    kept.nodes.retain(|n| {
+    kept.tools.retain(|n| {
         let known = registry.get(&n.tool).is_some();
         if !known && !missing.contains(&n.tool) {
             missing.push(n.tool.clone());
@@ -237,15 +224,15 @@ pub fn usable(style: &Style, registry: &ToolRegistry) -> (Style, Vec<ToolId>) {
 /// Groups of the built-in brushes, as Capture One names them.
 pub const BUILTIN_GROUPS: [&str; 3] = ["Light & Contrast", "Color", "Enhancements"];
 
-fn node(tool: &str, values: &[(&str, ParamValue)]) -> StyleNode {
+fn tool(tool: &str, values: &[(&str, ParamValue)]) -> StyleTool {
     let mut params = Params::new();
     for (id, v) in values {
         params.set(ParamId::new(id).expect("constant id is valid"), *v);
     }
-    StyleNode { tool: ToolId::new(tool).expect("constant id is valid"), params }
+    StyleTool { tool: ToolId::new(tool).expect("constant id is valid"), params }
 }
 
-fn brush(group: usize, name: &str, soft: bool, nodes: Vec<StyleNode>) -> Entry {
+fn brush(group: usize, name: &str, soft: bool, tools: Vec<StyleTool>) -> Entry {
     let settings = if soft {
         BrushSettings { radius: 0.06, hardness: 0.1, opacity: 0.5, edge_aware: false }
     } else {
@@ -254,7 +241,7 @@ fn brush(group: usize, name: &str, soft: bool, nodes: Vec<StyleNode>) -> Entry {
     Entry {
         origin: Origin::Builtin,
         group: BUILTIN_GROUPS[group].to_owned(),
-        preset: Preset { name: name.to_owned(), style: Style { nodes, ..Style::default() }, brush: Some(settings) },
+        preset: Preset { name: name.to_owned(), style: Style { tools, ..Style::default() }, brush: Some(settings) },
     }
 }
 
@@ -262,10 +249,10 @@ fn brush(group: usize, name: &str, soft: bool, nodes: Vec<StyleNode>) -> Entry {
 #[must_use]
 pub fn builtin_brushes() -> Vec<Entry> {
     use ParamValue::{Choice, Float};
-    let exposure = |v: f32| node("exposure", &[("exposure", Float(v))]);
-    let exposure_with = |id: &str, v: f32| node("exposure", &[(id, Float(v))]);
-    let hdr = |id: &str, v: f32| node("hdr", &[(id, Float(v))]);
-    let balance = |hue: f32| node("color_balance", &[("master_hue", Float(hue)), ("master_amount", Float(20.0))]);
+    let exposure = |v: f32| tool("exposure", &[("exposure", Float(v))]);
+    let exposure_with = |id: &str, v: f32| tool("exposure", &[(id, Float(v))]);
+    let hdr = |id: &str, v: f32| tool("hdr", &[(id, Float(v))]);
+    let balance = |hue: f32| tool("color_balance", &[("master_hue", Float(hue)), ("master_amount", Float(20.0))]);
     vec![
         brush(0, "Brighten", false, vec![exposure(0.5)]),
         brush(0, "Darken", false, vec![exposure(-0.5)]),
@@ -279,10 +266,10 @@ pub fn builtin_brushes() -> Vec<Entry> {
         brush(1, "Desaturate", false, vec![exposure_with("saturation", -50.0)]),
         brush(1, "Warm", false, vec![balance(45.0)]),
         brush(1, "Cool", false, vec![balance(225.0)]),
-        brush(2, "Clarity", false, vec![node("clarity", &[("clarity", Float(30.0)), ("method", Choice(0))])]),
-        brush(2, "Structure", false, vec![node("clarity", &[("structure", Float(30.0))])]),
-        brush(2, "Soften", true, vec![node("clarity", &[("clarity", Float(-30.0)), ("structure", Float(-30.0))])]),
-        brush(2, "Dehaze", false, vec![node("dehaze", &[("amount", Float(30.0))])]),
+        brush(2, "Clarity", false, vec![tool("clarity", &[("clarity", Float(30.0)), ("method", Choice(0))])]),
+        brush(2, "Structure", false, vec![tool("clarity", &[("structure", Float(30.0))])]),
+        brush(2, "Soften", true, vec![tool("clarity", &[("clarity", Float(-30.0)), ("structure", Float(-30.0))])]),
+        brush(2, "Dehaze", false, vec![tool("dehaze", &[("amount", Float(30.0))])]),
     ]
 }
 
@@ -301,7 +288,7 @@ mod tests {
         for e in builtin_brushes() {
             assert!(e.preset.brush.is_some());
             assert!(BUILTIN_GROUPS.contains(&e.group.as_str()));
-            for n in &e.preset.style.nodes {
+            for n in &e.preset.style.tools {
                 let tool = reg.get(&n.tool).unwrap_or_else(|| panic!("{}: {}", e.preset.name, n.tool));
                 for (id, v) in n.params.iter() {
                     let p = tool.descriptor().param(id).unwrap_or_else(|| panic!("{}: {id}", e.preset.name));
@@ -341,28 +328,27 @@ mod tests {
     }
 
     #[test]
-    fn choices_leave_masked_nodes_out_by_default() {
+    fn choices_are_the_tools_in_acting_order_without_retouch() {
         let reg = registry();
-        let mut r = Recipe::default();
-        let src = r.graph.source();
-        let a = r.graph.insert_serial(src, ToolId::new("exposure").unwrap(), Params::new()).unwrap();
-        let b = r.graph.insert_serial(a, ToolId::new("clarity").unwrap(), Params::new()).unwrap();
-        let m = r.graph.add_mask_node(core_model::MaskDef::default());
-        r.graph.connect(core_model::Link { from: m, from_port: 0, to: b, to_port: 1 }).unwrap();
-        r.graph.node_mut(a).unwrap().set_label("Base".into());
-        let choices = node_choices(&r, &reg);
-        assert_eq!(choices.len(), 2);
-        assert_eq!(choices[0].name, "Base (Exposure)");
-        assert!(!choices[0].masked && choices[1].masked);
-        assert_eq!(default_selection(&choices).nodes, vec![a]);
+        let mut r = core_model::Recipe::default();
+        for name in ["clarity", "exposure", "retouch"] {
+            r.layers.background.params_mut(&ToolId::new(name).unwrap(), 0).unwrap();
+        }
+        let mut layer_tools = core_model::Tools::new();
+        layer_tools.params_mut(&ToolId::new("hdr").unwrap(), 0).unwrap();
+        r.layers.add("L".into(), core_model::MaskDef::default(), layer_tools);
+        let choices = tool_choices(&r.layers.background, &reg);
+        let names: Vec<&str> = choices.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Exposure", "Clarity"]);
+        assert_eq!(default_selection(&choices).tools.len(), 2);
     }
 
     #[test]
     fn unknown_tools_are_dropped_and_named() {
         let mut style = builtin_brushes()[0].preset.style.clone();
-        style.nodes.push(node("hologram", &[]));
+        style.tools.push(tool("hologram", &[]));
         let (kept, missing) = usable(&style, &registry());
-        assert_eq!(kept.nodes.len(), 1);
+        assert_eq!(kept.tools.len(), 1);
         assert_eq!(missing, vec![ToolId::new("hologram").unwrap()]);
     }
 

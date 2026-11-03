@@ -28,7 +28,7 @@
 use std::sync::LazyLock;
 
 use core_model::ImageF32;
-use tool_api::{Category, GpuKernel, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId, Unit};
+use tool_api::{Category, GpuKernel, ResolvedParams, Tool, ToolDescriptor, ToolId, Unit};
 
 use crate::common::{LUMA, float};
 use crate::filters::{LEVEL_NOISE, noise_sigma, reflect, wavelet};
@@ -55,7 +55,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     version: 1,
     name: "Noise Reduction",
     category: Category::Details,
-    stage: Stage::Graph,
+    order: 30,
     params: vec![
         float(LUMINANCE, "Luminance", [0.0, 100.0], 50.0, 1.0, Unit::None),
         float(DETAILS, "Details", [0.0, 100.0], 50.0, 1.0, Unit::None),

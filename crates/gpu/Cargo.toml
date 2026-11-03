@@ -1,6 +1,6 @@
 [package]
 name = "gpu"
-description = "GPU engine on wgpu (Vulkan, DirectX 12, Metal): runs tool kernels over the node graph."
+description = "GPU engine on wgpu (Vulkan, DirectX 12, Metal): runs tool kernels over a photo's layers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,13 +12,13 @@ authors.workspace = true
 core-model.workspace = true
 tool-api.workspace = true
 masks.workspace = true
+render-cpu.workspace = true
 wgpu = "30.0.1"
 pollster = "0.4"
 bytemuck = "1.22"
 
 [dev-dependencies]
 commands.workspace = true
-render-cpu.workspace = true
 tool-exposure.workspace = true
 tool-adjust.workspace = true
 

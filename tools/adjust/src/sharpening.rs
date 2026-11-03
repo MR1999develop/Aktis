@@ -19,7 +19,7 @@
 use std::sync::LazyLock;
 
 use core_model::ImageF32;
-use tool_api::{Category, GpuKernel, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId, Unit};
+use tool_api::{Category, GpuKernel, ResolvedParams, Tool, ToolDescriptor, ToolId, Unit};
 
 use crate::common::{float, luma, smoothstep};
 use crate::filters::{gaussian, reflect};
@@ -44,7 +44,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     version: 1,
     name: "Sharpening",
     category: Category::Details,
-    stage: Stage::Graph,
+    order: 140,
     // Capture One's usual starting values.
     params: vec![
         float(AMOUNT, "Amount", [0.0, 100.0], 45.0, 1.0, Unit::None),

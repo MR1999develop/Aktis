@@ -1,7 +1,7 @@
 //! Retouch: heal and clone spots, like the spot tools of Capture One and
 //! Lightroom.
 //!
-//! A node holds up to [`MAX_SPOTS`] spots. Each is a circle on the image
+//! A slot of parameters holds up to [`MAX_SPOTS`] spots. Each is a circle on the image
 //! and a source circle of the same size somewhere else:
 //!
 //! - **Clone** copies the source over the spot.
@@ -18,7 +18,7 @@
 //! The spots are stored as plain parameters, eight per slot ([`Field`]):
 //! the kind, the centre, the radius, the source centre, the feather and
 //! the opacity. A slot with radius 0 is empty. Positions are in the
-//! developed image (the image the graph processes, 0–1 from the top-left
+//! developed image (the image the layers process, 0–1 from the top-left
 //! corner) and the radius is a fraction of its long side, so a preview and
 //! the full image look alike.
 //!
@@ -29,8 +29,7 @@ use std::sync::LazyLock;
 
 use core_model::{ImageF32, ParamId, ParamValue};
 use tool_api::{
-    Category, GpuKernel, MAX_PARAMS, ParamDescriptor, ParamKind, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId,
-    Unit,
+    Category, GpuKernel, MAX_PARAMS, ParamDescriptor, ParamKind, ResolvedParams, Tool, ToolDescriptor, ToolId, Unit,
 };
 
 use crate::common::{float, pid, smoothstep};
@@ -38,7 +37,7 @@ use crate::common::{float, pid, smoothstep};
 /// Id of the tool.
 pub const ID: &str = "retouch";
 
-/// Most spots in one node (eight parameters each).
+/// Most spots in one slot (eight parameters each).
 pub const MAX_SPOTS: usize = MAX_PARAMS / Field::ALL.len();
 
 /// Largest radius, as a fraction of the image's long side.
@@ -169,7 +168,7 @@ pub fn cleared(slot: usize) -> Vec<(ParamId, ParamValue)> {
     vec![(param_id(slot, Field::Radius), ParamValue::Float(0.0))]
 }
 
-/// The spots of a node, by slot (`None` for an empty slot).
+/// The spots of a slot, by index (`None` for an empty slot).
 #[must_use]
 pub fn spots(params: &ResolvedParams) -> [Option<Spot>; MAX_SPOTS] {
     std::array::from_fn(|slot| {
@@ -201,7 +200,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     version: 1,
     name: "Retouch",
     category: Category::Details,
-    stage: Stage::Graph,
+    order: 10,
     params: (0..MAX_SPOTS).flat_map(|slot| Field::ALL.map(|f| f.descriptor(slot))).collect(),
 });
 

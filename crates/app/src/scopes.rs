@@ -1,16 +1,16 @@
-//! The scope above the node settings: histogram, waveform or parade, chosen
+//! The scope above the tool panels: histogram, waveform or parade, chosen
 //! with three small tabs. The waveform and the parade are drawn from a
 //! texture made once per render ([`Scopes::update`]).
 
 use editor::Histogram;
 use editor::histogram::{WAVEFORM_COLUMNS, WAVEFORM_LEVELS, Waveform};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2,
+    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Shape, Stroke, TextureHandle, TextureOptions, pos2,
+    vec2,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::graph_ui;
-use crate::theme::{CHANNEL, FONT, HISTOGRAM_HEIGHT, Tokens};
+use crate::theme::{CHANNEL, FONT, HISTOGRAM, HISTOGRAM_HEIGHT, Tokens};
 
 /// Which scope is shown.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,7 +127,7 @@ impl Scopes {
             }
         });
         if kind == ScopeKind::Histogram {
-            graph_ui::histogram(ui, hist, height);
+            histogram(ui, hist, height);
             return chosen;
         }
         self.draw_scope(ui, kind, height);
@@ -164,7 +164,7 @@ impl Scopes {
         for i in 0..=4 {
             #[allow(clippy::cast_precision_loss)] // five guides
             let y = inner.bottom() - i as f32 / 4.0 * inner.height();
-            painter.line_segment([pos2(inner.left(), y), pos2(inner.right(), y)], Stroke::new(1.0, t.graph_grid));
+            painter.line_segment([pos2(inner.left(), y), pos2(inner.right(), y)], Stroke::new(1.0, t.grid));
         }
         match &self.texture {
             Some(texture) => {
@@ -191,5 +191,72 @@ impl Scopes {
                 );
             }
         }
+    }
+}
+
+/// The histogram of the displayed image, with clipping warnings.
+pub fn histogram(ui: &mut egui::Ui, hist: Option<&Histogram>, height: f32) {
+    let t = Tokens::of(ui.ctx().theme());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, CornerRadius::same(4), t.canvas);
+    let Some(h) = hist.filter(|h| h.total() > 0) else {
+        painter.text(rect.center(), Align2::CENTER_CENTER, "No image", FontId::proportional(FONT[0]), t.text_weak);
+        return;
+    };
+    #[allow(clippy::cast_precision_loss)] // counts, for drawing
+    let peak = h.peak().max(1) as f32;
+    let inner = rect.shrink(2.0);
+    let bin_w = inner.width() / 256.0;
+    let channels = [(&h.red, HISTOGRAM[0]), (&h.green, HISTOGRAM[1]), (&h.blue, HISTOGRAM[2])];
+    for (counts, color) in channels {
+        for (i, &c) in counts.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)] // counts, for drawing
+            let level = (c as f32 / peak).min(1.0);
+            if level <= 0.0 {
+                continue;
+            }
+            #[allow(clippy::cast_precision_loss)] // 256 bins
+            let x = inner.left() + i as f32 * bin_w;
+            let bar = Rect::from_min_max(
+                pos2(x, inner.bottom() - level * inner.height()),
+                pos2(x + bin_w.max(1.0), inner.bottom()),
+            );
+            painter.rect_filled(bar, CornerRadius::ZERO, color);
+        }
+    }
+    // Luminance as a line on top.
+    #[allow(clippy::cast_precision_loss)] // 256 bins
+    let points: Vec<Pos2> = h
+        .luma
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let level = (c as f32 / peak).min(1.0);
+            pos2(inner.left() + (i as f32 + 0.5) * bin_w, inner.bottom() - level * inner.height())
+        })
+        .collect();
+    painter.add(Shape::line(points, Stroke::new(1.0, t.text_weak)));
+
+    let (low, high) = h.clipped();
+    let warn = |share: f32| share >= 0.001;
+    let font = FontId::proportional(FONT[0]);
+    if warn(low) {
+        painter.text(
+            rect.left_top() + vec2(4.0, 2.0),
+            Align2::LEFT_TOP,
+            format!("{:.1} % black", low * 100.0),
+            font.clone(),
+            t.warning,
+        );
+    }
+    if warn(high) {
+        painter.text(
+            rect.right_top() + vec2(-4.0, 2.0),
+            Align2::RIGHT_TOP,
+            format!("{:.1} % white", high * 100.0),
+            font,
+            t.warning,
+        );
     }
 }

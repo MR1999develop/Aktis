@@ -11,7 +11,7 @@
 use std::sync::LazyLock;
 
 use core_model::ImageF32;
-use tool_api::{Category, GpuKernel, ParamDescriptor, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId, Unit};
+use tool_api::{Category, GpuKernel, ParamDescriptor, ResolvedParams, Tool, ToolDescriptor, ToolId, Unit};
 
 use crate::common::{float, slider};
 
@@ -38,7 +38,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     version: 1,
     name: "Levels",
     category: Category::Exposure,
-    stage: Stage::Graph,
+    order: 70,
     params: (0..CHANNELS.len())
         .flat_map(|c| (0..VALUES.len()).map(move |v| (c, v)))
         .map(|(c, v)| -> ParamDescriptor {

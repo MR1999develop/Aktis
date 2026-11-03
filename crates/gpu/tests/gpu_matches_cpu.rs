@@ -6,7 +6,10 @@
 use std::sync::Arc;
 
 use commands::{Edit, EditSession};
-use core_model::{ImageF32, ParamId, ParamValue, Recipe, Rgba, ToolId, WorkingSpace};
+use core_model::{
+    BrushMask, ImageF32, LayerId, MaskComponent, MaskDef, MaskOp, ParamId, ParamValue, Recipe, Rgba, ToolId, ToolRef,
+    WorkingSpace,
+};
 use gpu::{GpuContext, GpuRenderer};
 use tool_api::ToolRegistry;
 use tool_exposure::Exposure;
@@ -46,20 +49,32 @@ fn registry() -> ToolRegistry {
     r
 }
 
-/// Source → exposure(+a) → exposure(b) → Output, the second one optionally bypassed.
-fn recipe(reg: &ToolRegistry, a: f32, b: f32, second_enabled: bool) -> Recipe {
-    let mut s = EditSession::new(Recipe::default());
-    let tool = ToolId::new("exposure").expect("id");
+fn set_exposure(s: &mut EditSession, reg: &ToolRegistry, at: ToolRef, v: f32) {
     let param = ParamId::new("exposure").expect("id");
-    let source = s.recipe().graph.source();
-    s.apply(reg, Edit::InsertSerial { after: source, tool: tool.clone(), params: core_model::Params::new() })
-        .expect("first");
-    let first = s.recipe().graph.input_link(s.recipe().graph.output(), 0).expect("fed").from;
-    s.apply(reg, Edit::InsertSerial { after: first, tool, params: core_model::Params::new() }).expect("second");
-    let second = s.recipe().graph.input_link(s.recipe().graph.output(), 0).expect("fed").from;
-    s.apply(reg, Edit::SetParam { node: first, param: param.clone(), value: ParamValue::Float(a) }).expect("a");
-    s.apply(reg, Edit::SetParam { node: second, param, value: ParamValue::Float(b) }).expect("b");
-    s.apply(reg, Edit::SetEnabled { node: second, enabled: second_enabled }).expect("enable");
+    s.apply(reg, Edit::SetParam { at, param, value: ParamValue::Float(v) }).expect("set");
+}
+
+fn exposure_at(layer: LayerId) -> ToolRef {
+    ToolRef::new(layer, ToolId::new("exposure").expect("id"))
+}
+
+/// Everywhere at `opacity`: an empty brush, inverted.
+fn everywhere(opacity: f32) -> MaskDef {
+    MaskDef {
+        components: vec![MaskComponent::brush("Fill", MaskOp::Add, BrushMask::default())],
+        invert: true,
+        opacity,
+        ..MaskDef::default()
+    }
+}
+
+/// Exposure +a then b (two slots) on the Background, the tool on or off.
+fn recipe(reg: &ToolRegistry, a: f32, b: f32, enabled: bool) -> Recipe {
+    let mut s = EditSession::new(Recipe::default());
+    set_exposure(&mut s, reg, exposure_at(LayerId::BACKGROUND), a);
+    set_exposure(&mut s, reg, exposure_at(LayerId::BACKGROUND).with_slot(1), b);
+    let tool = ToolId::new("exposure").expect("id");
+    s.apply(reg, Edit::SetToolEnabled { layer: LayerId::BACKGROUND, tool, enabled }).expect("enable");
     s.recipe().clone()
 }
 
@@ -75,24 +90,43 @@ fn assert_close(gpu: &ImageF32, cpu: &ImageF32) {
 }
 
 #[test]
-fn a_chain_of_exposure_nodes_matches_the_cpu_reference() {
+fn a_chain_of_exposures_matches_the_cpu_reference() {
     let Some(gpu) = renderer() else { return };
     let reg = registry();
     let src = test_image(97, 61); // not a multiple of the workgroup size
     for (a, b, enabled) in [(1.0, -0.5, true), (0.0, 0.0, true), (2.5, 3.0, false), (-5.0, 5.0, true)] {
         let r = recipe(&reg, a, b, enabled);
-        let on_gpu = gpu.render(&r.graph, &reg, &src).expect("gpu render");
-        let on_cpu = render_cpu::render(&r.graph, &reg, &src).expect("cpu render");
+        let on_gpu = gpu.render(&r.layers, &reg, &src).expect("gpu render");
+        let on_cpu = render_cpu::render(&r.layers, &reg, &src);
         assert_close(&on_gpu.image, &on_cpu.image);
     }
 }
 
 #[test]
-fn a_one_pixel_image_and_an_empty_graph_work() {
+fn layers_mix_in_on_the_gpu_as_on_the_cpu() {
+    let Some(gpu) = renderer() else { return };
+    let reg = registry();
+    let src = test_image(97, 61);
+    let mut s = EditSession::new(recipe(&reg, 0.5, 0.0, true));
+    for (opacity, v) in [(0.5, 1.0), (0.25, -2.0)] {
+        s.apply(&reg, Edit::AddLayer { name: "L".into(), mask: everywhere(opacity), tools: Vec::new() })
+            .expect("layer");
+        let layer = s.recipe().layers.layers().last().expect("layer").id;
+        set_exposure(&mut s, &reg, exposure_at(layer), v);
+    }
+    let r = s.recipe();
+    let on_gpu = gpu.render(&r.layers, &reg, &src).expect("gpu render");
+    let on_cpu = render_cpu::render(&r.layers, &reg, &src);
+    assert_close(&on_gpu.image, &on_cpu.image);
+    assert_ne!(on_cpu.image, src);
+}
+
+#[test]
+fn a_one_pixel_image_and_no_edits_work() {
     let Some(gpu) = renderer() else { return };
     let reg = registry();
     let src = test_image(1, 1);
-    let r = gpu.render(&Recipe::default().graph, &reg, &src).expect("render");
+    let r = gpu.render(&Recipe::default().layers, &reg, &src).expect("render");
     assert_eq!(r.image, src);
 }
 
@@ -100,11 +134,10 @@ fn a_one_pixel_image_and_an_empty_graph_work() {
 fn missing_tools_pass_through_on_the_gpu_too() {
     let Some(gpu) = renderer() else { return };
     let mut recipe = Recipe::default();
-    let source = recipe.graph.source();
     let curves = ToolId::new("curves").expect("id");
-    recipe.graph.insert_serial(source, curves.clone(), core_model::Params::new()).expect("insert");
+    recipe.layers.background.params_mut(&curves, 0).expect("added");
     let src = test_image(8, 8);
-    let r = gpu.render(&recipe.graph, &ToolRegistry::new(), &src).expect("render");
+    let r = gpu.render(&recipe.layers, &ToolRegistry::new(), &src).expect("render");
     assert_eq!(r.missing_tools, vec![curves]);
     assert_eq!(r.image, src);
 }
@@ -117,13 +150,13 @@ struct Mirror(tool_api::ToolDescriptor);
 #[derive(Debug)]
 struct Broken(tool_api::ToolDescriptor);
 
-fn host_descriptor(id: &str) -> tool_api::ToolDescriptor {
+fn host_descriptor(id: &str, order: u16) -> tool_api::ToolDescriptor {
     tool_api::ToolDescriptor {
         id: ToolId::new(id).expect("id"),
         version: 1,
         name: "test host tool",
         category: tool_api::Category::Details,
-        stage: tool_api::Stage::Graph,
+        order,
         params: vec![],
     }
 }
@@ -158,32 +191,24 @@ impl tool_api::Tool for Broken {
 
 fn host_registry() -> ToolRegistry {
     let mut r = registry();
-    r.register(Arc::new(Mirror(host_descriptor("mirror")))).expect("mirror registers");
-    r.register(Arc::new(Broken(host_descriptor("broken")))).expect("broken registers");
+    r.register(Arc::new(Mirror(host_descriptor("mirror", 60)))).expect("mirror registers");
+    r.register(Arc::new(Broken(host_descriptor("broken", 61)))).expect("broken registers");
     r
 }
 
-/// Source → exposure(+1) → `host` → exposure(−0.5) → Output.
-fn host_recipe(reg: &ToolRegistry, host: &str) -> Recipe {
+/// Background: exposure(+1) then `host`; above it a layer everywhere with
+/// exposure(−0.5), and `host` too when `in_layer`.
+fn host_recipe(reg: &ToolRegistry, host: &str, in_layer: bool) -> Recipe {
     let mut s = EditSession::new(Recipe::default());
-    let exposure = ToolId::new("exposure").expect("id");
-    let param = ParamId::new("exposure").expect("id");
-    let last = |s: &EditSession| s.recipe().graph.input_link(s.recipe().graph.output(), 0).expect("fed").from;
-    let source = s.recipe().graph.source();
-    s.apply(reg, Edit::InsertSerial { after: source, tool: exposure.clone(), params: core_model::Params::new() })
-        .expect("first");
-    let first = last(&s);
-    s.apply(reg, Edit::SetParam { node: first, param: param.clone(), value: ParamValue::Float(1.0) }).expect("+1");
-    s.apply(
-        reg,
-        Edit::InsertSerial { after: first, tool: ToolId::new(host).expect("id"), params: core_model::Params::new() },
-    )
-    .expect("host");
-    let host_node = last(&s);
-    s.apply(reg, Edit::InsertSerial { after: host_node, tool: exposure, params: core_model::Params::new() })
-        .expect("second");
-    let second = last(&s);
-    s.apply(reg, Edit::SetParam { node: second, param, value: ParamValue::Float(-0.5) }).expect("-0.5");
+    set_exposure(&mut s, reg, exposure_at(LayerId::BACKGROUND), 1.0);
+    let host = ToolId::new(host).expect("id");
+    s.apply(reg, Edit::SetToolEnabled { layer: LayerId::BACKGROUND, tool: host.clone(), enabled: true }).expect("host");
+    s.apply(reg, Edit::AddLayer { name: "L".into(), mask: everywhere(0.75), tools: Vec::new() }).expect("layer");
+    let layer = s.recipe().layers.layers()[0].id;
+    set_exposure(&mut s, reg, exposure_at(layer), -0.5);
+    if in_layer {
+        s.apply(reg, Edit::SetToolEnabled { layer, tool: host, enabled: true }).expect("host in layer");
+    }
     s.recipe().clone()
 }
 
@@ -192,31 +217,37 @@ fn a_host_tool_between_kernels_matches_the_cpu_reference() {
     let Some(gpu) = renderer() else { return };
     let reg = host_registry();
     let src = test_image(97, 61);
-    let r = host_recipe(&reg, "mirror");
-    let on_gpu = gpu.render(&r.graph, &reg, &src).expect("gpu render");
-    let on_cpu = render_cpu::render(&r.graph, &reg, &src).expect("cpu render");
-    assert_close(&on_gpu.image, &on_cpu.image);
-    assert!(on_gpu.tool_errors.is_empty() && on_cpu.tool_errors.is_empty());
-    // the mirror really ran: the first pixel comes from the end of the row
-    assert!((on_cpu.image.pixels()[0][0] - src.pixels()[96][0] * 2.0_f32.sqrt()).abs() < 1e-5);
+    for in_layer in [false, true] {
+        let r = host_recipe(&reg, "mirror", in_layer);
+        let on_gpu = gpu.render(&r.layers, &reg, &src).expect("gpu render");
+        let on_cpu = render_cpu::render(&r.layers, &reg, &src);
+        assert_close(&on_gpu.image, &on_cpu.image);
+        assert!(on_gpu.tool_errors.is_empty() && on_cpu.tool_errors.is_empty());
+    }
+    // the mirror really ran: the first pixel comes from the end of the row,
+    // ×2, then a quarter of it kept and three quarters at −0.5 stop.
+    let r = host_recipe(&reg, "mirror", false);
+    let factor = 2.0 * (0.25 + 0.75 / 2.0_f32.sqrt());
+    let on_cpu = render_cpu::render(&r.layers, &reg, &src);
+    assert!((on_cpu.image.pixels()[0][0] - src.pixels()[96][0] * factor).abs() < 1e-5);
 }
 
 #[test]
 fn a_host_tool_that_cannot_run_passes_the_image_through_and_is_reported() {
     let reg = host_registry();
     let src = test_image(9, 7);
-    let r = host_recipe(&reg, "broken");
-    let on_cpu = render_cpu::render(&r.graph, &reg, &src).expect("cpu render");
-    assert_eq!(on_cpu.tool_errors.len(), 1);
+    let r = host_recipe(&reg, "broken", true);
+    let on_cpu = render_cpu::render(&r.layers, &reg, &src);
+    assert_eq!(on_cpu.tool_errors.len(), 2, "on the Background and on the layer");
     assert_eq!(on_cpu.tool_errors[0].1, tool_api::ToolError::Unavailable("model missing".to_owned()));
     let Some(gpu) = renderer() else { return };
-    let on_gpu = gpu.render(&r.graph, &reg, &src).expect("gpu render");
+    let on_gpu = gpu.render(&r.layers, &reg, &src).expect("gpu render");
     assert_eq!(on_gpu.tool_errors, on_cpu.tool_errors);
     assert_close(&on_gpu.image, &on_cpu.image);
 }
 
 #[test]
-fn a_masked_node_matches_the_cpu_reference_and_reports_the_same_missing_rasters() {
+fn a_masked_layer_matches_the_cpu_reference_and_reports_the_same_missing_rasters() {
     use core_model::{AiTarget, MaskComponent, MaskDef, MaskImage, MaskOp, MaskSource, ModelId, RasterKey};
 
     let Some(gpu) = renderer() else { return };
@@ -225,8 +256,6 @@ fn a_masked_node_matches_the_cpu_reference_and_reports_the_same_missing_rasters(
 
     // Exposure +2 through a mask made of a soft raster (refined on the image)
     // and a component that has not been computed yet.
-    let mut recipe = recipe(&reg, 2.0, 0.0, false);
-    let first = recipe.graph.links().find(|l| l.from == recipe.graph.source()).expect("source feeds a node").to;
     let rasters = masks::MemoryRasters::new();
     let key = RasterKey::from_bytes([3; 16]);
     let values: Vec<f32> = (0..12).map(|i| (i % 4) as f32 / 3.0).collect();
@@ -237,13 +266,15 @@ fn a_masked_node_matches_the_cpu_reference_and_reports_the_same_missing_rasters(
         ai.raster = Some(key);
     }
     let pending = MaskComponent::ai("Pending", MaskOp::Add, AiTarget::Subject, model);
-    let def = MaskDef { components: vec![computed, pending], feather: 0.02, ..MaskDef::default() };
-    let mut s = EditSession::new(recipe);
-    s.apply(&reg, Edit::AddMask { to: first, def }).expect("add mask");
-    recipe = s.recipe().clone();
+    let mask = MaskDef { components: vec![computed, pending], feather: 0.02, ..MaskDef::default() };
+    let mut s = EditSession::new(Recipe::default());
+    s.apply(&reg, Edit::AddLayer { name: "Subject".into(), mask, tools: Vec::new() }).expect("add layer");
+    let layer = s.recipe().layers.layers()[0].id;
+    set_exposure(&mut s, &reg, exposure_at(layer), 2.0);
+    let recipe = s.recipe().clone();
 
-    let on_gpu = gpu.render_with_masks(&recipe.graph, &reg, &src, &rasters).expect("gpu render");
-    let on_cpu = render_cpu::render_with_masks(&recipe.graph, &reg, &src, &rasters).expect("cpu render");
+    let on_gpu = gpu.render_with_masks(&recipe.layers, &reg, &src, &rasters).expect("gpu render");
+    let on_cpu = render_cpu::render_with_masks(&recipe.layers, &reg, &src, &rasters);
     assert_close(&on_gpu.image, &on_cpu.image);
     assert_eq!(on_gpu.missing_masks, on_cpu.missing_masks);
     assert_eq!(on_gpu.missing_masks.len(), 1);

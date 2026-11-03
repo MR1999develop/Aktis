@@ -3,7 +3,7 @@
 //! without a window: which parameters a mode, a picked colour, a moved
 //! handle or a dragged curve point set.
 
-use core_model::{NodeId, ParamId, ParamValue};
+use core_model::{ParamId, ParamValue, ToolRef};
 use tool_adjust::curve::{self, MAX_POINTS, Spline};
 use tool_adjust::{color_editor, dehaze, levels, white_balance};
 use tool_api::{Params, ResolvedParams, ToolRegistry};
@@ -30,10 +30,10 @@ pub enum PickKind {
 }
 
 /// A picker waiting for a click in the viewer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pick {
-    /// The node it edits.
-    pub node: NodeId,
+    /// The tool it edits.
+    pub at: ToolRef,
     /// What it sets.
     pub kind: PickKind,
     /// The levels set or curve it edits (an index into
@@ -67,15 +67,16 @@ pub fn channel_value(rgb: [f32; 3], channel: usize, curve: bool) -> f32 {
     encode(v)
 }
 
-/// A node's parameters resolved against its tool.
-fn resolved(doc: &Document, registry: &ToolRegistry, node: NodeId) -> Option<ResolvedParams> {
-    let n = doc.recipe().graph.node(node)?;
-    let core_model::NodeKind::Tool(id) = &n.kind else { return None };
-    Some(ResolvedParams::resolve(registry.get(id)?.descriptor(), &n.params))
+/// A tool's parameters resolved against it (its first values when the
+/// layer does not hold it yet).
+fn resolved(doc: &Document, registry: &ToolRegistry, at: &ToolRef) -> Option<ResolvedParams> {
+    let first = initial_params(doc, at.tool.as_str());
+    let params = doc.recipe().layers.params(at).unwrap_or(&first);
+    Some(ResolvedParams::resolve(registry.get(&at.tool)?.descriptor(), params))
 }
 
-/// The first values of a new node of `tool` in `doc`: for white balance,
-/// the camera's light as both the as-shot and the chosen one.
+/// The first values of `tool` in `doc`, when a layer starts using it: for
+/// white balance, the camera's light as both the as-shot and the chosen one.
 #[must_use]
 pub fn initial_params(doc: &Document, tool: &str) -> Params {
     let mut p = Params::new();
@@ -101,11 +102,11 @@ pub fn initial_params(doc: &Document, tool: &str) -> Params {
 pub fn wb_mode_values(
     doc: &Document,
     registry: &ToolRegistry,
-    node: NodeId,
+    at: &ToolRef,
     mode: white_balance::Mode,
 ) -> Option<Vec<(ParamId, ParamValue)>> {
     use white_balance::{KELVIN, MODE, Mode, SHOT_KELVIN, SHOT_TINT, TINT};
-    let r = resolved(doc, registry, node)?;
+    let r = resolved(doc, registry, at)?;
     let shot = (r.float(SHOT_KELVIN), r.float(SHOT_TINT));
     let (k, t) = match mode {
         Mode::Shot => shot,
@@ -120,16 +121,16 @@ pub fn wb_mode_values(
     ])
 }
 
-/// What a click with `pick` on a pixel whose colour entering the node is
+/// What a click with `pick` on a pixel whose colour entering the tool is
 /// `rgb` sets.
 #[must_use]
 pub fn pick_values(
     doc: &Document,
     registry: &ToolRegistry,
-    pick: Pick,
+    pick: &Pick,
     rgb: [f32; 3],
 ) -> Option<Vec<(ParamId, ParamValue)>> {
-    let r = resolved(doc, registry, pick.node)?;
+    let r = resolved(doc, registry, &pick.at)?;
     match pick.kind {
         PickKind::Neutral => {
             use white_balance::{KELVIN, MODE, Mode, SHOT_KELVIN, SHOT_TINT, TINT};
@@ -351,23 +352,25 @@ mod tests {
         (Document::new(opened, 1), engine::builtin_tools().unwrap())
     }
 
-    fn add(doc: &mut Document, reg: &ToolRegistry, tool: &str) -> NodeId {
-        let source = doc.recipe().graph.source();
-        doc.add_node(reg, source, core_model::ToolId::new(tool).unwrap()).unwrap()
+    fn add(_doc: &mut Document, _reg: &ToolRegistry, tool: &str) -> ToolRef {
+        ToolRef::background(core_model::ToolId::new(tool).unwrap())
     }
 
     #[test]
     fn pickers_set_the_values_of_their_tool() {
         let (mut doc, reg) = doc();
         let lv = add(&mut doc, &reg, "levels");
-        let v = pick_values(&doc, &reg, Pick { node: lv, kind: PickKind::LevelsBlack, channel: 0 }, [0.05; 3]).unwrap();
-        assert_eq!(v, vec![(pid("rgb_in_black"), ParamValue::Float((encode(0.05) * 255.0).round()))]);
-        let v = pick_values(&doc, &reg, Pick { node: lv, kind: PickKind::LevelsWhite, channel: 3 }, [0.0, 0.0, 9.0])
+        let v = pick_values(&doc, &reg, &Pick { at: lv.clone(), kind: PickKind::LevelsBlack, channel: 0 }, [0.05; 3])
             .unwrap();
+        assert_eq!(v, vec![(pid("rgb_in_black"), ParamValue::Float((encode(0.05) * 255.0).round()))]);
+        let v =
+            pick_values(&doc, &reg, &Pick { at: lv.clone(), kind: PickKind::LevelsWhite, channel: 3 }, [0.0, 0.0, 9.0])
+                .unwrap();
         assert_eq!(v, vec![(pid("blue_in_white"), ParamValue::Float(255.0))]);
 
         let cv = add(&mut doc, &reg, "curve");
-        let v = pick_values(&doc, &reg, Pick { node: cv, kind: PickKind::CurvePoint, channel: 1 }, [0.18; 3]).unwrap();
+        let v = pick_values(&doc, &reg, &Pick { at: cv.clone(), kind: PickKind::CurvePoint, channel: 1 }, [0.18; 3])
+            .unwrap();
         assert_eq!(v[0], (pid("luma_points"), ParamValue::Float(3.0)));
         let ParamValue::Float(x) = v[3].1 else { panic!() };
         let ParamValue::Float(y) = v[4].1 else { panic!() };
@@ -375,7 +378,8 @@ mod tests {
 
         let wb = add(&mut doc, &reg, "white_balance");
         let v =
-            pick_values(&doc, &reg, Pick { node: wb, kind: PickKind::Neutral, channel: 0 }, [0.5, 0.4, 0.25]).unwrap();
+            pick_values(&doc, &reg, &Pick { at: wb.clone(), kind: PickKind::Neutral, channel: 0 }, [0.5, 0.4, 0.25])
+                .unwrap();
         assert_eq!(v[0], (pid("mode"), ParamValue::Choice(white_balance::Mode::Custom.index())));
         let ParamValue::Float(k) = v[1].1 else { panic!() };
         assert!(k < 5500.0, "{k}");
@@ -385,27 +389,27 @@ mod tests {
     fn colour_pickers_centre_a_range_and_set_the_shadow_tone() {
         let (mut doc, reg) = doc();
         let ce = add(&mut doc, &reg, "color_editor");
-        let pick = |channel| Pick { node: ce, kind: PickKind::ColorRange, channel };
+        let pick = |channel| Pick { at: ce.clone(), kind: PickKind::ColorRange, channel };
         // A green: hue 120°.
-        let v = pick_values(&doc, &reg, pick(1), [0.1, 0.6, 0.1]).unwrap();
+        let v = pick_values(&doc, &reg, &pick(1), [0.1, 0.6, 0.1]).unwrap();
         assert_eq!(v, vec![(pid("adv2_on"), ParamValue::Bool(true)), (pid("adv2_center"), ParamValue::Float(120.0))]);
         // A skin colour sets the skin tone range.
-        let v = pick_values(&doc, &reg, pick(color_editor::ADVANCED), [0.6, 0.3, 0.2]).unwrap();
+        let v = pick_values(&doc, &reg, &pick(color_editor::ADVANCED), [0.6, 0.3, 0.2]).unwrap();
         assert_eq!(v[0], (pid("skin_on"), ParamValue::Bool(true)));
         let ParamValue::Float(h) = v[1].1 else { panic!() };
         assert!((h - 15.0).abs() < 1e-3, "{h}");
         // Near red on the other side of 0° wraps into 0–360.
-        let v = pick_values(&doc, &reg, pick(0), [0.6, 0.1, 0.104]).unwrap();
+        let v = pick_values(&doc, &reg, &pick(0), [0.6, 0.1, 0.104]).unwrap();
         assert_eq!(v[1], (pid("adv1_center"), ParamValue::Float(0.0)));
-        let v = pick_values(&doc, &reg, pick(0), [0.6, 0.1, 0.15]).unwrap();
+        let v = pick_values(&doc, &reg, &pick(0), [0.6, 0.1, 0.15]).unwrap();
         assert_eq!(v[1], (pid("adv1_center"), ParamValue::Float(354.0)));
-        assert!(pick_values(&doc, &reg, pick(0), [0.3, 0.3, 0.3]).is_none(), "a grey has no hue");
+        assert!(pick_values(&doc, &reg, &pick(0), [0.3, 0.3, 0.3]).is_none(), "a grey has no hue");
         // The values are valid for the tool: the document takes them.
-        doc.set_params(&reg, ce, pick_values(&doc, &reg, pick(2), [0.1, 0.2, 0.6]).unwrap(), None).unwrap();
+        doc.set_params(&reg, &ce, pick_values(&doc, &reg, &pick(2), [0.1, 0.2, 0.6]).unwrap(), None).unwrap();
 
         let dh = add(&mut doc, &reg, "dehaze");
-        let tone = Pick { node: dh, kind: PickKind::ShadowTone, channel: 0 };
-        let v = pick_values(&doc, &reg, tone, [0.1, 0.2, 0.4]).unwrap();
+        let tone = Pick { at: dh.clone(), kind: PickKind::ShadowTone, channel: 0 };
+        let v = pick_values(&doc, &reg, &tone, [0.1, 0.2, 0.4]).unwrap();
         assert_eq!(
             v,
             vec![
@@ -415,18 +419,18 @@ mod tests {
                 (pid("tone_blue"), ParamValue::Float(1.0)),
             ]
         );
-        assert!(pick_values(&doc, &reg, tone, [0.0; 3]).is_none(), "black has no colour");
-        doc.set_params(&reg, dh, v, None).unwrap();
+        assert!(pick_values(&doc, &reg, &tone, [0.0; 3]).is_none(), "black has no colour");
+        doc.set_params(&reg, &dh, v, None).unwrap();
     }
 
     #[test]
     fn white_balance_modes_set_their_light() {
         let (mut doc, reg) = doc();
         let wb = add(&mut doc, &reg, "white_balance");
-        let v = wb_mode_values(&doc, &reg, wb, white_balance::Mode::Tungsten).unwrap();
+        let v = wb_mode_values(&doc, &reg, &wb, white_balance::Mode::Tungsten).unwrap();
         assert_eq!(v[1], (pid("kelvin"), ParamValue::Float(2850.0)));
-        let v = wb_mode_values(&doc, &reg, wb, white_balance::Mode::Shot).unwrap();
-        assert_eq!(v[1], (pid("kelvin"), ParamValue::Float(5500.0)), "the node's as-shot light");
+        let v = wb_mode_values(&doc, &reg, &wb, white_balance::Mode::Shot).unwrap();
+        assert_eq!(v[1], (pid("kelvin"), ParamValue::Float(5500.0)), "the tool's as-shot light");
         assert_eq!(initial_params(&doc, "white_balance"), Params::new(), "no RAW data here");
     }
 

@@ -14,6 +14,8 @@ use crate::descriptor::DescriptorError;
 pub enum RegistryError {
     /// Another tool already uses this id.
     DuplicateTool(ToolId),
+    /// Another tool already acts at this position of the fixed order.
+    DuplicateOrder(ToolId, u16),
     /// The tool's descriptor is inconsistent.
     InvalidDescriptor(ToolId, DescriptorError),
 }
@@ -22,6 +24,7 @@ impl fmt::Display for RegistryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateTool(id) => write!(f, "tool '{id}' is registered twice"),
+            Self::DuplicateOrder(id, at) => write!(f, "tool '{id}' takes position {at}, which another tool has"),
             Self::InvalidDescriptor(id, e) => write!(f, "tool '{id}' has an invalid descriptor: {e}"),
         }
     }
@@ -52,8 +55,19 @@ impl ToolRegistry {
         if self.tools.contains_key(&d.id) {
             return Err(RegistryError::DuplicateTool(d.id.clone()));
         }
+        if self.tools.values().any(|t| t.descriptor().order == d.order) {
+            return Err(RegistryError::DuplicateOrder(d.id.clone(), d.order));
+        }
         self.tools.insert(d.id.clone(), tool);
         Ok(())
+    }
+
+    /// The ids of all tools in the fixed order they act in.
+    #[must_use]
+    pub fn pipeline(&self) -> Vec<ToolId> {
+        let mut tools: Vec<&Arc<dyn Tool>> = self.tools.values().collect();
+        tools.sort_by_key(|t| t.descriptor().order);
+        tools.into_iter().map(|t| t.descriptor().id.clone()).collect()
     }
 
     /// The tool with this id, if this build has it.

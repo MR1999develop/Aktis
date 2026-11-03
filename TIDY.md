@@ -1,7 +1,8 @@
 # Tidy later
 
-- `render-cpu::render` clones each node's image; fine for the reference
-  renderer, but with the GPU unavailable it is the CPU fallback's main cost.
+- `render-cpu::render` clones the image under each layer to mix it in; fine
+  for the reference renderer, but with the GPU unavailable it is the CPU
+  fallback's main cost.
 - `develop`: Bayer with RCD, X-Trans with Markesteijn (3 passes), both on
   the CPU; move them to the GPU (phase 3) keeping these as the test
   reference. The simple X-Trans demosaic (`develop::xtrans`) stays for
@@ -18,7 +19,7 @@
 - The colour noise reduction a high-ISO RAW starts with
   (`camera_defaults::start_noise_reduction`) uses fixed values, not the
   Noise Reduction values saved as the camera's defaults (Save as Defaults
-  of the tool alone); only a saved node replaces it.
+  of the tool alone); only saved Noise Reduction defaults replace it.
 - Base curve "Standard" on a JPEG or TIFF shows the picture without a curve
   (as Linear): the menu says Standard either way.
 - Variants in the filmstrip: rating, colour label, keywords, selection and
@@ -42,12 +43,12 @@
   1 s and 2.4 s for 24 MP on two cores. Move them to the GPU (separable
   passes) if editing full-size photos feels slow. Capture One also derives
   the noise reduction from camera and ISO and applies some by default; ours
-  only runs as a node the user adds (or a camera default).
+  only runs when the user turns it on (or from a camera default).
 - Noise Reduction works on the rendered image, not on the RAW data as
-  Capture One does: place it first in the graph.
+  Capture One does; it acts first among the tone tools.
 - Neural X-Trans demosaic: candidates found (vkdt `jddcnn`, DemosaicNet's
   X-Trans model); weights licences and input contracts to confirm first.
-- Below 100 % each zoom step re-renders the node graph to get the photo at
+- Below 100 % each zoom step re-renders the layers to get the photo at
   the new size; keep the last full-size render in the worker and only
   shrink it again when only the size changed.
 - Area averaging is a little soft next to Capture One's screen rendering;
@@ -89,13 +90,13 @@
   recipe instead.
 - The GPU renderer reads back before a host tool and uploads after it; fine
   for the denoiser (seconds of network time), revisit if host tools multiply.
-- With the AI denoise node on, the editor's preview worker is busy for the
+- With the AI denoise tool on, the editor's preview worker is busy for the
   whole network run (seconds on a GPU, minutes on a CPU) with no progress
   and no cancel. Add a job control (progress, cancel) and progressive tiles
-  (starting from the visible area) into `editor::worker` when the node
+  (starting from the visible area) into `editor::worker` when the tool
   becomes a common one.
 - Masks are evaluated on the CPU at full resolution for every render and
-  uploaded to the GPU; move refinement and feather to WGSL and cache per node
+  uploaded to the GPU; move refinement and feather to WGSL and cache per layer
   once the viewer renders previews interactively.
 - `ai-segment` decoder inputs clone the Segment Anything embedding (16 MB)
   per click; pass views once profiling shows it matters.
@@ -145,8 +146,8 @@
 - Retouch: the undo label of a spot is "Change spot 4"; "Add heal spot"
   or "Move spot" would need a label from the tool in `Edit::SetParams`.
 - Retouch: the automatic source is searched in the developed preview, not
-  in the image entering the retouch node (earlier spots and tools are not
-  seen), and only the selected retouch node's spots are drawn.
+  in the image under the layer (earlier spots are not seen), and only the
+  selected layer's spots are drawn.
 - The catalog keys photos by the path as written: on Windows the same file
   reached as `D:\Foto` and `d:\foto` gets two entries. Normalise the key
   (canonical path, case folded on Windows) before the first public release,
@@ -156,7 +157,7 @@
   query (or in the worker) once folders of thousands of photos are common.
 - The window's minimum size is 1100 × 640; the design guidelines ask for a
   layout that works at 1024 × 600 (about 960 × 520 usable). Check the
-  Explorer, graph and inspector at that size and lower the minimum.
+  Explorer, viewer, filmstrip and tool panels at that size and lower the minimum.
 - Saving an edit makes its preview JPEG (downscale + encode of the image
   on screen, tens of milliseconds for a full-size render) on the window's
   thread, and the filmstrip reads preview blobs from the catalog there too
@@ -179,11 +180,11 @@
   transform. The fill enlargement is found by bisection on 64 border points.
 - High dynamic range is a per-pixel tone curve; Capture One's is local
   (neighbourhood-aware): add a local version (guided filter on log luminance).
-- The white-balance node re-balances with one Bradford matrix in the working
+- The white-balance tool re-balances with one Bradford matrix in the working
   space; re-developing with new multipliers (and the profile's illuminant
   interpolation) would match Capture One more closely for strong changes.
 - Levels and Curve read the histogram of the image on screen (after the
-  output curve), not of the node's input.
+  output curve), not of the tool's input.
 - The mask overlay is evaluated on the UI thread at up to 1024 px when the
   mask changes; move it to the worker if it is felt.
 - AI Select loads ONNX Runtime and the models in its first job (seconds);
@@ -198,7 +199,7 @@
   readers show "©" as Latin-1. The XMP packet carries them correctly.
 - Colour editor: Capture One's "View selected color range" is missing; the
   viewer has no way to show which pixels a range selects. Add it when the
-  viewer can draw a node's weight as an overlay (as the mask overlay does).
+  viewer can draw a tool's weight as an overlay (as the mask overlay does).
 - Presets: a preset applied to photos that are not open is written to the
   catalog without a new preview; the filmstrip shows the camera's until the
   photo is opened (a background render of the edit would fill it).
@@ -226,11 +227,9 @@
   `Worker::open` the starting settings. Applying a custom lens to several
   selected photos from the filmstrip, Capture One's Sharpness Falloff and
   Purple Fringing, and a manual chromatic aberration are not offered.
-- Camera defaults (Save as Defaults): kept per camera model for tool nodes
-  only; Capture One also keeps base curve and ICC profile per camera, and
-  an "Apply Defaults" to existing photos is not offered. Saving the same
-  tool twice keeps one node per tool; a photo whose defaults hold two
-  nodes of one tool cannot be expressed.
+- Camera defaults (Save as Defaults): kept per camera model for the tools of
+  the Background only; Capture One also keeps base curve and ICC profile
+  per camera, and an "Apply Defaults" to existing photos is not offered.
 - Gradient masks: their points are kept inside the photo (`NormPoint`
   clamps), so a linear gradient cannot start beyond an edge; a radial
   gradient cannot be rotated; only the last gradient of a mask shows
@@ -265,3 +264,28 @@
   move_to_trash`), slow to start. The import window keeps no thumbnails
   between openings; folders can be deleted only from the Disk tree, not
   from the catalog's Folders.
+- Layers: every tool acts at most once per layer, in a fixed order; two
+  exposures with different masks need two layers. A layer mixes in the
+  result of all its tools once (Capture One's way): a style brush of several
+  tools painted at half opacity gives a slightly different result from the
+  node graph, which masked each tool on its own.
+- Layers: the colour pickers and the probe of a layer's tool see the
+  Background's tools but not the layers below it.
+- Layer masks are evaluated again at every render (CPU, full size); cache
+  them per layer and mask definition when photos with many layers are
+  common.
+- Tool panels float in windows inside the main window (egui windows), not
+  in windows of their own on the desktop (egui viewports): a second monitor
+  cannot hold them yet. Reordering panels by dragging their header has no
+  test that drags (the layout logic has); add a kittest drag, now that the
+  headers are accessible widgets.
+- A floating panel opens at the pointer; its size and place are remembered
+  by egui (the window's memory), not in the workspaces.
+- Edits saved before the layers (format 1, the node graph) are not shown
+  when the photo opens and are written over at its first change; there is
+  no conversion.
+- The tools' sliders, number fields and combo boxes (`inspector`) are named
+  only by the label beside them, so the test that draws every panel runs
+  without the accessibility check; give them `labelled_by` (or a name in
+  their `WidgetInfo`) and turn the check on. The panels' own controls
+  already pass it.

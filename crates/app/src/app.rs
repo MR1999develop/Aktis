@@ -1,10 +1,10 @@
 //! The main window.
 //!
-//! Layout: menu and tool bar on top; on the left the Explorer and the
-//! filmstrip side by side, with the History and Metadata tabs below; in the
-//! middle the photo above the node graph; on the right the histogram above
-//! the settings of the node selected in the graph; a status line at the
-//! bottom.
+//! Layout: menu and tool bar on top; on the left the Explorer, with the
+//! History and Metadata tabs below; in the middle the photo above the
+//! filmstrip; on the right the histogram above the tool panels (Layers,
+//! development and one panel per tool, which can be moved and floated, as
+//! in Capture One); a status line at the bottom.
 //!
 //! Each frame: read the worker's events, handle dropped files and
 //! shortcuts, draw, then apply what the user did (collected as values while
@@ -21,9 +21,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use catalog::{Collection, VariantInfo, next_variant_number, variant_name};
-use core_model::{DevelopSettings, NodeId, NodeKind, Recipe, ToolId};
+use core_model::{DevelopSettings, LayerId, Recipe, ToolId, ToolRef};
 use editor::adjust::Pick;
-use editor::graph_view::GraphView;
 use editor::import_job::{ImportJob, ImportProgress, ImportRequest, Skipped};
 use editor::variants::{self, Reopened, VariantState};
 use editor::{
@@ -42,7 +41,6 @@ use crate::catalog_ui::{self, NewCatalog, Outcome};
 use crate::dialog::{Choice, dialog, dialog_buttons};
 use crate::export_ui::{ExportDialog, ExportRequest, NameExample};
 use crate::geometry_ui::{GeoEdit, GeometryUi};
-use crate::graph_ui::{GraphAction, GraphUi};
 use crate::history_ui::{LeftTab, TabAction, Tabs};
 use crate::import_window::ImportWindow;
 use crate::inspector::{self, Drag, UiEdit};
@@ -56,9 +54,10 @@ use crate::scopes::{ScopeKind, Scopes};
 use crate::settings::{ImportSettings, STORAGE_KEY, Settings, ThemeChoice};
 use crate::tagging_job::{Progress, TaggingJob};
 use crate::theme::{
-    self, FILMSTRIP_WIDTH, FONT, GRAPH_HEIGHT, HISTOGRAM_HEIGHT, INSPECTOR_WIDTH, LEFT_WIDTH, SPACE,
-    SPINNER_DELAY_SECONDS, TABS_HEIGHT, TOAST_ERROR_SECONDS, TOAST_SECONDS, Tokens,
+    self, FILMSTRIP_HEIGHT, FONT, HISTOGRAM_HEIGHT, INSPECTOR_WIDTH, LEFT_WIDTH, SPACE, SPINNER_DELAY_SECONDS,
+    TABS_HEIGHT, TOAST_ERROR_SECONDS, TOAST_SECONDS, Tokens,
 };
+use crate::tool_panels::{PanelAction, ToolPanels};
 use crate::toolbar::{self, BarAction, BarState, TOOL_GROUPS, ViewerTool};
 use crate::zoom_bar::{self, ZoomAction};
 use crate::{APP_NAME, VERSION};
@@ -175,8 +174,8 @@ pub struct EditorApp {
     backend: Option<Backend>,
     gpu_problem: Option<String>,
     toast: Option<Toast>,
-    /// The last "node skipped" message shown, so it is not repeated at every render.
-    node_problem: Option<String>,
+    /// The last "tool skipped" message shown, so it is not repeated at every render.
+    tool_problem: Option<String>,
     /// Downloads of the AI models: the dialog and the "AI models" window.
     models: ModelsUi,
     /// Lens corrections saved under a name for a lens.
@@ -188,13 +187,10 @@ pub struct EditorApp {
     library: Library,
     /// History and Metadata.
     tabs: Tabs,
-    /// The node whose settings are shown on the right.
-    selected_node: Option<NodeId>,
-    /// The last nodes selected, newest first (the selected one included):
-    /// their settings are shown on the right, up to [`RECENT_NODES`].
-    recent_nodes: Vec<NodeId>,
-    /// Node positions, panning and menus of the node graph.
-    graph: GraphUi,
+    /// The layer the tool panels, Masks, AI Select, Heal and Clone act on.
+    layer: LayerId,
+    /// The tool panels on the right, docked or floating.
+    panels: ToolPanels,
     /// The tool of the bar in use in the viewer.
     tool: Option<ViewerTool>,
     /// A picker of the settings panel waiting for a click in the viewer.
@@ -213,8 +209,11 @@ pub struct EditorApp {
     prefs: Preferences,
     /// The slider drag of a geometry tool, one undo step.
     geometry_gesture: Option<commands::GestureId>,
-    /// The colour entering the selected node under the pointer in the viewer.
-    probe: Option<[f32; 3]>,
+    /// The colour entering a tool under the pointer in the viewer (the
+    /// tool of the picker armed, else of the panel last used), and the tool.
+    probe: Option<(ToolRef, [f32; 3])>,
+    /// The tool whose panel was used last, for the probe.
+    last_tool: Option<ToolRef>,
     /// Levels of the image on screen.
     histogram: Option<Box<Histogram>>,
     /// The waveform or parade texture.
@@ -249,9 +248,6 @@ pub struct EditorApp {
     workspace_name: Option<String>,
     /// The Save Custom Lens window: the name being typed.
     custom_lens_name: Option<String>,
-    /// The node to select when this photo opens (the one selected when the
-    /// editor was closed), once.
-    restore_node: Option<(PathBuf, NodeId)>,
     /// The custom lens whose deletion waits for confirmation.
     delete_custom_lens: Option<String>,
     /// Wheel scrolling not yet turned into a zoom step.
@@ -327,16 +323,15 @@ impl EditorApp {
             backend: None,
             gpu_problem: None,
             toast,
-            node_problem: None,
+            tool_problem: None,
             models: ModelsUi::new(),
             custom_lenses: editor::custom_lenses::CustomLenses::load(editor::custom_lenses::default_folder()),
             camera_defaults: editor::camera_defaults::AllCameraDefaults::load(editor::camera_defaults::default_folder()),
             title: String::new(),
             library: Library::new(&catalog_dir),
             tabs: Tabs::default(),
-            selected_node: None,
-            recent_nodes: Vec::new(),
-            graph: GraphUi::default(),
+            layer: LayerId::BACKGROUND,
+            panels: ToolPanels::default(),
             tool: None,
             pick: None,
             prev_tool: None,
@@ -347,6 +342,7 @@ impl EditorApp {
             mask_ui: MaskUi::default(),
             ai_job: None,
             probe: None,
+            last_tool: None,
             histogram: None,
             scopes: Scopes::default(),
             shown: None,
@@ -363,7 +359,6 @@ impl EditorApp {
             close_refused: false,
             workspace_name: None,
             custom_lens_name: None,
-            restore_node: None,
             delete_custom_lens: None,
             wheel: 0.0,
             keep_zoom: false,
@@ -390,12 +385,6 @@ impl EditorApp {
             app.import_photos(std::slice::from_ref(path));
         }
         let last = app.last_photo();
-        // The last photo comes back with the node that was selected in it.
-        if open.is_none()
-            && let (Some(path), Some(node)) = (&last, app.settings.last_node)
-        {
-            app.restore_node = Some((path.clone(), NodeId::from_raw(node)));
-        }
         if let Some(path) = open.or(last) {
             app.open(path);
         }
@@ -655,7 +644,7 @@ impl EditorApp {
         self.warning_texture = None;
         self.shown = None;
         self.histogram = None;
-        self.selected_node = None;
+        self.layer = LayerId::BACKGROUND;
         self.tool = None;
         self.prefetch_step = None;
         self.plan = RenderPlan::default();
@@ -917,7 +906,7 @@ impl EditorApp {
                     image,
                     backend,
                     gpu_failure,
-                    node_problems,
+                    tool_problems,
                     histogram,
                     timing,
                 } => {
@@ -951,14 +940,14 @@ impl EditorApp {
                         self.toast = Some(error_toast(format!("The GPU failed, the CPU took over: {why}")));
                     }
                     // A tool short of its models offers the download instead of an error.
-                    let offering = !node_problems.is_empty() && self.offer_missing_models();
+                    let offering = !tool_problems.is_empty() && self.offer_missing_models();
                     // Told once per message, not at every render.
-                    if let Some(problem) = node_problems.into_iter().next()
+                    if let Some(problem) = tool_problems.into_iter().next()
                         && !offering
-                        && self.node_problem.as_ref() != Some(&problem)
+                        && self.tool_problem.as_ref() != Some(&problem)
                     {
                         self.toast = Some(error_toast(problem.clone()));
-                        self.node_problem = Some(problem);
+                        self.tool_problem = Some(problem);
                     }
                     self.backend = Some(backend);
                 }
@@ -1037,104 +1026,120 @@ impl EditorApp {
         ctx.input_mut(|i| table.iter().filter(|(s, _)| i.consume_shortcut(s)).map(|(_, c)| *c).collect())
     }
 
-    fn apply_edits(&mut self, edits: Vec<UiEdit>) {
+    /// Applies what the user did in the panels: each edit with the tool its
+    /// panel shows (`None` for the development panels).
+    fn apply_edits(&mut self, edits: Vec<(Option<ToolRef>, UiEdit)>) {
         let Some(doc) = &mut self.doc else { return };
-        for edit in edits {
-            let result = match edit {
-                UiEdit::BeginDrag { node, param } => {
-                    self.drag = Some(Drag { node, param, gesture: doc.begin_gesture() });
+        for (at, edit) in edits {
+            if at.is_some() {
+                self.last_tool.clone_from(&at);
+            }
+            let result = match (at, edit) {
+                (Some(at), UiEdit::BeginDrag { param }) => {
+                    self.drag = Some(Drag { at, param, gesture: doc.begin_gesture() });
                     Ok(())
                 }
-                UiEdit::EndDrag => {
+                (_, UiEdit::EndDrag) => {
                     self.drag = None;
                     Ok(())
                 }
-                UiEdit::Set { node, param, value, in_drag } => {
+                (Some(at), UiEdit::Set { param, value, in_drag }) => {
                     let gesture =
-                        self.drag.as_ref().filter(|d| in_drag && d.node == node && d.param == param).map(|d| d.gesture);
-                    doc.set_param(&self.registry, node, param, value, gesture)
+                        self.drag.as_ref().filter(|d| in_drag && d.at == at && d.param == param).map(|d| d.gesture);
+                    doc.set_param(&self.registry, &at, param, value, gesture)
                 }
-                UiEdit::Reset { node, param } => {
-                    // Back to the camera's default when one is saved, else the tool's.
-                    let tool = match doc.recipe().graph.node(node).map(|n| &n.kind) {
-                        Some(NodeKind::Tool(t)) => Some(t.clone()),
-                        _ => None,
-                    };
-                    let saved = tool.and_then(|t| self.camera_defaults.value(doc.camera(), &t, &param));
+                (Some(at), UiEdit::Reset { param }) => {
+                    // Back to the camera's default when one is saved (on the
+                    // Background), else the tool's.
+                    let saved = at
+                        .layer
+                        .is_background()
+                        .then(|| self.camera_defaults.value(doc.camera(), &at.tool, &param))
+                        .flatten();
                     match saved {
-                        Some(value) => doc.set_param(&self.registry, node, param, value, None),
-                        None => doc.reset_param(&self.registry, node, param),
+                        Some(value) => doc.set_param(&self.registry, &at, param, value, None),
+                        None => doc.reset_param(&self.registry, &at, param),
                     }
                 }
-                UiEdit::SaveDefaults(node) => {
-                    let saved = match doc.recipe().graph.node(node) {
-                        Some(n) => match &n.kind {
-                            NodeKind::Tool(t) => Some((t.clone(), n.params.clone())),
-                            _ => None,
-                        },
-                        None => None,
-                    };
-                    if let Some((tool, params)) = saved {
-                        let camera = doc.camera().to_owned();
-                        let name = self.registry.get(&tool).map_or(tool.as_str(), |t| t.descriptor().name).to_owned();
-                        self.toast = Some(match self.camera_defaults.save(&camera, tool, params) {
-                            Ok(()) => info_toast(format!(
-                                "{name}: these values are now the defaults for the {camera}; new photos of it start with them"
-                            )),
-                            Err(e) => error_toast(format!("The defaults could not be saved: {e}")),
-                        });
+                (Some(at), UiEdit::ResetAll) => {
+                    let saved = at
+                        .layer
+                        .is_background()
+                        .then(|| self.camera_defaults.params(doc.camera(), &at.tool).cloned())
+                        .flatten();
+                    let descriptor = self.registry.get(&at.tool).map(|t| t.descriptor());
+                    match (saved, descriptor) {
+                        (Some(saved), Some(d)) => {
+                            let values = d
+                                .params
+                                .iter()
+                                .map(|p| (p.id.clone(), saved.get(&p.id).unwrap_or_else(|| p.default_value())))
+                                .collect();
+                            doc.set_params(&self.registry, &at, values, None)
+                        }
+                        _ => doc.reset_tool(&self.registry, at.layer, &at.tool),
                     }
+                }
+                (Some(at), UiEdit::SaveDefaults) => {
+                    let params = doc.recipe().layers.params(&at).cloned().unwrap_or_default();
+                    let camera = doc.camera().to_owned();
+                    let name = self.registry.get(&at.tool).map_or(at.tool.as_str(), |t| t.descriptor().name).to_owned();
+                    self.toast = Some(match self.camera_defaults.save(&camera, at.tool, params) {
+                        Ok(()) => info_toast(format!(
+                            "{name}: these values are now the defaults for the {camera}; new photos of it start with them"
+                        )),
+                        Err(e) => error_toast(format!("The defaults could not be saved: {e}")),
+                    });
                     Ok(())
                 }
-                UiEdit::ForgetDefaults(node) => {
-                    if let Some(NodeKind::Tool(tool)) = doc.recipe().graph.node(node).map(|n| n.kind.clone()) {
-                        let camera = doc.camera().to_owned();
-                        self.toast = Some(match self.camera_defaults.remove(&camera, &tool) {
-                            Ok(()) => info_toast(format!("Defaults for the {camera} reset to the editor's")),
-                            Err(e) => error_toast(format!("The defaults could not be reset: {e}")),
-                        });
-                    }
+                (Some(at), UiEdit::ForgetDefaults) => {
+                    let camera = doc.camera().to_owned();
+                    self.toast = Some(match self.camera_defaults.remove(&camera, &at.tool) {
+                        Ok(()) => info_toast(format!("Defaults for the {camera} reset to the editor's")),
+                        Err(e) => error_toast(format!("The defaults could not be reset: {e}")),
+                    });
                     Ok(())
                 }
-                UiEdit::Enabled { node, on } => {
-                    let result = doc.set_enabled(&self.registry, node, on);
+                (Some(at), UiEdit::Enabled { on }) => {
+                    let result = doc.set_tool_enabled(&self.registry, at.layer, &at.tool, on);
                     // Turning on a tool that needs AI models offers to download them.
                     if on
                         && result.is_ok()
-                        && let Some(NodeKind::Tool(tool)) = doc.recipe().graph.node(node).map(|n| &n.kind)
-                        && let Some(feature) = ai_models::feature_for_tool(tool.as_str())
+                        && let Some(feature) = ai_models::feature_for_tool(at.tool.as_str())
                     {
                         self.models.require(feature);
                     }
                     result
                 }
-                UiEdit::Lens(lens) => doc.set_lens_correction(&self.registry, lens),
-                UiEdit::SaveCustomLens => {
+                (_, UiEdit::Lens(lens)) => doc.set_lens_correction(&self.registry, lens),
+                (_, UiEdit::SaveCustomLens) => {
                     let lens = &doc.recipe().develop.lens;
                     let name = lens.custom.clone().or_else(|| doc.opened().lens_key.clone());
                     self.custom_lens_name = Some(name.unwrap_or_else(|| "My lens".to_owned()));
                     Ok(())
                 }
-                UiEdit::DeleteCustomLens(name) => {
+                (_, UiEdit::DeleteCustomLens(name)) => {
                     self.delete_custom_lens = Some(name);
                     Ok(())
                 }
-                UiEdit::Curve(curve) => doc.set_base_curve(&self.registry, curve),
-                UiEdit::SetMany { node, key, values, in_drag } => {
+                (_, UiEdit::Curve(curve)) => doc.set_base_curve(&self.registry, curve),
+                (Some(at), UiEdit::SetMany { key, values, in_drag }) => {
                     let gesture =
-                        self.drag.as_ref().filter(|d| in_drag && d.node == node && d.param == key).map(|d| d.gesture);
-                    doc.set_params(&self.registry, node, values, gesture)
+                        self.drag.as_ref().filter(|d| in_drag && d.at == at && d.param == key).map(|d| d.gesture);
+                    doc.set_params(&self.registry, &at, values, gesture)
                 }
-                UiEdit::WbMode { node, mode } => {
-                    match editor::adjust::wb_mode_values(doc, &self.registry, node, mode) {
-                        Some(values) => doc.set_params(&self.registry, node, values, None),
+                (Some(at), UiEdit::WbMode { mode }) => {
+                    match editor::adjust::wb_mode_values(doc, &self.registry, &at, mode) {
+                        Some(values) => doc.set_params(&self.registry, &at, values, None),
                         None => Ok(()),
                     }
                 }
-                UiEdit::Pick(pick) => {
+                (_, UiEdit::Pick(pick)) => {
                     self.pick = pick;
                     Ok(())
                 }
+                // A tool's edit without its tool: nothing to change.
+                (None, _) => Ok(()),
             };
             if let Err(e) = result {
                 self.toast = Some(error_toast(format!("That change was refused: {e}")));
@@ -1230,7 +1235,7 @@ impl EditorApp {
                     // A photo never edited opens the window too (its white balance can be saved).
                     let recipe = self.recipe_for(&photo).unwrap_or_default();
                     let settings = self.brush_settings();
-                    self.presets.open_save(&recipe, &self.registry, false, None, settings);
+                    self.presets.open_save(&recipe, &self.registry, false, LayerId::BACKGROUND, settings);
                 }
                 LibraryAction::TagFolder => self.start_tagging(ctx),
                 LibraryAction::StopTagging => {
@@ -1332,29 +1337,38 @@ impl EditorApp {
         }
     }
 
-    /// Forgets the selected node when it is gone (history rewritten, undo).
+    /// Goes back to the Background when the selected layer is gone
+    /// (history rewritten, undo).
     fn check_selection(&mut self) {
-        let exists = |id: NodeId| self.doc.as_ref().is_some_and(|d| d.recipe().graph.node(id).is_some());
-        if self.selected_node.is_some_and(|id| !exists(id)) {
-            self.selected_node = None;
+        let exists = self.doc.as_ref().is_some_and(|d| d.recipe().layers.contains(self.layer));
+        if !exists {
+            self.select_layer(LayerId::BACKGROUND);
         }
-        let kept: Vec<NodeId> = self.recent_nodes.iter().copied().filter(|id| exists(*id)).collect();
-        self.recent_nodes = remember_recent(kept, self.selected_node);
+        if self.last_tool.as_ref().is_some_and(|t| t.layer != self.layer) {
+            self.last_tool = None;
+        }
     }
 
-    /// Offers the download for the first enabled node whose tool lacks its
+    /// Makes `layer` the one the panels and tools act on.
+    fn select_layer(&mut self, layer: LayerId) {
+        if self.layer != layer {
+            self.layer = layer;
+            self.pick = None;
+            self.last_tool = None;
+            self.retouch_ui.deselect();
+        }
+    }
+
+    /// Offers the download for the first tool switched on that lacks its
     /// AI models; `true` when the dialog is up.
     fn offer_missing_models(&mut self) -> bool {
         let Some(doc) = &self.doc else { return false };
-        let features: Vec<ai_models::Feature> = doc
-            .recipe()
-            .graph
-            .nodes()
-            .filter(|n| n.enabled)
-            .filter_map(|n| match &n.kind {
-                NodeKind::Tool(tool) => ai_models::feature_for_tool(tool.as_str()),
-                _ => None,
-            })
+        let layers = &doc.recipe().layers;
+        let all = std::iter::once(&layers.background).chain(layers.layers().iter().map(|l| &l.tools));
+        let features: Vec<ai_models::Feature> = all
+            .flat_map(|tools| tools.iter())
+            .filter(|(_, s)| s.enabled)
+            .filter_map(|(tool, _)| ai_models::feature_for_tool(tool.as_str()))
             .collect();
         for feature in features {
             if !self.models.require(feature) {
@@ -1415,7 +1429,7 @@ impl EditorApp {
         worker.render(RenderRequest {
             generation: doc.generation(),
             quality,
-            graph: doc.recipe().graph.clone(),
+            layers: doc.recipe().layers.clone(),
             source: Arc::clone(source),
             orientation: doc.orientation(),
             max_side,
@@ -1449,13 +1463,13 @@ impl EditorApp {
     /// camera's defaults.
     fn start_recipe(&self, opened: &editor::Opened) -> Recipe {
         let lens = self.custom_lenses.start_settings(opened.lens_key.as_deref());
-        let nodes = self.camera_defaults.start_nodes(&opened.camera);
+        let tools = self.camera_defaults.start_tools(&opened.camera);
         let raw_iso = opened.raw.as_ref().filter(|r| !r.capture.rendered).and(opened.info.iso);
-        editor::camera_defaults::start_recipe(&self.registry, &opened.camera, raw_iso, lens, &nodes)
+        editor::camera_defaults::start_recipe(&self.registry, &opened.camera, raw_iso, lens, &tools)
     }
 
     fn install(&mut self, reopened: Reopened, same_photo: bool, keep_shown: bool) {
-        let Reopened { doc, view, state, notice } = reopened;
+        let Reopened { doc, state, notice } = reopened;
         self.plan.reset(doc.generation());
         self.drag = None;
         self.pick = None;
@@ -1466,17 +1480,10 @@ impl EditorApp {
         if !keep_shown {
             self.shown = None;
         }
-        // Show the Source's settings, as for a new photo, or the node that
-        // was selected when the editor was closed on this photo.
-        self.selected_node = Some(doc.recipe().graph.source());
-        if let Some((path, node)) = self.restore_node.take()
-            && path == doc.path()
-            && doc.recipe().graph.node(node).is_some()
-        {
-            self.selected_node = Some(node);
-        }
-        self.recent_nodes.clear();
-        self.graph.restore(view);
+        // A photo opens on its Background.
+        self.select_layer(LayerId::BACKGROUND);
+        self.last_tool = None;
+        self.retouch_ui.deselect();
         // A style brush armed on the photo being left is not carried over.
         self.mask_ui.disarm();
         self.variants = self.library.variants(doc.path());
@@ -1518,14 +1525,13 @@ impl EditorApp {
     /// `false` when the catalog refused (told to the user).
     fn save_edit(&mut self, closing: bool) -> bool {
         let (Some(doc), Some(state)) = (&self.doc, &mut self.variant) else { return true };
-        let view = self.graph.view();
-        if !state.is_dirty(doc, view) && !state.preview_due() {
+        if !state.is_dirty(doc) && !state.preview_due() {
             self.dirty_since = None;
             return true;
         }
         let current = !self.plan.is_stale(doc.generation()) && !self.plan.is_waiting() && !doc.needs_develop();
         let shown = self.shown.as_ref().filter(|_| closing || current);
-        let save = state.to_save(doc, view, shown);
+        let save = state.to_save(doc, shown);
         let wrote_edit = save.data.is_some();
         if !save.is_empty()
             && let Err(e) = self.library.save_variant(doc.path(), &save)
@@ -1535,7 +1541,7 @@ impl EditorApp {
             self.dirty_since = Some(Instant::now());
             return false;
         }
-        state.saved(doc, view, save);
+        state.saved(doc, save);
         self.dirty_since = None;
         if wrote_edit {
             self.variants = self.library.variants(doc.path());
@@ -1550,7 +1556,7 @@ impl EditorApp {
             self.dirty_since = None;
             return;
         };
-        if state.is_dirty(doc, self.graph.view()) {
+        if state.is_dirty(doc) {
             let since = *self.dirty_since.get_or_insert_with(Instant::now);
             let wait = Duration::from_secs(variants::AUTOSAVE_SECONDS);
             match wait.checked_sub(since.elapsed()) {
@@ -1594,7 +1600,7 @@ impl EditorApp {
     }
 
     /// New variant (the photo as it came from the camera) or Clone variant
-    /// (a copy of the open one, with its history and node positions).
+    /// (a copy of the open one, with its history).
     fn add_variant(&mut self, clone: bool) {
         let blocks = self.variant_blocks();
         if let Some(why) = if clone { blocks.clone } else { blocks.new } {
@@ -1622,16 +1628,15 @@ impl EditorApp {
         let Some(doc) = &self.doc else { return };
         let path = doc.path().to_owned();
         let first = doc.generation() + 1;
-        let (doc, view) = if clone {
+        let doc = if clone {
             let history = Some(doc.saved_history());
-            let copy = Document::restored(doc.opened().clone(), first, &self.registry, doc.recipe().clone(), history);
-            (copy.0, self.graph.view().clone())
+            Document::restored(doc.opened().clone(), first, &self.registry, doc.recipe().clone(), history).0
         } else {
             let start = self.start_recipe(doc.opened());
-            (variants::fresh(doc.opened().clone(), first, &self.registry, start), GraphView::default())
+            variants::fresh(doc.opened().clone(), first, &self.registry, start)
         };
         let state = VariantState::unsaved(number, variant_name(number));
-        self.install(Reopened { doc, view, state, notice: None }, true, clone);
+        self.install(Reopened { doc, state, notice: None }, true, clone);
         // Written now; its preview follows once the screen shows it.
         if !self.save_edit(true) {
             return;
@@ -1790,7 +1795,7 @@ impl EditorApp {
         let mut workspace = None;
         let mut open_models = false;
         let mut open_prefs = false;
-        let mut graph_actions = Vec::new();
+        let mut panel_actions = Vec::new();
         let blocks = self.variant_blocks();
         let variant_list = self.variant_list();
         let current_variant = self.variant.as_ref().map(|s| s.info.number);
@@ -1798,11 +1803,9 @@ impl EditorApp {
         let mut preset_actions = Vec::new();
         let apply_why = (export_count == 0).then_some("Open or select a photo first");
         let save_why = if has_doc { None } else { Some("Open a photo first") };
-        // The selected node, when it is one that can be bypassed or deleted
-        // (the same commands as its right-click menu in the graph).
-        let editable_node = self.editable_node();
-        let node_tools = crate::graph_ui::node_tools(&self.registry);
-        let add_after = self.doc.as_ref().map(|d| d.insertion_point(self.selected_node));
+        // The selected layer, when it can be deleted (not the Background).
+        let layer = self.layer;
+        let removable = has_doc && !layer.is_background();
 
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -1854,24 +1857,22 @@ impl EditorApp {
                     ui.close();
                 }
                 ui.separator();
-                let why = "Select a node in the graph first";
-                let bypass_label = if editable_node.is_some_and(|(_, on)| !on) { "Enable node" } else { "Bypass node" };
                 if ui
-                    .add_enabled(editable_node.is_some(), Button::new(bypass_label))
-                    .on_disabled_hover_text(why)
+                    .add_enabled(has_doc, Button::new("New layer"))
+                    .on_hover_text("An empty layer: draw its mask with Masks (B) or AI Select (A)")
+                    .on_disabled_hover_text("Open a photo first")
                     .clicked()
-                    && let Some((id, on)) = editable_node
                 {
-                    graph_actions.push(GraphAction::Enable(id, !on));
+                    panel_actions.push(PanelAction::NewLayer);
                     ui.close();
                 }
                 if ui
-                    .add_enabled(editable_node.is_some(), Button::new("Delete node").shortcut_text("Del"))
-                    .on_disabled_hover_text(why)
+                    .add_enabled(removable, Button::new("Delete layer").shortcut_text("Del"))
+                    .on_hover_text("Delete the selected layer with its mask and adjustments")
+                    .on_disabled_hover_text("Select a layer above the Background first")
                     .clicked()
-                    && let Some((id, _)) = editable_node
                 {
-                    graph_actions.push(GraphAction::Remove(id));
+                    panel_actions.push(PanelAction::RemoveLayer(layer));
                     ui.close();
                 }
                 ui.separator();
@@ -1893,26 +1894,6 @@ impl EditorApp {
                     for v in &variant_list {
                         if ui.radio(current_variant == Some(v.number), v.name.as_str()).clicked() {
                             switch_to = Some(v.number);
-                            ui.close();
-                        }
-                    }
-                });
-                ui.menu_button("Add node", |ui| {
-                    let Some(after) = add_after else {
-                        ui.add_enabled(false, Button::new("No photo open"));
-                        return;
-                    };
-                    let mut last = None;
-                    for (category, tool, name) in &node_tools {
-                        if last != Some(*category) {
-                            if last.is_some() {
-                                ui.separator();
-                            }
-                            ui.weak(crate::graph_ui::category_name(*category));
-                            last = Some(*category);
-                        }
-                        if ui.button(*name).on_hover_text("Added after the selected node, else at the end").clicked() {
-                            graph_actions.push(GraphAction::Add { after, tool: tool.clone() });
                             ui.close();
                         }
                     }
@@ -1950,6 +1931,14 @@ impl EditorApp {
                         }
                     }
                 });
+                if ui
+                    .button("Reset tool panels")
+                    .on_hover_text("Every tool panel back on the right, in the standard order, open")
+                    .clicked()
+                {
+                    panel_actions.push(PanelAction::ResetLayout);
+                    ui.close();
+                }
                 ui.menu_button("Workspace", |ui| {
                     // As in Capture One: the panels' sizes and view choices under a name.
                     if ui.button("Default").on_hover_text("The panels at their standard sizes").clicked() {
@@ -1991,14 +1980,12 @@ impl EditorApp {
             });
             ui.menu_button("Help", |ui| {
                 ui.label(format!("{APP_NAME} {VERSION}"));
-                ui.weak("Non-destructive RAW editor with nodes");
+                ui.weak("Non-destructive RAW editor with layers");
                 ui.weak("Copyright (C) 2026 MR \u{b7} GNU GPL version 3");
             });
         });
 
-        if !graph_actions.is_empty() {
-            self.apply_graph(graph_actions);
-        }
+        self.apply_panels(panel_actions);
         for action in preset_actions {
             self.preset_action(action);
         }
@@ -2294,19 +2281,21 @@ impl EditorApp {
                     self.wheel = 0.0;
                 }
             }
-            // The colour entering the selected node under the pointer (marked
-            // on the levels and curve), and a click for a waiting picker.
+            // The colour entering the tool of the picker (else of the panel
+            // last used) under the pointer, marked on the levels and curve,
+            // and a click for a waiting picker.
             let r = self.view.image_rect(image, &vp);
             let screen = to_egui_rect(r);
             // A point of the photo on screen, in the upright image (0–1), through the geometry.
             let at = |p: egui::Pos2| {
                 geometry.to_source([(p.x - r.x) / r.w.max(1.0), (p.y - r.y) / r.h.max(1.0)], frame_aspect, cropped)
             };
-            self.probe = match (self.selected_node, response.hover_pos()) {
-                (Some(node), Some(p)) => at(p).and_then(|a| doc.probe(&self.registry, node, a)),
+            let probed = self.pick.as_ref().map(|p| p.at.clone()).or_else(|| self.last_tool.clone());
+            self.probe = match (probed, response.hover_pos()) {
+                (Some(tool), Some(p)) => at(p).and_then(|a| doc.probe(&self.registry, &tool, a)).map(|rgb| (tool, rgb)),
                 _ => None,
             };
-            if let Some(pick) = self.pick {
+            if let Some(pick) = self.pick.clone() {
                 if response.hovered() {
                     ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                 }
@@ -2398,14 +2387,12 @@ impl EditorApp {
                     }
                     Some(ViewerTool::Perspective) => crate::geometry_ui::grid_overlay(ui, screen, &t),
                     Some(tool @ (ViewerTool::Masks | ViewerTool::AiSelect)) => {
-                        let node = self.selected_node.filter(|n| {
-                            matches!(doc.recipe().graph.node(*n).map(|x| &x.kind), Some(NodeKind::Tool(_)))
-                        });
-                        // The mask in red over the photo.
-                        if let Some(n) = node {
-                            let key = (doc.generation(), n, cropped);
+                        let layer = self.layer;
+                        // The mask in red over the photo (the Background has none).
+                        if !layer.is_background() {
+                            let key = (doc.generation(), layer, cropped);
                             self.mask_ui.draw_overlay(ui, screen, key, || {
-                                let (_, def) = doc.mask_of(n)?;
+                                let def = doc.mask_of(layer)?;
                                 let guide = engine::downscale(doc.preview(), 1024).ok()?;
                                 let rasters: &dyn masks::RasterSource = match editor::worker::mask_store() {
                                     Some(s) => s,
@@ -2426,12 +2413,12 @@ impl EditorApp {
                             let shown = geometry.to_shown(doc.upright_point(d), frame_aspect, cropped)?;
                             Some(egui::pos2(r.x + shown[0] * r.w, r.y + shown[1] * r.h))
                         };
-                        let def = node.and_then(|n| doc.mask_of(n)).map(|(_, d)| d.clone());
+                        let def = doc.mask_of(layer).cloned();
                         tool_drag = self.mask_ui.overlay(
                             ui,
                             &response,
                             tool,
-                            node,
+                            Some(layer),
                             def.as_ref(),
                             long_side,
                             &to_developed,
@@ -2441,9 +2428,9 @@ impl EditorApp {
                     }
                     // Retouch (T4): the Heal and Clone spots.
                     Some(tool @ (ViewerTool::Heal | ViewerTool::Clone)) => {
-                        let (reg, node) = (&self.registry, self.selected_node);
+                        let (reg, layer) = (&self.registry, self.layer);
                         tool_drag =
-                            self.retouch_ui.overlay(ui, &response, screen, doc, reg, node, tool, &mut retouch_edits);
+                            self.retouch_ui.overlay(ui, &response, screen, doc, reg, layer, tool, &mut retouch_edits);
                     }
                     _ => {}
                 }
@@ -2497,21 +2484,28 @@ impl EditorApp {
                     }
                 }
                 Some(tool @ (ViewerTool::Masks | ViewerTool::AiSelect)) => {
-                    let node = self.selected_node.and_then(|n| {
-                        let node = doc.recipe().graph.node(n)?;
-                        matches!(node.kind, NodeKind::Tool(_))
-                            .then(|| (n, crate::graph_ui::node_title(node, &self.registry)))
-                    });
-                    let def = node.as_ref().and_then(|(n, _)| doc.mask_of(*n)).map(|(_, d)| d.clone());
+                    let layer = self.layer;
+                    let name = doc.recipe().layers.layer(layer).map_or_else(
+                        || "a new layer".to_owned(),
+                        |l| {
+                            if l.name.is_empty() {
+                                "this layer".to_owned()
+                            } else {
+                                format!("\u{201c}{}\u{201d}", l.name)
+                            }
+                        },
+                    );
+                    let def = doc.mask_of(layer).cloned();
                     let busy = self.ai_job.is_some();
                     let brushes = self.presets.brush_names();
-                    self.mask_ui.options(ui.ctx(), rect, tool, node, def.as_ref(), busy, &brushes, &mut mask_edits);
+                    let target = Some((layer, name));
+                    self.mask_ui.options(ui.ctx(), rect, tool, target, def.as_ref(), busy, &brushes, &mut mask_edits);
                 }
                 // Retouch (T4): the Heal and Clone options bar.
                 Some(tool @ (ViewerTool::Heal | ViewerTool::Clone)) => {
-                    let (reg, node) = (&self.registry, self.selected_node);
+                    let (reg, layer) = (&self.registry, self.layer);
                     if let Some(next) =
-                        self.retouch_ui.options(ui.ctx(), rect, tool, doc, reg, node, &mut retouch_edits)
+                        self.retouch_ui.options(ui.ctx(), rect, tool, doc, reg, layer, &mut retouch_edits)
                     {
                         self.tool = Some(next);
                     }
@@ -2526,7 +2520,7 @@ impl EditorApp {
         self.apply_mask_edits(mask_edits, ui.ctx());
         // Retouch (T4): apply the Heal and Clone changes.
         if let Some(doc) = &mut self.doc
-            && let Some(problem) = self.retouch_ui.apply(doc, &self.registry, &mut self.selected_node, retouch_edits)
+            && let Some(problem) = self.retouch_ui.apply(doc, &self.registry, self.layer, retouch_edits)
         {
             self.toast = Some(error_toast(problem));
         }
@@ -2647,7 +2641,7 @@ impl EditorApp {
 }
 
 impl EditorApp {
-    /// Explorer and filmstrip side by side, History and Metadata below.
+    /// The Explorer, History and Metadata below.
     fn left_panel(&mut self, ui: &mut egui::Ui, library: &mut Vec<LibraryAction>, tabs: &mut Vec<TabAction>) {
         let t = Tokens::of(ui.ctx().theme());
         let generation = self.settings.layout_generation;
@@ -2681,97 +2675,71 @@ impl EditorApp {
         );
     }
 
-    /// The histogram (or waveform, or parade) above the settings of the
-    /// selected node; returns the scope chosen with its tabs.
-    fn right_panel(&self, ui: &mut egui::Ui, edits: &mut Vec<UiEdit>) -> (ScopeKind, Option<f32>) {
+    /// The histogram (or waveform, or parade) above the tool panels; returns
+    /// the scope chosen with its tabs.
+    fn right_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        edits: &mut Vec<(Option<ToolRef>, UiEdit)>,
+        spots: &mut Vec<crate::retouch_ui::RetouchEdit>,
+        actions: &mut Vec<PanelAction>,
+    ) -> (ScopeKind, Option<f32>) {
         let t = Tokens::of(ui.ctx().theme());
         let height = self.settings.layout.scope_height.unwrap_or(HISTOGRAM_HEIGHT[0]);
         let scope = self.scopes.show(ui, self.settings.layout.scope, self.histogram.as_deref(), height);
         let resized = crate::scopes::Scopes::resize_handle(ui, height);
         ui.add_space(SPACE[0]);
-        egui::ScrollArea::vertical().id_salt("node-settings").auto_shrink([false, false]).show(ui, |ui| {
-            match &self.doc {
-                None => {
-                    ui.add_space(SPACE[4]);
-                    ui.vertical_centered(|ui| {
-                        ui.label(RichText::new("No photo open").size(FONT[3]).strong());
-                        ui.label(
-                            RichText::new("Choose one in the filmstrip, or drop a photo here.").color(t.text_weak),
-                        );
-                    });
-                }
-                Some(doc) => {
-                    // Saved by a newer editor (or unreadable): say so above the settings.
-                    if let Some(why) = self.variant.as_ref().and_then(|s| s.read_only.as_deref()) {
-                        ui.add_space(SPACE[1]);
-                        Frame::NONE
-                            .fill(t.bg_raised)
-                            .stroke(egui::Stroke::new(1.0, t.warning))
-                            .corner_radius(egui::CornerRadius::same(4))
-                            .inner_margin(Margin::same(8))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.label(RichText::new(why).color(t.warning));
-                            });
-                        ui.add_space(SPACE[1]);
-                    }
-                    let export_summary = self.settings.export.summary();
-                    let cx = inspector::Context {
-                        registry: &self.registry,
-                        selected: self.selected_node,
-                        developing: self.developing.is_some(),
-                        export_summary: &export_summary,
-                        histogram: self.histogram.as_deref(),
-                        pick: self.pick,
-                        probe: self.probe,
-                        custom_lenses: &self.custom_lenses,
-                        camera_defaults: &self.camera_defaults,
-                    };
-                    // The selected node first, then the ones used just before it.
-                    let shown: Vec<NodeId> = if self.recent_nodes.is_empty() {
-                        self.selected_node.into_iter().collect()
-                    } else {
-                        self.recent_nodes.clone()
-                    };
-                    if shown.is_empty() {
-                        inspector::settings(ui, doc, cx, edits);
-                    }
-                    for (i, id) in shown.into_iter().enumerate() {
-                        if i > 0 {
-                            ui.add_space(SPACE[2]);
-                            ui.separator();
-                            ui.add_space(SPACE[1]);
-                        }
-                        ui.push_id(("aktis-recent-node", id), |ui| {
-                            inspector::settings(ui, doc, inspector::Context { selected: Some(id), ..cx }, edits);
-                        });
-                    }
-                }
-            }
-        });
+        let Some(doc) = &self.doc else {
+            ui.add_space(SPACE[4]);
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new("No photo open").size(FONT[3]).strong());
+                ui.label(RichText::new("Choose one in the filmstrip, or drop a photo here.").color(t.text_weak));
+            });
+            return (scope, resized);
+        };
+        // Saved by a newer editor (or unreadable): say so above the panels.
+        if let Some(why) = self.variant.as_ref().and_then(|s| s.read_only.as_deref()) {
+            Frame::NONE
+                .fill(t.bg_raised)
+                .stroke(egui::Stroke::new(1.0, t.warning))
+                .corner_radius(egui::CornerRadius::same(4))
+                .inner_margin(Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(why).color(t.warning));
+                });
+            ui.add_space(SPACE[1]);
+        }
+        let cx = inspector::Context {
+            registry: &self.registry,
+            developing: self.developing.is_some(),
+            histogram: self.histogram.as_deref(),
+            pick: self.pick.as_ref(),
+            probe: self.probe.as_ref().map(|(at, rgb)| (at, *rgb)),
+            custom_lenses: &self.custom_lenses,
+            camera_defaults: &self.camera_defaults,
+        };
+        let shown = crate::tool_panels::Shown { doc, cx, layer: self.layer };
+        self.panels.show(ui, &mut self.settings.panels, &shown, edits, spots, actions);
         (scope, resized)
     }
 
-    /// The photo, with the node graph under it when a photo is open.
+    /// The photo, with the filmstrip under it.
     fn center(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>, library: &mut Vec<LibraryAction>) {
         let t = Tokens::of(ui.ctx().theme());
-        let mut actions = Vec::new();
-        let mut graph_height = None;
-        if let Some(doc) = &self.doc {
-            let graph_panel = egui::Panel::bottom(egui::Id::unique(("node-graph", self.settings.layout_generation)))
-                .resizable(true)
-                .default_size(self.settings.layout.graph_height.unwrap_or(GRAPH_HEIGHT[0]))
-                .size_range(GRAPH_HEIGHT[1]..=GRAPH_HEIGHT[2])
-                .frame(Frame::NONE.fill(t.graph))
-                .show(ui, |ui| {
-                    actions = self.graph.show(ui, &doc.recipe().graph, &self.registry, self.selected_node);
-                });
-            graph_height = Some(graph_panel.response.rect.height());
-        }
-        if graph_height.is_some() {
-            self.settings.layout.graph_height = graph_height;
-        }
-        self.apply_graph(actions);
+        let strip = egui::Panel::bottom(egui::Id::unique(("filmstrip", self.settings.layout_generation)))
+            .resizable(true)
+            .default_size(self.settings.layout.filmstrip_height.unwrap_or(FILMSTRIP_HEIGHT[0]))
+            .size_range(FILMSTRIP_HEIGHT[1]..=FILMSTRIP_HEIGHT[2])
+            .frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(4, 4)))
+            .show(ui, |ui| {
+                let blocks = self.variant_blocks();
+                let current = self.doc.as_ref().map(|d| d.path().to_owned());
+                let list = self.variant_list();
+                let open = OpenVariants { number: self.variant.as_ref().map(|s| s.info.number), list: &list };
+                self.library.filmstrip(ui, current.as_deref(), open, blocks, library);
+            });
+        self.settings.layout.filmstrip_height = Some(strip.response.rect.height());
         let background = theme::viewer_background(self.settings.viewer_background, t.canvas);
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(background))
@@ -2810,15 +2778,16 @@ impl EditorApp {
         }
     }
 
-    /// Applies what the Masks and AI Select tools asked for: the new mask
-    /// definition (one undo step; a new mask node the first time), then the
-    /// AI models in the background when the mask has new AI parts. A style
-    /// brush's first stroke adds its nodes behind a new mask and selects
-    /// the first, so further strokes extend that mask.
+    /// Applies what the Masks and AI Select tools asked for: the new mask of
+    /// the selected layer (one undo step; on the Background, a new layer
+    /// with it, which becomes the selected one, as in Capture One), then
+    /// the AI models in the background when the mask has new AI parts. A
+    /// style brush's first stroke adds a layer with its adjustments and the
+    /// stroke as its mask, selected so further strokes extend it.
     fn apply_mask_edits(&mut self, edits: Vec<MaskEdit>, ctx: &egui::Context) {
         for edit in edits {
             let brush = self.mask_ui.brush;
-            let node = match edit {
+            let layer = match edit {
                 MaskEdit::ChooseStyleBrush(index) => {
                     self.preset_action(PresetAction::Arm(index));
                     continue;
@@ -2826,20 +2795,20 @@ impl EditorApp {
                 MaskEdit::StyleStroke { name, style, points } => {
                     let Some(doc) = &mut self.doc else { return };
                     let def = editor::masking::add_stroke(None, points, brush, false);
-                    match doc.add_style_brush(&self.registry, &name, style, def) {
-                        Ok(node) => self.selected_node = Some(node),
+                    match doc.add_layer(&self.registry, &name, def, style.tools) {
+                        Ok(layer) => self.select_layer(layer),
                         Err(e) => self.toast = Some(error_toast(format!("The style brush could not be added: {e}"))),
                     }
                     continue;
                 }
-                MaskEdit::Stroke { node, .. }
-                | MaskEdit::Click { node, .. }
-                | MaskEdit::Subject { node }
-                | MaskEdit::Fill { node }
-                | MaskEdit::Def { node, .. } => node,
+                MaskEdit::Stroke { layer, .. }
+                | MaskEdit::Click { layer, .. }
+                | MaskEdit::Subject { layer }
+                | MaskEdit::Fill { layer }
+                | MaskEdit::Def { layer, .. } => layer,
             };
             let Some(doc) = &mut self.doc else { return };
-            let current = doc.mask_of(node).map(|(_, d)| d.clone());
+            let current = doc.mask_of(layer).cloned();
             let def = match edit {
                 MaskEdit::Stroke { points, erase, .. } => {
                     editor::masking::add_stroke(current.as_ref(), points, brush, erase)
@@ -2852,12 +2821,17 @@ impl EditorApp {
                 MaskEdit::Def { def, .. } => def,
                 MaskEdit::ChooseStyleBrush(_) | MaskEdit::StyleStroke { .. } => continue,
             };
-            let result = match doc.mask_of(node).map(|(id, _)| id) {
-                Some(mask) => doc.set_mask(&self.registry, mask, def, None).map(|()| mask),
-                None => doc.add_mask(&self.registry, node, def),
+            let result = if current.is_some() {
+                doc.set_layer_mask(&self.registry, layer, def, None).map(|()| layer)
+            } else {
+                let name = doc.new_layer_name("Layer");
+                doc.add_layer(&self.registry, &name, def, Vec::new())
             };
             match result {
-                Ok(mask) => self.start_ai_mask(mask, ctx),
+                Ok(layer) => {
+                    self.select_layer(layer);
+                    self.start_ai_mask(layer, ctx);
+                }
                 Err(e) => self.toast = Some(error_toast(format!("That change was refused: {e}"))),
             }
         }
@@ -2895,7 +2869,7 @@ impl EditorApp {
             PresetAction::Save(brush) => {
                 let settings = self.brush_settings();
                 let Some(doc) = &self.doc else { return };
-                self.presets.open_save(doc.recipe(), &self.registry, brush, self.selected_node, settings);
+                self.presets.open_save(doc.recipe(), &self.registry, brush, self.layer, settings);
             }
             PresetAction::ShowFolder => match crate::presets_ui::ensure_folder(self.settings.presets_folder()) {
                 Ok(folder) => {
@@ -2953,7 +2927,7 @@ impl EditorApp {
         }
         let Some(entry) = self.presets.brushes().get(index).map(|e| (*e).clone()) else { return };
         let (style, missing) = editor::presets::usable(&entry.preset.style, &self.registry);
-        if style.nodes.is_empty() {
+        if style.tools.is_empty() {
             let names: Vec<&str> = missing.iter().map(ToolId::as_str).collect();
             self.toast = Some(error_toast(format!(
                 "\u{201c}{}\u{201d} paints tools this version lacks: {}",
@@ -2985,15 +2959,14 @@ impl EditorApp {
         }
     }
 
-    /// Runs the AI models for the parts of mask node `mask` that have no
+    /// Runs the AI models for the parts of the mask of `layer` that have no
     /// result yet (one job at a time; the next starts when it ends).
-    fn start_ai_mask(&mut self, mask: NodeId, ctx: &egui::Context) {
+    fn start_ai_mask(&mut self, layer: LayerId, ctx: &egui::Context) {
         if self.ai_job.is_some() {
             return;
         }
         let Some(doc) = &self.doc else { return };
-        let graph = &doc.recipe().graph;
-        let Some(def) = graph.node(mask).and_then(|n| n.mask.clone()) else { return };
+        let Some(def) = doc.mask_of(layer).cloned() else { return };
         let mut features = Vec::new();
         for (_, ai) in def.pending_ai() {
             features.push(match ai.target {
@@ -3017,7 +2990,7 @@ impl EditorApp {
             orientation: doc.orientation(),
         };
         let repaint = ctx.clone();
-        match AiMaskJob::start(photo, mask, def, move || repaint.request_repaint()) {
+        match AiMaskJob::start(photo, layer, def, move || repaint.request_repaint()) {
             Ok(job) => self.ai_job = Some(job),
             Err(e) => self.toast = Some(error_toast(format!("The AI selection could not start: {e}"))),
         }
@@ -3030,15 +3003,15 @@ impl EditorApp {
         let Some(doc) = &mut self.doc else { return };
         match result {
             Ok(computed) => {
-                let Some(current) = doc.recipe().graph.node(job.mask).and_then(|n| n.mask.clone()) else { return };
+                let Some(current) = doc.mask_of(job.layer).cloned() else { return };
                 let filled = editor::masking::fill_rasters(&current, &computed);
                 if filled != current
-                    && let Err(e) = doc.set_mask(&self.registry, job.mask, filled, None)
+                    && let Err(e) = doc.set_layer_mask(&self.registry, job.layer, filled, None)
                 {
                     self.toast = Some(error_toast(format!("The AI mask could not be kept: {e}")));
                 }
                 // Clicks made while the models ran.
-                self.start_ai_mask(job.mask, ctx);
+                self.start_ai_mask(job.layer, ctx);
             }
             Err(message) => self.toast = Some(error_toast(message)),
         }
@@ -3071,18 +3044,18 @@ impl EditorApp {
     }
 
     /// A click with a picker of the settings panel at the upright point `at`
-    /// (0–1): the colour entering its node there sets its values (one undo
+    /// (0–1): the colour entering its tool there sets its values (one undo
     /// step). The picker stops after one click.
     fn apply_pick(&mut self, pick: Pick, at: [f32; 2]) {
         self.pick = None;
         let Some(doc) = &mut self.doc else { return };
-        let Some(rgb) = doc.probe(&self.registry, pick.node, at) else { return };
-        let Some(values) = editor::adjust::pick_values(doc, &self.registry, pick, rgb) else {
+        let Some(rgb) = doc.probe(&self.registry, &pick.at, at) else { return };
+        let Some(values) = editor::adjust::pick_values(doc, &self.registry, &pick, rgb) else {
             self.toast =
                 Some(info_toast("Nothing to pick there: the colour is black, or a grey with no hue.".to_owned()));
             return;
         };
-        if let Err(e) = doc.set_params(&self.registry, pick.node, values, None) {
+        if let Err(e) = doc.set_params(&self.registry, &pick.at, values, None) {
             self.toast = Some(error_toast(format!("That change was refused: {e}")));
         }
     }
@@ -3096,7 +3069,7 @@ impl EditorApp {
             self.pick = None;
             return;
         }
-        if self.pick.is_some_and(|p| Some(p.node) != self.selected_node) {
+        if self.pick.as_ref().is_some_and(|p| p.at.layer != self.layer) {
             self.pick = None;
         }
         if ctx.egui_wants_keyboard_input() || ctx.any_popup_open() {
@@ -3117,15 +3090,15 @@ impl EditorApp {
                 return;
             }
         }
-        // Delete removes the selected node; Heal and Clone keep the key for their spots.
+        // Delete removes the selected layer; Heal and Clone keep the key for their spots.
         if !matches!(self.tool, Some(ViewerTool::Heal | ViewerTool::Clone))
-            && let Some((id, _)) = self.editable_node()
+            && !self.layer.is_background()
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
         {
-            self.apply_graph(vec![GraphAction::Remove(id)]);
-            if self.selected_node.is_none() {
+            self.apply_panels(vec![PanelAction::RemoveLayer(self.layer)]);
+            if self.layer.is_background() {
                 let undo = ctx.format_shortcut(&Command::Undo.shortcuts()[0]);
-                self.toast = Some(info_toast(format!("Node deleted. Undo with {undo}")));
+                self.toast = Some(info_toast(format!("Layer deleted. Undo with {undo}")));
             }
             return;
         }
@@ -3308,60 +3281,40 @@ impl EditorApp {
         }
     }
 
-    /// The selected node and whether it is on, when it is one that can be
-    /// bypassed or deleted (a tool or a mask, not the Source or the Output).
-    fn editable_node(&self) -> Option<(NodeId, bool)> {
-        let id = self.selected_node?;
-        let node = self.doc.as_ref()?.recipe().graph.node(id)?;
-        matches!(node.kind, NodeKind::Tool(_) | NodeKind::Mask).then_some((id, node.enabled))
-    }
-
-    /// Applies what the user did in the node graph.
-    fn apply_graph(&mut self, actions: Vec<GraphAction>) {
+    /// Applies what the user did in the Layers panel and the panel menus.
+    fn apply_panels(&mut self, actions: Vec<PanelAction>) {
         for action in actions {
+            if let PanelAction::ResetLayout = action {
+                self.settings.panels = crate::tool_panels::PanelLayout::default();
+                continue;
+            }
+            if let PanelAction::SelectLayer(layer) = action {
+                self.select_layer(layer);
+                continue;
+            }
+            let Some(doc) = &mut self.doc else { continue };
+            let reg = &self.registry;
             let result = match action {
-                GraphAction::Select(id) => {
-                    self.selected_node = Some(id);
-                    Ok(())
+                PanelAction::NewLayer => {
+                    let name = doc.new_layer_name("Layer");
+                    doc.add_layer(reg, &name, core_model::MaskDef::default(), Vec::new()).map(Some)
                 }
-                GraphAction::Deselect => {
-                    self.selected_node = None;
-                    Ok(())
-                }
-                GraphAction::Add { after, tool } => {
-                    let Some(doc) = &mut self.doc else { continue };
-                    let feature = ai_models::feature_for_tool(tool.as_str());
-                    // The camera's saved defaults, else the tool's own first values.
-                    let first = match self.camera_defaults.params(doc.camera(), &tool) {
-                        Some(saved) => saved.clone(),
-                        None => editor::adjust::initial_params(doc, tool.as_str()),
-                    };
-                    match doc.add_node_with(&self.registry, after, tool, first) {
-                        Ok(id) => {
-                            self.selected_node = Some(id);
-                            // A tool that needs AI models offers to download them.
-                            if let Some(feature) = feature {
-                                self.models.require(feature);
-                            }
-                            Ok(())
-                        }
-                        Err(e) => Err(format!("The node could not be added: {e}")),
+                PanelAction::RemoveLayer(layer) => doc.remove_layer(reg, layer).map(|()| Some(LayerId::BACKGROUND)),
+                PanelAction::RenameLayer(layer, name) => doc.rename_layer(reg, layer, &name).map(|()| None),
+                PanelAction::MoveLayer(layer, index) => doc.move_layer(reg, layer, index).map(|()| None),
+                PanelAction::LayerEnabled(layer, on) => doc.set_layer_enabled(reg, layer, on).map(|()| None),
+                PanelAction::LayerOpacity(layer, opacity) => match doc.mask_of(layer).cloned() {
+                    Some(mask) => {
+                        doc.set_layer_mask(reg, layer, core_model::MaskDef { opacity, ..mask }, None).map(|()| None)
                     }
-                }
-                GraphAction::Remove(id) => {
-                    let Some(doc) = &mut self.doc else { continue };
-                    if self.selected_node == Some(id) {
-                        self.selected_node = None;
-                    }
-                    doc.remove_node(&self.registry, id).map_err(|e| format!("The node could not be deleted: {e}"))
-                }
-                GraphAction::Enable(node, on) => {
-                    self.apply_edits(vec![UiEdit::Enabled { node, on }]);
-                    Ok(())
-                }
+                    None => Ok(None),
+                },
+                PanelAction::SelectLayer(_) | PanelAction::ResetLayout => Ok(None),
             };
-            if let Err(message) = result {
-                self.toast = Some(error_toast(message));
+            match result {
+                Ok(Some(layer)) => self.select_layer(layer),
+                Ok(None) => {}
+                Err(e) => self.toast = Some(error_toast(format!("That change was refused: {e}"))),
             }
         }
     }
@@ -3378,6 +3331,8 @@ impl eframe::App for EditorApp {
         self.poll_ai_mask(&ctx);
         let mut commands = Self::consume_shortcuts(&ctx);
         let mut edits = Vec::new();
+        let mut spot_edits = Vec::new();
+        let mut panel_actions = Vec::new();
         let mut library = Vec::new();
         let mut tabs = Vec::new();
         let current = self.doc.as_ref().map(|d| d.path().to_owned());
@@ -3395,6 +3350,7 @@ impl eframe::App for EditorApp {
             redo: self.doc.as_ref().and_then(Document::redo_label).map(|l| lowercase_first(&l)),
             exporting: self.exporting.is_some(),
             export_count: self.export_targets().len(),
+            export_summary: self.settings.export.summary(),
             active: self.tool,
             exposure_warning: self.settings.layout.exposure_warning,
         };
@@ -3438,28 +3394,12 @@ impl eframe::App for EditorApp {
             .frame(Frame::NONE.fill(t.bg))
             .show(ui, |ui| self.left_panel(ui, &mut library, &mut tabs));
         self.settings.layout.explorer_width = Some(explorer.response.rect.width());
-        let blocks = self.variant_blocks();
-        // The filmstrip, right of the Explorer: drag its right edge to widen
-        // it; the thumbnails grow, then line up in columns.
-        let max_strip = (ctx.content_rect().width() * 0.75).max(FILMSTRIP_WIDTH);
-        let strip = egui::Panel::left(panel("filmstrip"))
-            .resizable(true)
-            .default_size(layout.filmstrip_width.unwrap_or(FILMSTRIP_WIDTH).min(max_strip))
-            .size_range(FILMSTRIP_WIDTH..=max_strip)
-            .frame(Frame::NONE.fill(t.bar).inner_margin(Margin::symmetric(6, 6)))
-            .show(ui, |ui| {
-                let current = self.doc.as_ref().map(|d| d.path().to_owned());
-                let list = self.variant_list();
-                let open = OpenVariants { number: self.variant.as_ref().map(|s| s.info.number), list: &list };
-                self.library.filmstrip(ui, current.as_deref(), open, blocks, &mut library);
-            });
-        self.settings.layout.filmstrip_width = Some(strip.response.rect.width());
         let inspector = egui::Panel::right(panel("inspector"))
             .resizable(true)
             .default_size(layout.inspector_width.unwrap_or(INSPECTOR_WIDTH[0]))
             .size_range(INSPECTOR_WIDTH[1]..=INSPECTOR_WIDTH[2])
             .frame(Frame::NONE.fill(t.bg).inner_margin(Margin::symmetric(10, 4)))
-            .show(ui, |ui| self.right_panel(ui, &mut edits));
+            .show(ui, |ui| self.right_panel(ui, &mut edits, &mut spot_edits, &mut panel_actions));
         self.settings.layout.inspector_width = Some(inspector.response.rect.width());
         let (scope, scope_height) = inspector.inner;
         if scope != self.settings.layout.scope {
@@ -3504,6 +3444,12 @@ impl eframe::App for EditorApp {
         }
 
         self.apply_edits(edits);
+        if let Some(doc) = &mut self.doc
+            && let Some(problem) = self.retouch_ui.apply(doc, &self.registry, self.layer, spot_edits)
+        {
+            self.toast = Some(error_toast(problem));
+        }
+        self.apply_panels(panel_actions);
         self.apply_tabs(tabs);
         self.apply_library(library, &ctx);
         for command in commands {
@@ -3528,7 +3474,7 @@ impl eframe::App for EditorApp {
             if let Some(doc) = &self.doc {
                 self.plan.reset(doc.generation());
             }
-            self.node_problem = None;
+            self.tool_problem = None;
         }
         self.request_develop();
         self.request_render();
@@ -3539,7 +3485,6 @@ impl eframe::App for EditorApp {
     /// and the open variant when it changed.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.save_edit(false);
-        self.settings.last_node = self.doc.as_ref().and(self.selected_node).map(NodeId::get);
         eframe::set_value(storage, STORAGE_KEY, &self.settings);
     }
 }
@@ -3616,20 +3561,6 @@ enum WorkspaceAction {
     Save,
     /// Delete workspace `n`.
     Delete(usize),
-}
-
-/// Settings panels shown on the right: the selected node and the ones used before it.
-const RECENT_NODES: usize = 3;
-
-/// `recent` (newest first) with `selected` moved or added to the front,
-/// at most [`RECENT_NODES`] long.
-fn remember_recent(mut recent: Vec<NodeId>, selected: Option<NodeId>) -> Vec<NodeId> {
-    if let Some(id) = selected {
-        recent.retain(|&n| n != id);
-        recent.insert(0, id);
-    }
-    recent.truncate(RECENT_NODES);
-    recent
 }
 
 /// The second line of the GPU tooltip: how the open photo was opened.
@@ -3827,21 +3758,6 @@ mod tests {
         assert_eq!(screen_side(8256, Some(1.0)), MAX_PHOTO_SIDE);
         assert_eq!(screen_side(8256, Some(4.0)), MAX_PHOTO_SIDE);
         assert_eq!(screen_side(8256, None), MAX_PHOTO_SIDE);
-    }
-
-    #[test]
-    fn the_right_panel_keeps_the_last_three_nodes_newest_first() {
-        let n = NodeId::from_raw;
-        let mut recent = Vec::new();
-        for id in [1, 2, 3, 4] {
-            recent = remember_recent(recent, Some(n(id)));
-        }
-        assert_eq!(recent, vec![n(4), n(3), n(2)]);
-        // Selecting one already shown moves it to the top, nothing is lost.
-        recent = remember_recent(recent, Some(n(2)));
-        assert_eq!(recent, vec![n(2), n(4), n(3)]);
-        // Nothing selected: the panels stay.
-        assert_eq!(remember_recent(recent.clone(), None), recent);
     }
 
     #[test]

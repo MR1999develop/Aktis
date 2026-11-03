@@ -32,8 +32,8 @@ use std::time::Instant;
 use args::{Command, DevelopArgs, MaskArgs, TagArgs};
 use commands::{Edit, EditSession};
 use core_model::{
-    DevelopSettings, ImageF32, LensSettings, MaskImage, NodeId, Orientation, ParamId, ParamValue, ProfileChoice,
-    Recipe, ToolId, WorkingSpace,
+    DevelopSettings, ImageF32, LensSettings, MaskImage, Orientation, ParamId, ParamValue, ProfileChoice, Recipe,
+    StyleTool, ToolId, ToolRef, WorkingSpace,
 };
 use develop::prepare;
 use engine::{Engine, EngineChoice};
@@ -94,26 +94,26 @@ fn chain(e: &dyn std::error::Error) -> String {
     s
 }
 
-/// Inserts `tool` after the node currently feeding the Output and sets its
-/// float parameters.
-fn append_node(
+/// The float parameters `values` of `tool`, as a style tool.
+fn tool_values(tool: &str, values: &[(&str, f32)]) -> Result<StyleTool, BoxError> {
+    let mut params = core_model::Params::new();
+    for (param, value) in values {
+        params.set(ParamId::new(param)?, ParamValue::Float(*value));
+    }
+    Ok(StyleTool { tool: ToolId::new(tool)?, params })
+}
+
+/// Sets the float parameters `values` of `tool` on the Background.
+fn set_on_background(
     session: &mut EditSession,
     registry: &ToolRegistry,
     tool: &str,
     values: &[(&str, f32)],
-) -> Result<NodeId, BoxError> {
-    let output = session.recipe().graph.output();
-    let last = session.recipe().graph.input_link(output, 0).ok_or("the output is not connected")?.from;
-    session.apply(
-        registry,
-        Edit::InsertSerial { after: last, tool: ToolId::new(tool)?, params: core_model::Params::new() },
-    )?;
-    let node = session.recipe().graph.input_link(output, 0).ok_or("new node not connected")?.from;
-    for (param, value) in values {
-        session
-            .apply(registry, Edit::SetParam { node, param: ParamId::new(param)?, value: ParamValue::Float(*value) })?;
-    }
-    Ok(node)
+) -> Result<(), BoxError> {
+    let t = tool_values(tool, values)?;
+    let values = t.params.iter().map(|(p, v)| (p.clone(), *v)).collect();
+    session.apply(registry, Edit::SetParams { at: ToolRef::background(t.tool), values })?;
+    Ok(())
 }
 
 fn gpu_info() -> Result<(), BoxError> {
@@ -260,14 +260,15 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
         };
         session.apply(engine.registry(), Edit::SetLensCorrection(lens))?;
     }
-    let mut exposure_node = None;
-    if let Some(stops) = a.exposure {
-        exposure_node =
-            Some(append_node(&mut session, engine.registry(), "exposure", &[(tool_exposure::EXPOSURE, stops)])?);
+    // Without a selection the exposure acts on the whole photo; with one,
+    // on a layer masked to it (below).
+    if let Some(stops) = a.exposure
+        && a.selection.is_empty()
+    {
+        set_on_background(&mut session, engine.registry(), "exposure", &[(tool_exposure::EXPOSURE, stops)])?;
     }
     if let Some((grain, color)) = a.denoise {
-        // After the exposure: the network judges noise at the final brightness.
-        append_node(&mut session, engine.registry(), "denoise_ai", &[("grain", grain), ("color", color)])?;
+        set_on_background(&mut session, engine.registry(), "denoise_ai", &[("grain", grain), ("color", color)])?;
     }
     let develop_settings = session.recipe().develop.clone();
     let recipe = session.recipe();
@@ -293,15 +294,16 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
     }
     let developed_at = started.elapsed();
 
-    // An AI or brush selection restricts the exposure to it.
+    // An AI or brush selection is the mask of a layer with the exposure.
     let ai = if a.selection.is_empty() {
         None
     } else {
-        let node = exposure_node.ok_or("a selection needs an adjustment to restrict: add --exposure")?;
+        let stops = a.exposure.ok_or("a selection needs an adjustment to restrict: add --exposure")?;
         let ai = ai::Ai::open()?;
         let id = image_id(&a.input, &develop_settings)?;
-        let def = ai.build(&a.selection, &id, &developed.image, raw.orientation)?;
-        session.apply(engine.registry(), Edit::AddMask { to: node, def })?;
+        let mask = ai.build(&a.selection, &id, &developed.image, raw.orientation)?;
+        let tools = vec![tool_values("exposure", &[(tool_exposure::EXPOSURE, stops)])?];
+        session.apply(engine.registry(), Edit::AddLayer { name: "Selection".to_owned(), mask, tools })?;
         Some(ai)
     };
     let masked_at = started.elapsed();
@@ -311,23 +313,25 @@ fn develop(a: &DevelopArgs) -> Result<(), BoxError> {
         None => &no_rasters,
     };
 
-    let rendered = engine.render_with_masks(&session.recipe().graph, &developed.image, rasters)?;
+    let rendered = engine.render_with_masks(&session.recipe().layers, &developed.image, rasters);
     if let Some(why) = &rendered.gpu_failure {
         eprintln!("aktis-cli: warning: the GPU failed ({why}); rendered on the CPU");
     }
     for t in &rendered.missing_tools {
-        eprintln!("aktis-cli: warning: tool '{t}' is not in this build; its node was skipped");
+        eprintln!("aktis-cli: warning: tool '{t}' is not in this build; it was skipped");
     }
-    for (node, e) in &rendered.tool_errors {
-        eprintln!("aktis-cli: warning: node {node} was skipped: {e}");
+    for (at, e) in &rendered.tool_errors {
+        eprintln!("aktis-cli: warning: {at} was skipped: {e}");
     }
     if a.denoise.is_some()
         && let Some(status) = engine::ai_denoise_status()
     {
         eprintln!("aktis-cli: AI denoise: {status}");
     }
-    for (node, component) in &rendered.missing_masks {
-        eprintln!("aktis-cli: warning: mask {node} part {component} is not computed; it selected nothing");
+    for (layer, component) in &rendered.missing_masks {
+        eprintln!(
+            "aktis-cli: warning: the mask of layer {layer}, part {component}, is not computed; it selected nothing"
+        );
     }
     let rendered_at = started.elapsed();
 

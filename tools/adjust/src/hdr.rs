@@ -9,12 +9,12 @@
 //!
 //! The gain depends on each pixel's own luminance; Capture One also looks
 //! at the neighbourhood (local tone mapping), which keeps more contrast in
-//! the recovered areas. That is planned as a later version of this node.
+//! the recovered areas. That is planned as a later version of this tool.
 
 use std::sync::LazyLock;
 
 use core_model::ImageF32;
-use tool_api::{Category, GpuKernel, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId};
+use tool_api::{Category, GpuKernel, ResolvedParams, Tool, ToolDescriptor, ToolId};
 
 use crate::common::{luma, slider, smoothstep, stops_from_grey};
 
@@ -32,7 +32,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     version: 1,
     name: "High dynamic range",
     category: Category::Exposure,
-    stage: Stage::Graph,
+    order: 60,
     params: vec![
         slider(HIGHLIGHT, "Highlight"),
         slider(SHADOW, "Shadow"),

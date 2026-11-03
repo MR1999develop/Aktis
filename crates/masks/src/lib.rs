@@ -1,6 +1,6 @@
 //! Builds mask images from mask definitions.
 //!
-//! A mask node's [`core_model::MaskDef`] says *what* to select; this crate
+//! A layer's [`core_model::MaskDef`] says *what* to select; this crate
 //! turns it into values at the resolution being rendered: AI rasters scaled
 //! up, their uncertain parts decided by colour and their edges snapped to the
 //! image's, components combined, feather,

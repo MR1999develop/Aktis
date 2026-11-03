@@ -110,11 +110,6 @@ impl Value {
     pub(crate) fn as_u32(&self, what: &str) -> Result<u32, String> {
         u32::try_from(self.as_u64(what)?).map_err(|_| format!("{what}: number too large"))
     }
-
-    /// A whole number that fits a `u8`.
-    pub(crate) fn as_u8(&self, what: &str) -> Result<u8, String> {
-        u8::try_from(self.as_u64(what)?).map_err(|_| format!("{what}: number too large"))
-    }
 }
 
 /// The value of `key` in an object's fields.
@@ -484,7 +479,6 @@ mod tests {
     fn numbers_are_checked_by_kind() {
         let v = parse("[300, -1, 1.5, 4294967296]").unwrap();
         let items = v.as_array("v").unwrap();
-        assert!(items[0].as_u8("n").is_err());
         assert_eq!(items[0].as_u32("n").unwrap(), 300);
         assert!(items[1].as_u32("n").is_err());
         assert!(items[2].as_u32("n").is_err());

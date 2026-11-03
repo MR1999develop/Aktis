@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use commands::{Edit, EditSession};
-use core_model::{ImageF32, ParamValue, Params, Recipe, Rgba, WorkingSpace};
+use core_model::{ImageF32, ParamValue, Params, Recipe, Rgba, ToolRef, WorkingSpace};
 use gpu::{GpuContext, GpuRenderer};
 use tool_api::{GpuKernel, ParamKind, ToolRegistry};
 
@@ -66,11 +66,11 @@ fn every_adjustment_kernel_matches_its_cpu_reference() {
                 }
             }
             let mut s = EditSession::new(Recipe::default());
-            let source = s.recipe().graph.source();
-            s.apply(&reg, Edit::InsertSerial { after: source, tool: d.id.clone(), params }).expect("insert");
-            let graph = s.recipe().graph.clone();
-            let cpu = render_cpu::render(&graph, &reg, &src).expect("cpu").image;
-            let gpu_img = gpu.render(&graph, &reg, &src).expect("gpu").image;
+            let values = params.iter().map(|(p, v)| (p.clone(), *v)).collect();
+            s.apply(&reg, Edit::SetParams { at: ToolRef::background(d.id.clone()), values }).expect("set");
+            let layers = s.recipe().layers.clone();
+            let cpu = render_cpu::render(&layers, &reg, &src).image;
+            let gpu_img = gpu.render(&layers, &reg, &src).expect("gpu").image;
             for (i, (g, c)) in gpu_img.pixels().iter().zip(cpu.pixels()).enumerate() {
                 let scale = c[0].abs().max(c[1].abs()).max(c[2].abs()).max(1.0);
                 for k in 0..4 {

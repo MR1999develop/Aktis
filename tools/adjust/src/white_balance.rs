@@ -2,14 +2,14 @@
 //! source or custom), a colour temperature in kelvin and a tint.
 //!
 //! The Source develops the RAW file for the light the camera measured ("as
-//! shot"). This node says the light was another one, `kelvin` and `tint`:
+//! shot"). This tool says the light was another one, `kelvin` and `tint`:
 //! colours are taken back to the scene under the as-shot light and adapted
 //! from the new light to the working space's white (Bradford), one 3×3
 //! matrix per image ([`core_color::rebalance`]).
 //!
-//! The as-shot light is stored in the node (`shot_kelvin`, `shot_tint`),
-//! written by the editor when it adds the node, so the recipe alone says
-//! what the node does. The mode only records how the values were chosen;
+//! The as-shot light is stored with the tool (`shot_kelvin`, `shot_tint`),
+//! written by the editor when a layer starts using it, so the recipe alone
+//! says what the tool does. The mode only records how the values were chosen;
 //! the editor sets `kelvin` and `tint` when it changes.
 
 use std::sync::LazyLock;
@@ -17,8 +17,7 @@ use std::sync::LazyLock;
 use core_color::{REC2020_TO_XYZ, kelvin_tint_to_xy, rebalance, white_of, xy_to_kelvin_tint};
 use core_model::{ImageF32, Matrix3};
 use tool_api::{
-    Category, GpuKernel, MAX_PARAMS, ParamDescriptor, ParamKind, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId,
-    Unit,
+    Category, GpuKernel, MAX_PARAMS, ParamDescriptor, ParamKind, ResolvedParams, Tool, ToolDescriptor, ToolId, Unit,
 };
 
 use crate::common::{float, pid};
@@ -125,7 +124,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     version: 1,
     name: "White balance",
     category: Category::Color,
-    stage: Stage::Graph,
+    order: 40,
     params: vec![
         ParamDescriptor {
             id: pid(MODE),

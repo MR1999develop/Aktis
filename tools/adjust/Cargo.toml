@@ -1,6 +1,6 @@
 [package]
 name = "tool-adjust"
-description = "The adjustment nodes: white balance, high dynamic range, levels, curve, colour balance, colour editor, black & white, vignetting, clarity, dehaze and retouch (heal and clone spots)."
+description = "The adjustment tools: white balance, high dynamic range, levels, curve, colour balance, colour editor, black & white, vignetting, clarity, dehaze and retouch (heal and clone spots)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

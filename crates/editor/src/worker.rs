@@ -20,7 +20,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use core_model::{ImageF32, NodeGraph, Orientation, WorkingSpace};
+use core_model::{ImageF32, Layers, Orientation, WorkingSpace};
 use engine::{Backend, Engine, EngineChoice, Rgb8Image};
 use tool_api::ToolRegistry;
 
@@ -88,8 +88,8 @@ pub struct RenderRequest {
     pub generation: u64,
     /// Which source.
     pub quality: Quality,
-    /// The node graph to evaluate.
-    pub graph: NodeGraph,
+    /// The layers to render.
+    pub layers: Layers,
     /// The developed image to start from.
     pub source: Arc<ImageF32>,
     /// How to turn the result upright.
@@ -145,9 +145,9 @@ pub enum Event {
         backend: Backend,
         /// Why the GPU was skipped, if it failed and the CPU took over.
         gpu_failure: Option<String>,
-        /// Nodes that could not run and were passed through, as messages for
+        /// Tools that could not run and were passed through, as messages for
         /// the user ("AI denoise: no SCUNet model found …").
-        node_problems: Vec<String>,
+        tool_problems: Vec<String>,
         /// Levels of the displayed pixels.
         histogram: Box<Histogram>,
         /// How long it took.
@@ -244,7 +244,7 @@ impl Prefetch {
 /// Time spent on one screen render, shown in the status bar.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RenderTiming {
-    /// Evaluating the graph (GPU or CPU).
+    /// Rendering the layers (GPU or CPU).
     pub render: Duration,
     /// Turning the result into upright 8-bit pixels and the histogram.
     pub display: Duration,
@@ -616,10 +616,7 @@ fn preview_loop(
 
 fn render_for_screen(engine: &Engine, req: &RenderRequest) -> Event {
     let started = Instant::now();
-    let rendered = match engine.render_with_masks(&req.graph, &req.source, rasters()) {
-        Ok(r) => r,
-        Err(e) => return Event::RenderFailed { generation: req.generation, message: e.to_string() },
-    };
+    let rendered = engine.render_with_masks(&req.layers, &req.source, rasters());
     let rendered_at = Instant::now();
     match engine::to_display_geometry(
         &rendered.image,
@@ -638,7 +635,7 @@ fn render_for_screen(engine: &Engine, req: &RenderRequest) -> Event {
             image,
             backend: rendered.backend,
             gpu_failure: rendered.gpu_failure,
-            node_problems: rendered.tool_errors.iter().map(|(_, e)| e.to_string()).collect(),
+            tool_problems: rendered.tool_errors.iter().map(|(_, e)| e.to_string()).collect(),
         },
         Err(e) => Event::RenderFailed { generation: req.generation, message: e.to_string() },
     }
@@ -969,7 +966,7 @@ mod tests {
         worker.render(RenderRequest {
             generation: 7,
             quality: Quality::Preview,
-            graph: NodeGraph::new(),
+            layers: Layers::new(),
             source: Arc::new(img),
             orientation: Orientation::Rotate90,
             max_side: 4096,

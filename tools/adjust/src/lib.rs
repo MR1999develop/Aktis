@@ -1,4 +1,4 @@
-//! The adjustment nodes, modelled on Capture One's tools.
+//! The adjustment tools, modelled on Capture One's.
 //!
 //! Each module is one tool. The per-pixel ones have a CPU reference
 //! ([`tool_api::Tool::apply_cpu`]) and a WGSL kernel computing the same

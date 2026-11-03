@@ -16,9 +16,7 @@
 use std::sync::LazyLock;
 
 use core_model::ImageF32;
-use tool_api::{
-    Category, GpuKernel, MAX_PARAMS, ParamDescriptor, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId, Unit,
-};
+use tool_api::{Category, GpuKernel, MAX_PARAMS, ParamDescriptor, ResolvedParams, Tool, ToolDescriptor, ToolId, Unit};
 
 use crate::common::{float, luma};
 
@@ -61,7 +59,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| {
         version: 1,
         name: "Curve",
         category: Category::Exposure,
-        stage: Stage::Graph,
+        order: 80,
         params,
     }
 });
@@ -137,7 +135,7 @@ impl Spline {
         s
     }
 
-    /// The curve of `curve` (an index into [`CURVES`]) in a node's parameters.
+    /// The curve of `curve` (an index into [`CURVES`]) in a tool's parameters.
     #[must_use]
     pub fn of(params: &ResolvedParams, curve: usize) -> Self {
         Self::new(&points(params, curve))
@@ -180,7 +178,7 @@ impl Spline {
     }
 }
 
-/// The points of curve `curve` as stored in a node's parameters.
+/// The points of curve `curve` as stored in a tool's parameters.
 #[must_use]
 pub fn points(params: &ResolvedParams, curve: usize) -> Vec<[f32; 2]> {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small count, clamped by the descriptor

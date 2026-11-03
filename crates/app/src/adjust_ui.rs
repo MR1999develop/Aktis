@@ -18,9 +18,9 @@
 //! [`UiEdit`]s. The colour under the pointer in the viewer is marked on the
 //! histogram and the curve.
 
-use core_model::{NodeId, ParamId, ParamValue};
+use core_model::{ParamId, ParamValue};
 use editor::adjust::{self, Pick, PickKind};
-use editor::{Histogram, NodeRow, ParamRow};
+use editor::{Histogram, ParamRow, ToolRow};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, RichText, Sense, Shape, Stroke, pos2, vec2,
 };
@@ -32,14 +32,14 @@ use crate::icons;
 use crate::inspector::{UiEdit, float_slider};
 use crate::theme::{CHANNEL, FONT, HISTOGRAM, KELVIN_STRIP, SPACE, TINT_STRIP, Tokens};
 
-/// What the panels need besides the node.
+/// What the panels need besides the tool.
 #[derive(Debug, Clone, Copy)]
 pub struct PanelContext<'a> {
     /// Levels of the image on screen.
     pub histogram: Option<&'a Histogram>,
     /// The picker waiting for a click in the viewer.
-    pub pick: Option<Pick>,
-    /// The colour entering the node under the pointer in the viewer.
+    pub pick: Option<&'a Pick>,
+    /// The colour entering the tool under the pointer in the viewer.
     pub probe: Option<[f32; 3]>,
 }
 
@@ -47,18 +47,18 @@ pub(crate) fn pid(id: &str) -> ParamId {
     ParamId::new(id).expect("tool parameter ids are valid")
 }
 
-pub(crate) fn param<'r>(row: &'r NodeRow, id: &str) -> Option<&'r ParamRow> {
+pub(crate) fn param<'r>(row: &'r ToolRow, id: &str) -> Option<&'r ParamRow> {
     row.params.iter().find(|p| p.descriptor.id.as_str() == id)
 }
 
-pub(crate) fn float(row: &NodeRow, id: &str) -> f32 {
+pub(crate) fn float(row: &ToolRow, id: &str) -> f32 {
     match param(row, id).map(|p| p.value) {
         Some(ParamValue::Float(v)) => v,
         _ => 0.0,
     }
 }
 
-pub(crate) fn choice(row: &NodeRow, id: &str) -> u32 {
+pub(crate) fn choice(row: &ToolRow, id: &str) -> u32 {
     match param(row, id).map(|p| p.value) {
         Some(ParamValue::Choice(v)) => v,
         _ => 0,
@@ -82,8 +82,8 @@ pub(crate) fn picker_button(ui: &mut egui::Ui, active: bool, tip: &str) -> bool 
 }
 
 /// The edit that turns picker `pick` on, or off when it is the one waiting.
-pub(crate) fn toggle_pick(current: Option<Pick>, pick: Pick) -> UiEdit {
-    UiEdit::Pick(if current == Some(pick) { None } else { Some(pick) })
+pub(crate) fn toggle_pick(current: Option<&Pick>, pick: &Pick) -> UiEdit {
+    UiEdit::Pick(if current == Some(pick) { None } else { Some(pick.clone()) })
 }
 
 /// A horizontal colour strip from `ends[0]` to `ends[1]`.
@@ -125,24 +125,24 @@ pub(crate) fn tabs(ui: &mut egui::Ui, names: &[&str], current: usize) -> usize {
 // White balance
 
 /// Mode, picker, kelvin and tint.
-pub fn white_balance(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
+pub fn white_balance(ui: &mut egui::Ui, row: &ToolRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
-    let node = row.node;
+    let tool = &row.at;
     let mode = Mode::from_index(choice(row, white_balance::MODE));
-    let neutral = Pick { node, kind: PickKind::Neutral, channel: 0 };
+    let neutral = Pick { at: tool.clone(), kind: PickKind::Neutral, channel: 0 };
     ui.horizontal(|ui| {
         ui.label(RichText::new("Mode").color(t.text_weak));
-        egui::ComboBox::from_id_salt((node, "wb-mode")).selected_text(mode.label()).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt((tool, "wb-mode")).selected_text(mode.label()).show_ui(ui, |ui| {
             for m in Mode::ALL {
                 // Choosing Auto again estimates again (the image may have changed).
                 if ui.selectable_label(m == mode, m.label()).clicked() && (m != mode || m == Mode::Auto) {
-                    edits.push(UiEdit::WbMode { node, mode: m });
+                    edits.push(UiEdit::WbMode { mode: m });
                 }
             }
         });
-        let active = cx.pick == Some(neutral);
+        let active = cx.pick == Some(&neutral);
         if picker_button(ui, active, "Pick something that should be neutral grey in the photo") {
-            edits.push(toggle_pick(cx.pick, neutral));
+            edits.push(toggle_pick(cx.pick, &neutral));
         }
     });
     ui.add_space(SPACE[1]);
@@ -151,7 +151,7 @@ pub fn white_balance(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edi
         let ParamValue::Float(v) = p.value else { continue };
         ui.label(RichText::new(p.descriptor.label).color(t.text_weak));
         let start = edits.len();
-        let (response, track) = float_slider(ui, node, &p.descriptor, v, edits);
+        let (response, track) = float_slider(ui, &p.descriptor, v, edits);
         let r = response.rect;
         let bar = Rect::from_min_size(pos2(r.left(), r.bottom() + 1.0), vec2(track, 3.0));
         strip(ui.painter(), bar, ends);
@@ -160,8 +160,7 @@ pub fn white_balance(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edi
         if mode != Mode::Custom {
             for e in &mut edits[start..] {
                 let custom = match e {
-                    UiEdit::Set { node, param, value, in_drag } => Some(UiEdit::SetMany {
-                        node: *node,
+                    UiEdit::Set { param, value, in_drag } => Some(UiEdit::SetMany {
                         key: param.clone(),
                         values: vec![
                             (param.clone(), *value),
@@ -179,7 +178,7 @@ pub fn white_balance(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edi
     }
     let (k, tint) = (float(row, white_balance::SHOT_KELVIN), float(row, white_balance::SHOT_TINT));
     ui.label(RichText::new(format!("As shot: {k:.0} K, tint {tint:+.1}")).size(FONT[0]).color(t.text_weak));
-    if cx.pick == Some(neutral) {
+    if cx.pick == Some(&neutral) {
         ui.label(
             RichText::new("Click a grey or white area in the photo (Esc to stop).").size(FONT[0]).color(t.accent_text),
         );
@@ -189,7 +188,7 @@ pub fn white_balance(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edi
 // ---------------------------------------------------------------------------
 // Levels
 
-fn levels_set(row: &NodeRow, c: usize) -> levels::Set {
+fn levels_set(row: &ToolRow, c: usize) -> levels::Set {
     let v = |i| float(row, &levels::param_id(c, i));
     levels::Set { in_black: v(0), in_white: v(1), midtone: v(2), out_black: v(3), out_white: v(4) }
 }
@@ -231,15 +230,15 @@ fn handle(painter: &egui::Painter, x: f32, top: f32, fill: Color32, stroke: Colo
 }
 
 /// A number field for a value (levels, a colour range's centre and width).
-pub(crate) fn number(ui: &mut egui::Ui, node: NodeId, id: &str, value: f32, range: [f32; 2], edits: &mut Vec<UiEdit>) {
+pub(crate) fn number(ui: &mut egui::Ui, id: &str, value: f32, range: [f32; 2], edits: &mut Vec<UiEdit>) {
     let mut v = value;
     let response = ui.add(egui::DragValue::new(&mut v).range(range[0]..=range[1]).speed(1.0).fixed_decimals(0));
     let param = pid(id);
     if response.drag_started() {
-        edits.push(UiEdit::BeginDrag { node, param: param.clone() });
+        edits.push(UiEdit::BeginDrag { param: param.clone() });
     }
     if response.changed() {
-        edits.push(UiEdit::Set { node, param, value: ParamValue::Float(v), in_drag: response.dragged() });
+        edits.push(UiEdit::Set { param, value: ParamValue::Float(v), in_drag: response.dragged() });
     }
     if response.drag_stopped() {
         edits.push(UiEdit::EndDrag);
@@ -247,10 +246,10 @@ pub(crate) fn number(ui: &mut egui::Ui, node: NodeId, id: &str, value: f32, rang
 }
 
 /// Tabs, histogram with handles, output strip, numbers and pickers.
-pub fn levels(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
+pub fn levels(ui: &mut egui::Ui, row: &ToolRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
-    let node = row.node;
-    let tab_id = Id::unique(("aktis-levels-tab", node));
+    let tool = &row.at;
+    let tab_id = Id::unique(("aktis-levels-tab", tool));
     let names: Vec<&str> = CHANNELS.iter().map(|c| c.1).collect();
     let c = tabs(ui, &names, remembered::<usize>(ui, tab_id)).min(CHANNELS.len() - 1);
     remember(ui, tab_id, c);
@@ -295,7 +294,7 @@ pub fn levels(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mu
         .line_segment([pos2(plot.left(), plot.bottom()), pos2(plot.right(), plot.bottom())], Stroke::new(1.0, color));
 
     // Dragging the handle nearest to where the drag started: 0 black, 1 white, 2 midtone.
-    let drag_id = Id::unique(("aktis-levels-handle", node));
+    let drag_id = Id::unique(("aktis-levels-handle", tool));
     if response.drag_started()
         && let Some(p) = response.interact_pointer_pos()
     {
@@ -307,7 +306,7 @@ pub fn levels(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mu
             .map(|(k, _)| k);
         remember(ui, drag_id, near);
         if let Some(k) = near {
-            edits.push(UiEdit::BeginDrag { node, param: pid(&levels::param_id(c, usize::from(k))) });
+            edits.push(UiEdit::BeginDrag { param: pid(&levels::param_id(c, usize::from(k))) });
         }
     }
     if let Some(k) = remembered::<Option<u8>>(ui, drag_id)
@@ -321,7 +320,6 @@ pub fn levels(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mu
             _ => (2, adjust::midtone_for_position(&set, x).round()),
         };
         edits.push(UiEdit::Set {
-            node,
             param: pid(&levels::param_id(c, which)),
             value: ParamValue::Float(value),
             in_drag: true,
@@ -341,25 +339,20 @@ pub fn levels(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mu
     let ox = |v: f32| bar.left() + v / 255.0 * bar.width();
     handle(&out_painter, ox(set.out_black), bar.bottom() + 2.0, Color32::BLACK, t.text_strong);
     handle(&out_painter, ox(set.out_white), bar.bottom() + 2.0, Color32::WHITE, t.stroke_strong);
-    let out_drag = Id::unique(("aktis-levels-out", node));
+    let out_drag = Id::unique(("aktis-levels-out", tool));
     if out_response.drag_started()
         && let Some(p) = out_response.interact_pointer_pos()
     {
         let near = if (ox(set.out_black) - p.x).abs() <= (ox(set.out_white) - p.x).abs() { 3 } else { 4 };
         remember(ui, out_drag, Some(near));
-        edits.push(UiEdit::BeginDrag { node, param: pid(&levels::param_id(c, near)) });
+        edits.push(UiEdit::BeginDrag { param: pid(&levels::param_id(c, near)) });
     }
     if let Some(which) = remembered::<Option<usize>>(ui, out_drag)
         && (out_response.dragged() || out_response.drag_started())
         && let Some(p) = out_response.interact_pointer_pos()
     {
         let v = ((p.x - bar.left()) / bar.width() * 255.0).clamp(0.0, 255.0).round();
-        edits.push(UiEdit::Set {
-            node,
-            param: pid(&levels::param_id(c, which)),
-            value: ParamValue::Float(v),
-            in_drag: true,
-        });
+        edits.push(UiEdit::Set { param: pid(&levels::param_id(c, which)), value: ParamValue::Float(v), in_drag: true });
     }
     if out_response.drag_stopped() {
         remember::<Option<usize>>(ui, out_drag, None);
@@ -369,33 +362,33 @@ pub fn levels(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mu
     // The values as numbers, and the pickers.
     ui.horizontal(|ui| {
         ui.label(RichText::new("Input").color(t.text_weak));
-        number(ui, node, &levels::param_id(c, 0), set.in_black, [0.0, 254.0], edits);
+        number(ui, &levels::param_id(c, 0), set.in_black, [0.0, 254.0], edits);
         let mut m = set.midtone;
         let response = ui.add(egui::DragValue::new(&mut m).range(-100.0..=100.0).speed(0.5).fixed_decimals(0));
         let midtone = pid(&levels::param_id(c, 2));
         if response.drag_started() {
-            edits.push(UiEdit::BeginDrag { node, param: midtone.clone() });
+            edits.push(UiEdit::BeginDrag { param: midtone.clone() });
         }
         if response.changed() {
-            edits.push(UiEdit::Set { node, param: midtone, value: ParamValue::Float(m), in_drag: response.dragged() });
+            edits.push(UiEdit::Set { param: midtone, value: ParamValue::Float(m), in_drag: response.dragged() });
         }
         if response.drag_stopped() {
             edits.push(UiEdit::EndDrag);
         }
-        number(ui, node, &levels::param_id(c, 1), set.in_white, [1.0, 255.0], edits);
+        number(ui, &levels::param_id(c, 1), set.in_white, [1.0, 255.0], edits);
     });
     ui.horizontal(|ui| {
         ui.label(RichText::new("Output").color(t.text_weak));
-        number(ui, node, &levels::param_id(c, 3), set.out_black, [0.0, 255.0], edits);
-        number(ui, node, &levels::param_id(c, 4), set.out_white, [0.0, 255.0], edits);
+        number(ui, &levels::param_id(c, 3), set.out_black, [0.0, 255.0], edits);
+        number(ui, &levels::param_id(c, 4), set.out_white, [0.0, 255.0], edits);
         ui.add_space(SPACE[2]);
-        let black = Pick { node, kind: PickKind::LevelsBlack, channel: c };
-        if picker_button(ui, cx.pick == Some(black), "Pick the darkest point: it becomes the input black") {
-            edits.push(toggle_pick(cx.pick, black));
+        let black = Pick { at: tool.clone(), kind: PickKind::LevelsBlack, channel: c };
+        if picker_button(ui, cx.pick == Some(&black), "Pick the darkest point: it becomes the input black") {
+            edits.push(toggle_pick(cx.pick, &black));
         }
-        let white = Pick { node, kind: PickKind::LevelsWhite, channel: c };
-        if picker_button(ui, cx.pick == Some(white), "Pick the brightest point: it becomes the input white") {
-            edits.push(toggle_pick(cx.pick, white));
+        let white = Pick { at: tool.clone(), kind: PickKind::LevelsWhite, channel: c };
+        if picker_button(ui, cx.pick == Some(&white), "Pick the brightest point: it becomes the input white") {
+            edits.push(toggle_pick(cx.pick, &white));
         }
     });
     if ui
@@ -404,7 +397,7 @@ pub fn levels(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mu
         .clicked()
     {
         for i in 0..levels::VALUES.len() {
-            edits.push(UiEdit::Reset { node, param: pid(&levels::param_id(c, i)) });
+            edits.push(UiEdit::Reset { param: pid(&levels::param_id(c, i)) });
         }
     }
 }
@@ -412,7 +405,7 @@ pub fn levels(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mu
 // ---------------------------------------------------------------------------
 // Curve
 
-fn curve_points(row: &NodeRow, c: usize) -> Vec<[f32; 2]> {
+fn curve_points(row: &ToolRow, c: usize) -> Vec<[f32; 2]> {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small count
     let n = (float(row, &curve::count_id(c)).round() as usize).clamp(2, MAX_POINTS);
     let mut pts: Vec<[f32; 2]> =
@@ -429,10 +422,10 @@ struct CurveDrag {
 }
 
 /// Tabs, the curve to edit, the readout and the picker.
-pub fn curve(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
+pub fn curve(ui: &mut egui::Ui, row: &ToolRow, cx: PanelContext<'_>, edits: &mut Vec<UiEdit>) {
     let t = Tokens::of(ui.ctx().theme());
-    let node = row.node;
-    let tab_id = Id::unique(("aktis-curve-tab", node));
+    let tool = &row.at;
+    let tab_id = Id::unique(("aktis-curve-tab", tool));
     let names: Vec<&str> = CURVES.iter().map(|c| c.1).collect();
     let c = tabs(ui, &names, remembered::<usize>(ui, tab_id)).min(CURVES.len() - 1);
     remember(ui, tab_id, c);
@@ -453,7 +446,7 @@ pub fn curve(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut
     for i in 1..4 {
         #[allow(clippy::cast_precision_loss)] // grid lines
         let f = i as f32 / 4.0;
-        let grid = Stroke::new(1.0, t.graph_grid);
+        let grid = Stroke::new(1.0, t.grid);
         painter.line_segment(
             [
                 pos2(inner.left() + f * inner.width(), inner.top()),
@@ -497,7 +490,7 @@ pub fn curve(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut
         painter.circle_stroke(at, 4.0, Stroke::new(1.5, t.text_strong));
     }
 
-    let drag_id = Id::unique(("aktis-curve-drag", node, c));
+    let drag_id = Id::unique(("aktis-curve-drag", tool, c));
     let dragging = remembered::<CurveDrag>(ui, drag_id).index;
     let radius = 8.0 / inner.width();
     let hovered = response.hover_pos().map(to_curve).and_then(|p| adjust::nearest_point(&pts, p, radius));
@@ -516,16 +509,11 @@ pub fn curve(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut
         && let Some(p) = response.interact_pointer_pos().map(to_curve)
     {
         // A drag on empty space adds a point there and moves it: one undo step.
-        edits.push(UiEdit::BeginDrag { node, param: key.clone() });
+        edits.push(UiEdit::BeginDrag { param: key.clone() });
         let index = match adjust::nearest_point(&pts, p, radius) {
             Some(i) => Some(i),
             None => adjust::insert_point(&pts, p).map(|(new, i)| {
-                edits.push(UiEdit::SetMany {
-                    node,
-                    key: key.clone(),
-                    values: adjust::curve_values(c, &new),
-                    in_drag: true,
-                });
+                edits.push(UiEdit::SetMany { key: key.clone(), values: adjust::curve_values(c, &new), in_drag: true });
                 i
             }),
         };
@@ -536,7 +524,7 @@ pub fn curve(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut
         && let Some(p) = response.interact_pointer_pos().map(to_curve)
     {
         let moved = adjust::move_point(&pts, i, p);
-        edits.push(UiEdit::SetMany { node, key: key.clone(), values: adjust::curve_values(c, &moved), in_drag: true });
+        edits.push(UiEdit::SetMany { key: key.clone(), values: adjust::curve_values(c, &moved), in_drag: true });
     }
     if response.drag_stopped() {
         remember(ui, drag_id, CurveDrag::default());
@@ -547,14 +535,14 @@ pub fn curve(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut
         && adjust::nearest_point(&pts, p, radius).is_none()
         && let Some((new, _)) = adjust::insert_point(&pts, p)
     {
-        edits.push(UiEdit::SetMany { node, key: key.clone(), values: adjust::curve_values(c, &new), in_drag: false });
+        edits.push(UiEdit::SetMany { key: key.clone(), values: adjust::curve_values(c, &new), in_drag: false });
     }
     if (response.double_clicked() || response.secondary_clicked())
         && let Some(i) =
             response.interact_pointer_pos().map(to_curve).and_then(|p| adjust::nearest_point(&pts, p, radius))
         && let Some(fewer) = adjust::remove_point(&pts, i)
     {
-        edits.push(UiEdit::SetMany { node, key: key.clone(), values: adjust::curve_values(c, &fewer), in_drag: false });
+        edits.push(UiEdit::SetMany { key: key.clone(), values: adjust::curve_values(c, &fewer), in_drag: false });
     }
     let response =
         response.on_hover_text("Drag to add or move a point; double-click or right-click a point to remove it");
@@ -570,23 +558,18 @@ pub fn curve(ui: &mut egui::Ui, row: &NodeRow, cx: PanelContext<'_>, edits: &mut
         };
         ui.label(RichText::new(text).size(FONT[1]).color(t.text_weak));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let pick = Pick { node, kind: PickKind::CurvePoint, channel: c };
+            let pick = Pick { at: tool.clone(), kind: PickKind::CurvePoint, channel: c };
             if picker_button(
                 ui,
-                cx.pick == Some(pick),
+                cx.pick == Some(&pick),
                 "Click a colour in the photo to add a point where it sits on the curve",
             ) {
-                edits.push(toggle_pick(cx.pick, pick));
+                edits.push(toggle_pick(cx.pick, &pick));
             }
         });
     });
     if ui.small_button(format!("Reset {}", CURVES[c].1)).on_hover_text("This curve back to a straight line").clicked() {
-        edits.push(UiEdit::SetMany {
-            node,
-            key,
-            values: adjust::curve_values(c, &[[0.0, 0.0], [1.0, 1.0]]),
-            in_drag: false,
-        });
+        edits.push(UiEdit::SetMany { key, values: adjust::curve_values(c, &[[0.0, 0.0], [1.0, 1.0]]), in_drag: false });
     }
     let _ = painter.text(
         rect.left_top() + vec2(8.0, 6.0),

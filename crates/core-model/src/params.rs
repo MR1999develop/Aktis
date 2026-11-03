@@ -1,4 +1,4 @@
-//! Parameter values of a node, keyed by [`ParamId`].
+//! Parameter values of a tool, keyed by [`ParamId`].
 
 use std::collections::BTreeMap;
 
@@ -16,7 +16,7 @@ pub enum ParamValue {
     Choice(u32),
 }
 
-/// The parameters of one node. Missing entries mean "use the default".
+/// The parameters of one tool. Missing entries mean "use the default".
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Params(BTreeMap<ParamId, ParamValue>);
 

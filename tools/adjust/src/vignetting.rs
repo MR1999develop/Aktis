@@ -9,7 +9,7 @@
 use std::sync::LazyLock;
 
 use core_model::ImageF32;
-use tool_api::{Category, GpuKernel, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId, Unit};
+use tool_api::{Category, GpuKernel, ResolvedParams, Tool, ToolDescriptor, ToolId, Unit};
 
 use crate::common::{choice, float, slider, smoothstep};
 
@@ -34,7 +34,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     version: 2,
     name: "Vignetting",
     category: Category::Lens,
-    stage: Stage::Graph,
+    order: 150,
     params: vec![
         slider(AMOUNT, "Amount"),
         float(MIDPOINT, "Midpoint", [0.0, 100.0], 50.0, 1.0, Unit::None),

@@ -15,7 +15,7 @@ pub const CAMERA_DEFAULTS_FORMAT: u32 = 1;
 /// The defaults as text, in format [`CAMERA_DEFAULTS_FORMAT`].
 #[must_use]
 pub fn encode_camera_defaults(defaults: &CameraDefaults) -> String {
-    let style = Style { nodes: defaults.nodes.clone(), ..Style::default() };
+    let style = Style { tools: defaults.tools.clone(), ..Style::default() };
     Value::object([
         ("camera_defaults_format", Value::uint(CAMERA_DEFAULTS_FORMAT)),
         ("camera", Value::text(&defaults.camera)),
@@ -25,7 +25,7 @@ pub fn encode_camera_defaults(defaults: &CameraDefaults) -> String {
 }
 
 /// Reads defaults written by [`encode_camera_defaults`] of this or an older
-/// version; only the tool nodes of the stored style are kept.
+/// version; only the tools of the stored style are kept.
 ///
 /// # Errors
 /// [`DecodeError::NewerVersion`] for a newer format, [`DecodeError::Malformed`]
@@ -50,7 +50,7 @@ pub fn decode_camera_defaults(text: &str) -> Result<CameraDefaults, DecodeError>
         return Err(DecodeError::Malformed("camera defaults need a camera".to_owned()));
     }
     let style = json::required(fields, "style").and_then(codec::read_style).map_err(DecodeError::Malformed)?;
-    Ok(CameraDefaults { camera, nodes: style.nodes })
+    Ok(CameraDefaults { camera, tools: style.tools })
 }
 
 #[cfg(test)]

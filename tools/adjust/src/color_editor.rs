@@ -17,7 +17,7 @@
 use std::sync::LazyLock;
 
 use core_model::ImageF32;
-use tool_api::{Category, GpuKernel, ParamDescriptor, ResolvedParams, Stage, Tool, ToolDescriptor, ToolId, Unit};
+use tool_api::{Category, GpuKernel, ParamDescriptor, ResolvedParams, Tool, ToolDescriptor, ToolId, Unit};
 
 use crate::common::{WGSL_HUE_CHROMA, float, hue_chroma, hue_diff, luma, six_way, slider, smoothstep, toggle};
 
@@ -103,7 +103,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| {
         version: 2,
         name: "Colour editor",
         category: Category::Color,
-        stage: Stage::Graph,
+        order: 100,
         params,
     }
 });

@@ -357,7 +357,7 @@ impl PhotoMeta {
 
 /// One variant of a photo, as the catalog lists it. A variant is one
 /// version of the photo's edit (as in Capture One): its own recipe,
-/// history, node positions and preview. A photo never edited has none
+/// history and preview. A photo never edited has none
 /// stored; it shows as variant 1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VariantInfo {

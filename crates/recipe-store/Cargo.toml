@@ -1,6 +1,6 @@
 [package]
 name = "recipe-store"
-description = "The stored form of a photo's edit (recipe, history, node positions, variant name) as versioned text. No I/O."
+description = "The stored form of a photo's edit (recipe, history, variant name) as versioned text. No I/O."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

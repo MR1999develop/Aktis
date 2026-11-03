@@ -222,7 +222,7 @@ impl ModelsUi {
             ui.label("Downloaded on demand, kept on this computer. Optional packs only make a tool faster.");
             ui.label(
                 RichText::new(
-                    "To use them: AI denoise is a node (Image \u{25b8} Add node \u{25b8} AI denoise); the AI \
+                    "To use them: turn on the AI denoise panel on the right; the AI \
                      selections are in the Masks tool (B).",
                 )
                 .size(FONT[0])

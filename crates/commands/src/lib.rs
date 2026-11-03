@@ -2,7 +2,7 @@
 //!
 //! The UI, the MCP server and scripts never touch a recipe directly: they
 //! build an [`Edit`] and give it to an [`EditSession`]. The session checks
-//! it against the graph rules and the tool registry, applies it, and records
+//! it against the layer rules and the tool registry, applies it, and records
 //! how to undo it. So every change, from any source, is validated the same
 //! way and can be undone with Ctrl+Z.
 
@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use core_model::{
-    BaseCurve, Geometry, GraphError, LensSettings, Link, MaskDef, NodeGraph, NodeId, NodeKind, ParamId, ParamValue,
-    Params, PortKind, ProfileChoice, Recipe, Style, ToolId, WhiteBalance,
+    BaseCurve, Geometry, Layer, LayerError, LayerId, Layers, LensSettings, MaskDef, ParamId, ParamValue, Params,
+    ProfileChoice, Recipe, Style, StyleTool, ToolId, ToolRef, ToolSettings, Tools, WhiteBalance,
 };
 use tool_api::ToolRegistry;
 
@@ -21,61 +21,91 @@ pub const MAX_UNDO_STEPS: usize = 500;
 /// One change to a recipe.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Edit {
-    /// Sets one parameter of a tool node. Out-of-range values are clamped.
+    /// Sets one parameter of a tool in a layer (the tool joins the layer if
+    /// it was not there). Out-of-range values are clamped.
     SetParam {
-        /// The tool node.
-        node: NodeId,
+        /// The tool.
+        at: ToolRef,
         /// The parameter.
         param: ParamId,
         /// The new value.
         value: ParamValue,
     },
-    /// Sets several parameters of one tool node in one step (a curve point's
+    /// Sets several parameters of one tool in one step (a curve point's
     /// input and output, a white-balance mode with its kelvin and tint).
     /// Out-of-range values are clamped.
     SetParams {
-        /// The tool node.
-        node: NodeId,
+        /// The tool.
+        at: ToolRef,
         /// The parameters and their new values.
         values: Vec<(ParamId, ParamValue)>,
     },
     /// Returns one parameter to its default.
     ResetParam {
-        /// The tool node.
-        node: NodeId,
+        /// The tool.
+        at: ToolRef,
         /// The parameter.
         param: ParamId,
     },
-    /// Adds a tool node after `after` ("Add serial node").
-    InsertSerial {
-        /// Node whose output the new node takes.
-        after: NodeId,
-        /// Tool of the new node.
+    /// Takes a tool out of a layer: every value back to its default.
+    ResetTool {
+        /// The layer.
+        layer: LayerId,
+        /// The tool.
         tool: ToolId,
-        /// Values the new node starts with (usually none: every parameter
-        /// at its default). Unknown keys are dropped, values sanitised.
-        params: Params,
     },
-    /// Removes a node, reconnecting a serial chain around it.
-    RemoveNode {
-        /// The node to remove.
-        node: NodeId,
-    },
-    /// Connects two ports; a link already feeding the input is replaced.
-    Connect(Link),
-    /// Removes the link feeding an input.
-    Disconnect {
-        /// Node whose input is freed.
-        to: NodeId,
-        /// Input port index.
-        port: u8,
-    },
-    /// Enables or bypasses a node.
-    SetEnabled {
-        /// The node.
-        node: NodeId,
-        /// `false` passes the image through unchanged.
+    /// Switches a tool of a layer on or off (off keeps its values).
+    SetToolEnabled {
+        /// The layer.
+        layer: LayerId,
+        /// The tool.
+        tool: ToolId,
+        /// `false` leaves the image as the tool found it.
         enabled: bool,
+    },
+    /// Adds a layer at the top: the tools it starts with (a style brush's;
+    /// none for an empty layer) act inside `mask`.
+    AddLayer {
+        /// Its name in the Layers panel.
+        name: String,
+        /// Where it acts (usually the first stroke).
+        mask: MaskDef,
+        /// Its tools. Unknown parameters are dropped, values clamped.
+        tools: Vec<StyleTool>,
+    },
+    /// Deletes a layer with its mask and tools.
+    RemoveLayer {
+        /// The layer.
+        layer: LayerId,
+    },
+    /// Renames a layer.
+    RenameLayer {
+        /// The layer.
+        layer: LayerId,
+        /// The new name.
+        name: String,
+    },
+    /// Moves a layer up or down the list (0 = just above the Background).
+    MoveLayer {
+        /// The layer.
+        layer: LayerId,
+        /// Where it goes.
+        index: usize,
+    },
+    /// Switches a layer on or off.
+    SetLayerEnabled {
+        /// The layer.
+        layer: LayerId,
+        /// `false`: the layer does nothing.
+        enabled: bool,
+    },
+    /// Replaces a layer's mask (a new stroke, another component, feather,
+    /// opacity, invert …). Feather and opacity are clamped.
+    SetLayerMask {
+        /// The layer.
+        layer: LayerId,
+        /// The new mask.
+        mask: MaskDef,
     },
     /// Changes the white balance of the development stage.
     SetWhiteBalance(WhiteBalance),
@@ -87,44 +117,14 @@ pub enum Edit {
     SetGeometry(Geometry),
     /// Chooses the tone curve of the output render (Base Characteristics).
     SetBaseCurve(BaseCurve),
-    /// Adds a mask node and connects it to the key input of a tool node, so
-    /// the tool acts only inside the mask. A mask already on that input is
-    /// disconnected (its node stays in the graph).
-    AddMask {
-        /// The tool node to restrict.
-        to: NodeId,
-        /// What the new mask selects.
-        def: MaskDef,
-    },
-    /// Replaces the definition of a mask node (a new click, another
-    /// component, feather, invert …). Feather and opacity are clamped.
-    SetMask {
-        /// The mask node.
-        node: NodeId,
-        /// The new definition.
-        def: MaskDef,
-    },
     /// Applies a style (a preset) to the whole photo, as Capture One does:
     /// the development settings and geometry it holds replace the photo's,
-    /// and each of its tools sets the photo's node of that tool (the last
-    /// one before the output that has no mask), or is added before the
-    /// output when the photo has none.
+    /// and its tools' values are set on the Background.
     ApplyStyle {
         /// The style's name (for the history).
         name: String,
         /// The style.
         style: Box<Style>,
-    },
-    /// Paints a style with a brush (Capture One's style brushes): the
-    /// style's tools are added before the output, named after the brush,
-    /// and all restricted by one new mask.
-    AddStyleBrush {
-        /// The brush's name, given to the new nodes.
-        name: String,
-        /// The tools to add (development settings and geometry are ignored).
-        style: Box<Style>,
-        /// The new mask (usually the first stroke).
-        mask: MaskDef,
     },
 }
 
@@ -155,6 +155,11 @@ fn params_label<'a>(ids: impl Iterator<Item = &'a str>) -> String {
     }
 }
 
+/// A tool id as words ("white balance").
+fn words(tool: &ToolId) -> String {
+    tool.as_str().replace('_', " ")
+}
+
 impl Edit {
     /// Text for "Undo …" / "Redo …", sentence case.
     #[must_use]
@@ -163,21 +168,22 @@ impl Edit {
             Self::SetParam { param, .. } => format!("Change {}", param.as_str().replace('_', " ")),
             Self::ResetParam { param, .. } => format!("Reset {}", param.as_str().replace('_', " ")),
             Self::SetParams { values, .. } => params_label(values.iter().map(|(p, _)| p.as_str())),
-            Self::InsertSerial { .. } => "Add serial node".to_owned(),
-            Self::RemoveNode { .. } => "Remove node".to_owned(),
-            Self::Connect(_) => "Connect nodes".to_owned(),
-            Self::Disconnect { .. } => "Disconnect nodes".to_owned(),
-            Self::SetEnabled { enabled: true, .. } => "Enable node".to_owned(),
-            Self::SetEnabled { enabled: false, .. } => "Bypass node".to_owned(),
+            Self::ResetTool { tool, .. } => format!("Reset {}", words(tool)),
+            Self::SetToolEnabled { tool, enabled: true, .. } => format!("Turn on {}", words(tool)),
+            Self::SetToolEnabled { tool, enabled: false, .. } => format!("Turn off {}", words(tool)),
+            Self::AddLayer { name, .. } => format!("Add layer \u{201c}{name}\u{201d}"),
+            Self::RemoveLayer { .. } => "Delete layer".to_owned(),
+            Self::RenameLayer { .. } => "Rename layer".to_owned(),
+            Self::MoveLayer { .. } => "Move layer".to_owned(),
+            Self::SetLayerEnabled { enabled: true, .. } => "Turn on layer".to_owned(),
+            Self::SetLayerEnabled { enabled: false, .. } => "Turn off layer".to_owned(),
+            Self::SetLayerMask { .. } => "Change mask".to_owned(),
             Self::SetWhiteBalance(_) => "Change white balance".to_owned(),
             Self::SetCameraProfile(_) => "Change camera profile".to_owned(),
             Self::SetLensCorrection(_) => "Change lens corrections".to_owned(),
             Self::SetGeometry(_) => "Change crop and straightening".to_owned(),
             Self::SetBaseCurve(_) => "Change base curve".to_owned(),
-            Self::AddMask { .. } => "Add mask".to_owned(),
-            Self::SetMask { .. } => "Change mask".to_owned(),
             Self::ApplyStyle { name, .. } => format!("Apply preset \u{201c}{name}\u{201d}"),
-            Self::AddStyleBrush { name, .. } => format!("Style brush \u{201c}{name}\u{201d}"),
         }
     }
 
@@ -191,9 +197,8 @@ impl Edit {
                 ParamValue::Bool(b) => on_off(*b).to_owned(),
                 ParamValue::Choice(c) => format!("#{}", c + 1),
             },
-            Self::ResetParam { .. } => "default".to_owned(),
-            Self::InsertSerial { tool, .. } => tool.as_str().replace('_', " "),
-            Self::SetEnabled { enabled, .. } => on_off(*enabled).to_owned(),
+            Self::ResetParam { .. } | Self::ResetTool { .. } => "default".to_owned(),
+            Self::RenameLayer { name, .. } => name.clone(),
             Self::SetWhiteBalance(WhiteBalance::AsShot) => "as shot".to_owned(),
             Self::SetWhiteBalance(WhiteBalance::Multipliers(m)) => {
                 format!("{:.2} \u{b7} {:.2} \u{b7} {:.2}", m[0], m[1], m[2])
@@ -222,47 +227,55 @@ impl Edit {
     #[must_use]
     pub fn kind(&self) -> EditKind {
         match self {
-            Self::SetParam { .. } | Self::SetParams { .. } | Self::ResetParam { .. } => EditKind::Adjust,
-            Self::SetWhiteBalance(_)
-            | Self::SetCameraProfile(_)
-            | Self::SetLensCorrection(_)
-            | Self::SetGeometry(_)
-            | Self::SetBaseCurve(_) => EditKind::Develop,
-            Self::AddMask { .. } | Self::SetMask { .. } | Self::AddStyleBrush { .. } => EditKind::Mask,
-            Self::ApplyStyle { .. } => EditKind::Develop,
-            Self::InsertSerial { .. }
-            | Self::RemoveNode { .. }
-            | Self::Connect(_)
-            | Self::Disconnect { .. }
-            | Self::SetEnabled { .. } => EditKind::Node,
-        }
-    }
-
-    /// The same edit with every node id passed through `map`; `None` when
-    /// `map` drops a node the edit needs.
-    fn map_nodes(&self, map: impl Fn(NodeId) -> Option<NodeId>) -> Option<Self> {
-        Some(match self {
-            Self::SetParam { node, param, value } => {
-                Self::SetParam { node: map(*node)?, param: param.clone(), value: *value }
-            }
-            Self::ResetParam { node, param } => Self::ResetParam { node: map(*node)?, param: param.clone() },
-            Self::SetParams { node, values } => Self::SetParams { node: map(*node)?, values: values.clone() },
-            Self::InsertSerial { after, tool, params } => {
-                Self::InsertSerial { after: map(*after)?, tool: tool.clone(), params: params.clone() }
-            }
-            Self::RemoveNode { node } => Self::RemoveNode { node: map(*node)? },
-            Self::Connect(link) => Self::Connect(Link { from: map(link.from)?, to: map(link.to)?, ..*link }),
-            Self::Disconnect { to, port } => Self::Disconnect { to: map(*to)?, port: *port },
-            Self::SetEnabled { node, enabled } => Self::SetEnabled { node: map(*node)?, enabled: *enabled },
-            Self::AddMask { to, def } => Self::AddMask { to: map(*to)?, def: def.clone() },
-            Self::SetMask { node, def } => Self::SetMask { node: map(*node)?, def: def.clone() },
+            Self::SetParam { .. }
+            | Self::SetParams { .. }
+            | Self::ResetParam { .. }
+            | Self::ResetTool { .. }
+            | Self::SetToolEnabled { .. } => EditKind::Adjust,
             Self::SetWhiteBalance(_)
             | Self::SetCameraProfile(_)
             | Self::SetLensCorrection(_)
             | Self::SetGeometry(_)
             | Self::SetBaseCurve(_)
-            | Self::ApplyStyle { .. }
-            | Self::AddStyleBrush { .. } => self.clone(),
+            | Self::ApplyStyle { .. } => EditKind::Develop,
+            Self::SetLayerMask { .. } => EditKind::Mask,
+            Self::AddLayer { .. }
+            | Self::RemoveLayer { .. }
+            | Self::RenameLayer { .. }
+            | Self::MoveLayer { .. }
+            | Self::SetLayerEnabled { .. } => EditKind::Layer,
+        }
+    }
+
+    /// The same edit with every layer id passed through `map` (the
+    /// Background stays); `None` when `map` drops a layer the edit needs.
+    fn map_layers(&self, map: impl Fn(LayerId) -> Option<LayerId>) -> Option<Self> {
+        let map = |id: LayerId| if id.is_background() { Some(id) } else { map(id) };
+        let at = |at: &ToolRef| Some(ToolRef { layer: map(at.layer)?, ..at.clone() });
+        Some(match self {
+            Self::SetParam { at: a, param, value } => {
+                Self::SetParam { at: at(a)?, param: param.clone(), value: *value }
+            }
+            Self::ResetParam { at: a, param } => Self::ResetParam { at: at(a)?, param: param.clone() },
+            Self::SetParams { at: a, values } => Self::SetParams { at: at(a)?, values: values.clone() },
+            Self::ResetTool { layer, tool } => Self::ResetTool { layer: map(*layer)?, tool: tool.clone() },
+            Self::SetToolEnabled { layer, tool, enabled } => {
+                Self::SetToolEnabled { layer: map(*layer)?, tool: tool.clone(), enabled: *enabled }
+            }
+            Self::RemoveLayer { layer } => Self::RemoveLayer { layer: map(*layer)? },
+            Self::RenameLayer { layer, name } => Self::RenameLayer { layer: map(*layer)?, name: name.clone() },
+            Self::MoveLayer { layer, index } => Self::MoveLayer { layer: map(*layer)?, index: *index },
+            Self::SetLayerEnabled { layer, enabled } => {
+                Self::SetLayerEnabled { layer: map(*layer)?, enabled: *enabled }
+            }
+            Self::SetLayerMask { layer, mask } => Self::SetLayerMask { layer: map(*layer)?, mask: mask.clone() },
+            Self::AddLayer { .. }
+            | Self::SetWhiteBalance(_)
+            | Self::SetCameraProfile(_)
+            | Self::SetLensCorrection(_)
+            | Self::SetGeometry(_)
+            | Self::SetBaseCurve(_)
+            | Self::ApplyStyle { .. } => self.clone(),
         })
     }
 }
@@ -272,10 +285,10 @@ impl Edit {
 pub enum EditKind {
     /// Development stage: white balance, camera profile, lens corrections.
     Develop,
-    /// A tool parameter.
+    /// A tool: its values, on or off.
     Adjust,
-    /// The node graph: add, remove, connect, bypass.
-    Node,
+    /// The layers: add, delete, rename, move, on or off.
+    Layer,
     /// A mask.
     Mask,
 }
@@ -297,10 +310,8 @@ fn format_number(v: f32) -> String {
 /// Why an edit was refused. The recipe is unchanged when an error is returned.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditError {
-    /// The graph rules refused the change.
-    Graph(GraphError),
-    /// The node exists but is not a tool node.
-    NotAToolNode(NodeId),
+    /// The layer rules refused the change.
+    Layer(LayerError),
     /// This build has no tool with that id.
     UnknownTool(ToolId),
     /// The tool has no parameter with that id.
@@ -311,31 +322,22 @@ pub enum EditError {
     InvalidProfileName,
     /// The lens correction zoom is outside 0.25–4, or a chosen lens name is empty.
     InvalidLensSettings,
-    /// The node exists but is not a mask node.
-    NotAMaskNode(NodeId),
-    /// The node has no key (mask) input.
-    NoMaskInput(NodeId),
     /// A history rewrite named a step twice or a step that does not exist.
     BadHistoryOrder,
-    /// The step acts on a node made by a step that was deleted or no longer applies.
-    NodeFromRemovedStep,
+    /// The step acts on a layer made by a step that was deleted or no longer applies.
+    LayerFromRemovedStep,
     /// A step that no longer applied when the history was saved; the text
     /// says why (read back from the catalog).
     Saved(String),
     /// The edit was saved by a newer version of the editor and is shown
     /// read-only: nothing can change.
     ReadOnly,
-    /// A style brush without tools to paint.
-    EmptyStyle,
-    /// A style brush holds a tool that cannot be restricted by a mask.
-    ToolTakesNoMask(ToolId),
 }
 
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Graph(e) => e.fmt(f),
-            Self::NotAToolNode(id) => write!(f, "node {id} has no parameters"),
+            Self::Layer(e) => e.fmt(f),
             Self::UnknownTool(id) => write!(f, "tool '{id}' is not available in this build"),
             Self::UnknownParam(tool, p) => write!(f, "tool '{tool}' has no parameter '{p}'"),
             Self::InvalidWhiteBalance => write!(f, "white balance multipliers must be positive numbers"),
@@ -343,13 +345,9 @@ impl fmt::Display for EditError {
             Self::InvalidLensSettings => {
                 write!(f, "lens zoom must be between 0.25 and 4, and a chosen lens needs a name")
             }
-            Self::NotAMaskNode(id) => write!(f, "node {id} is not a mask node"),
-            Self::NoMaskInput(id) => write!(f, "node {id} cannot take a mask"),
             Self::BadHistoryOrder => write!(f, "the new history order names a step twice or a missing step"),
-            Self::NodeFromRemovedStep => write!(f, "it acts on a node made by a removed step"),
+            Self::LayerFromRemovedStep => write!(f, "it acts on a layer made by a removed step"),
             Self::Saved(why) => f.write_str(why),
-            Self::EmptyStyle => write!(f, "this style brush has no adjustments to paint"),
-            Self::ToolTakesNoMask(tool) => write!(f, "tool '{tool}' cannot be painted with a brush"),
             Self::ReadOnly => {
                 write!(f, "this photo is read-only: its edits were saved by a newer version of the editor")
             }
@@ -360,15 +358,15 @@ impl fmt::Display for EditError {
 impl std::error::Error for EditError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Graph(e) => Some(e),
+            Self::Layer(e) => Some(e),
             _ => None,
         }
     }
 }
 
-impl From<GraphError> for EditError {
-    fn from(e: GraphError) -> Self {
-        Self::Graph(e)
+impl From<LayerError> for EditError {
+    fn from(e: LayerError) -> Self {
+        Self::Layer(e)
     }
 }
 
@@ -381,33 +379,24 @@ pub struct GestureId(u64);
 /// What is needed to undo one applied edit.
 #[derive(Debug, Clone, PartialEq)]
 enum Undo {
-    Param {
-        node: NodeId,
-        param: ParamId,
-        previous: Option<ParamValue>,
+    /// A tool of a layer as it was (`None`: not in the layer).
+    Tool {
+        layer: LayerId,
+        tool: ToolId,
+        previous: Option<ToolSettings>,
     },
-    Params {
-        node: NodeId,
-        previous: Vec<(ParamId, Option<ParamValue>)>,
-    },
-    Enabled {
-        node: NodeId,
-        previous: bool,
-    },
+    /// A layer above the Background as it was (name, on/off, mask, tools).
+    Layer(Box<Layer>),
     WhiteBalance(WhiteBalance),
     Profile(ProfileChoice),
     Lens(LensSettings),
     Geometry(Geometry),
     Curve(BaseCurve),
-    Mask {
-        node: NodeId,
-        previous: MaskDef,
-    },
+    /// Adding, deleting or moving layers keeps all the layers as they were:
+    /// this restores ids and order exactly.
+    Layers(Box<Layers>),
     /// Edits that change several parts keep the whole previous recipe.
     Recipe(Box<Recipe>),
-    /// Structural edits keep the whole previous graph: graphs are small and
-    /// this restores ids and links exactly.
-    Graph(Box<NodeGraph>),
 }
 
 /// One entry of the history.
@@ -417,8 +406,8 @@ struct Step {
     /// How to undo it; `None` when the step does not apply (see `skipped`).
     undo: Option<Undo>,
     gesture: Option<GestureId>,
-    /// Nodes this step added to the graph, in id order.
-    created: Vec<NodeId>,
+    /// Layers this step added, in id order.
+    created: Vec<LayerId>,
     /// Why the step no longer applies after the history was rewritten.
     skipped: Option<EditError>,
 }
@@ -482,9 +471,9 @@ pub struct RewriteReport {
 pub struct SavedStep {
     /// The edit, as it was applied.
     pub edit: Edit,
-    /// Nodes the step added, in id order (needed to rewrite the history
+    /// Layers the step added, in id order (needed to rewrite the history
     /// later: steps acting on them depend on this one).
-    pub created: Vec<NodeId>,
+    pub created: Vec<LayerId>,
     /// Why the step no longer applied when it was saved; `None` when it applied.
     pub skipped: Option<String>,
 }
@@ -507,7 +496,7 @@ pub struct SavedHistory {
 /// The history is the list of steps from the opened recipe (the *base*) to
 /// the current one. Steps can be reordered or deleted
 /// ([`Self::rewrite_history`]): the remaining steps are applied again from
-/// the base, and a step that no longer makes sense (it changes a node made
+/// the base, and a step that no longer makes sense (it changes a layer made
 /// by a deleted step, for example) stays in the list, marked as skipped,
 /// instead of disappearing. Rewrites are undone with Ctrl+Z like any edit.
 #[derive(Debug, Clone)]
@@ -766,8 +755,8 @@ impl EditSession {
         }
         let removed = self.steps.len() - order.len();
 
-        // Nodes made by deleted steps are gone for the steps that follow.
-        let mut map: HashMap<NodeId, Option<NodeId>> = HashMap::new();
+        // Layers made by deleted steps are gone for the steps that follow.
+        let mut map: HashMap<LayerId, Option<LayerId>> = HashMap::new();
         for (i, step) in self.steps.iter().enumerate() {
             if !seen[i] {
                 for id in &step.created {
@@ -781,11 +770,11 @@ impl EditSession {
         let mut report = RewriteReport { skipped: Vec::new(), removed };
         for (position, &i) in order.iter().enumerate() {
             let old = &self.steps[i];
-            let lookup = |id: NodeId| map.get(&id).copied().unwrap_or(Some(id));
+            let lookup = |id: LayerId| map.get(&id).copied().unwrap_or(Some(id));
             let applied = old
                 .edit
-                .map_nodes(lookup)
-                .ok_or(EditError::NodeFromRemovedStep)
+                .map_layers(lookup)
+                .ok_or(EditError::LayerFromRemovedStep)
                 .and_then(|edit| validate(&recipe, registry, edit))
                 .and_then(|edit| perform(&mut recipe, &edit).map(|done| (edit, done)));
             match applied {
@@ -852,42 +841,76 @@ impl EditSession {
 
 /// Checks `edit` against `recipe` and the registry and normalises it (clamped values).
 fn validate(recipe: &Recipe, registry: &ToolRegistry, edit: Edit) -> Result<Edit, EditError> {
+    let layers = &recipe.layers;
+    let known_layer = |id: LayerId| if layers.contains(id) { Ok(()) } else { Err(LayerError::UnknownLayer(id)) };
+    let slot_ok = |at: &ToolRef| {
+        let slots = layers.tools(at.layer).and_then(|t| t.get(&at.tool)).map_or(1, |s| s.slots().len() + 1);
+        if usize::from(at.slot) < slots { Ok(()) } else { Err(LayerError::NoSuchSlot(at.clone())) }
+    };
     match edit {
-        Edit::SetParam { node, param, value } => {
-            let tool = tool_of(recipe, node)?;
-            let d = registry.get(&tool).ok_or_else(|| EditError::UnknownTool(tool.clone()))?.descriptor();
-            let p = d.param(&param).ok_or_else(|| EditError::UnknownParam(tool.clone(), param.clone()))?;
+        Edit::SetParam { at, param, value } => {
+            known_layer(at.layer)?;
+            slot_ok(&at)?;
+            let d = registry.get(&at.tool).ok_or_else(|| EditError::UnknownTool(at.tool.clone()))?.descriptor();
+            let p = d.param(&param).ok_or_else(|| EditError::UnknownParam(at.tool.clone(), param.clone()))?;
             let value = p.sanitize(value);
-            Ok(Edit::SetParam { node, param, value })
+            Ok(Edit::SetParam { at, param, value })
         }
-        Edit::SetParams { node, values } => {
-            let tool = tool_of(recipe, node)?;
-            let d = registry.get(&tool).ok_or_else(|| EditError::UnknownTool(tool.clone()))?.descriptor();
+        Edit::SetParams { at, values } => {
+            known_layer(at.layer)?;
+            slot_ok(&at)?;
+            let d = registry.get(&at.tool).ok_or_else(|| EditError::UnknownTool(at.tool.clone()))?.descriptor();
             let mut clean = Vec::with_capacity(values.len());
             for (param, value) in values {
-                let p = d.param(&param).ok_or_else(|| EditError::UnknownParam(tool.clone(), param.clone()))?;
+                let p = d.param(&param).ok_or_else(|| EditError::UnknownParam(at.tool.clone(), param.clone()))?;
                 clean.push((param, p.sanitize(value)));
             }
-            Ok(Edit::SetParams { node, values: clean })
+            Ok(Edit::SetParams { at, values: clean })
         }
-        Edit::ResetParam { node, param } => {
-            let tool = tool_of(recipe, node)?;
-            let d = registry.get(&tool).ok_or_else(|| EditError::UnknownTool(tool.clone()))?.descriptor();
+        Edit::ResetParam { at, param } => {
+            known_layer(at.layer)?;
+            let d = registry.get(&at.tool).ok_or_else(|| EditError::UnknownTool(at.tool.clone()))?.descriptor();
             if d.param(&param).is_none() {
-                return Err(EditError::UnknownParam(tool, param));
+                return Err(EditError::UnknownParam(at.tool, param));
             }
-            Ok(Edit::ResetParam { node, param })
+            Ok(Edit::ResetParam { at, param })
         }
-        Edit::InsertSerial { after, tool, params } => {
-            let Some(t) = registry.get(&tool) else { return Err(EditError::UnknownTool(tool)) };
-            let d = t.descriptor();
-            let mut clean = Params::new();
-            for p in &d.params {
-                if let Some(v) = params.get(&p.id) {
-                    clean.set(p.id.clone(), p.sanitize(v));
-                }
+        Edit::ResetTool { layer, tool } => {
+            known_layer(layer)?;
+            Ok(Edit::ResetTool { layer, tool })
+        }
+        Edit::SetToolEnabled { layer, tool, enabled } => {
+            known_layer(layer)?;
+            if registry.get(&tool).is_none() {
+                return Err(EditError::UnknownTool(tool));
             }
-            Ok(Edit::InsertSerial { after, tool, params: clean })
+            Ok(Edit::SetToolEnabled { layer, tool, enabled })
+        }
+        Edit::AddLayer { name, mask, tools } => {
+            let style = validate_style(recipe, registry, Style { tools, ..Style::default() })?;
+            Ok(Edit::AddLayer { name: name.trim().to_owned(), mask: mask.sanitized(), tools: style.tools })
+        }
+        Edit::RemoveLayer { layer }
+        | Edit::RenameLayer { layer, .. }
+        | Edit::MoveLayer { layer, .. }
+        | Edit::SetLayerEnabled { layer, .. }
+        | Edit::SetLayerMask { layer, .. }
+            if layer.is_background() =>
+        {
+            Err(LayerError::Background.into())
+        }
+        Edit::RemoveLayer { layer } | Edit::MoveLayer { layer, .. } | Edit::SetLayerEnabled { layer, .. }
+            if !layers.contains(layer) =>
+        {
+            Err(LayerError::UnknownLayer(layer).into())
+        }
+        Edit::RenameLayer { layer, name } => {
+            known_layer(layer)?;
+            Ok(Edit::RenameLayer { layer, name: name.trim().to_owned() })
+        }
+        Edit::SetLayerMask { layer, mask } => {
+            known_layer(layer)?;
+            Ok(Edit::SetLayerMask { layer, mask: mask.sanitized() })
         }
         Edit::SetWhiteBalance(WhiteBalance::Multipliers(m)) if !m.iter().all(|v| v.is_finite() && *v > 0.0) => {
             Err(EditError::InvalidWhiteBalance)
@@ -915,46 +938,20 @@ fn validate(recipe: &Recipe, registry: &ToolRegistry, edit: Edit) -> Result<Edit
             Ok(Edit::SetLensCorrection(lens))
         }
         Edit::SetGeometry(g) => Ok(Edit::SetGeometry(g.sanitized())),
-        Edit::SetBaseCurve(c) => Ok(Edit::SetBaseCurve(c)),
-        Edit::AddMask { to, def } => {
-            let node = recipe.graph.node(to).ok_or(GraphError::UnknownNode(to))?;
-            if !node.kind.inputs().contains(&PortKind::Mask) {
-                return Err(EditError::NoMaskInput(to));
-            }
-            Ok(Edit::AddMask { to, def: def.sanitized() })
-        }
-        Edit::SetMask { node, def } => {
-            let n = recipe.graph.node(node).ok_or(GraphError::UnknownNode(node))?;
-            if n.kind != NodeKind::Mask {
-                return Err(EditError::NotAMaskNode(node));
-            }
-            Ok(Edit::SetMask { node, def: def.sanitized() })
-        }
         Edit::ApplyStyle { name, style } => {
             let style = Box::new(validate_style(recipe, registry, *style)?);
             Ok(Edit::ApplyStyle { name, style })
-        }
-        Edit::AddStyleBrush { name, style, mask } => {
-            let style = Box::new(validate_style(recipe, registry, style.local())?);
-            if style.nodes.is_empty() {
-                return Err(EditError::EmptyStyle);
-            }
-            for n in &style.nodes {
-                let probe = NodeKind::Tool(n.tool.clone());
-                if !probe.inputs().contains(&PortKind::Mask) {
-                    return Err(EditError::ToolTakesNoMask(n.tool.clone()));
-                }
-            }
-            Ok(Edit::AddStyleBrush { name: name.trim().to_owned(), style, mask: mask.sanitized() })
         }
         other => Ok(other),
     }
 }
 
 /// `style` with its values checked like the single edits that set them:
-/// tools must exist, unknown parameters are dropped, values clamped.
+/// tools must exist, unknown parameters are dropped, values clamped, and a
+/// tool named twice keeps its last values.
 fn validate_style(recipe: &Recipe, registry: &ToolRegistry, mut style: Style) -> Result<Style, EditError> {
-    for n in &mut style.nodes {
+    let mut tools: Vec<StyleTool> = Vec::with_capacity(style.tools.len());
+    for n in style.tools {
         let tool = registry.get(&n.tool).ok_or_else(|| EditError::UnknownTool(n.tool.clone()))?;
         let mut clean = Params::new();
         for p in &tool.descriptor().params {
@@ -962,8 +959,10 @@ fn validate_style(recipe: &Recipe, registry: &ToolRegistry, mut style: Style) ->
                 clean.set(p.id.clone(), p.sanitize(v));
             }
         }
-        n.params = clean;
+        tools.retain(|t| t.tool != n.tool);
+        tools.push(StyleTool { tool: n.tool, params: clean });
     }
+    style.tools = tools;
     if let Some(wb) = style.white_balance {
         validate(recipe, registry, Edit::SetWhiteBalance(wb))?;
     }
@@ -983,34 +982,19 @@ fn validate_style(recipe: &Recipe, registry: &ToolRegistry, mut style: Style) ->
     Ok(style)
 }
 
-/// The node feeding the output: new nodes go after it.
-fn last_before_output(graph: &NodeGraph) -> NodeId {
-    graph.input_link(graph.output(), 0).map_or_else(|| graph.source(), |l| l.from)
-}
-
-/// The node of `tool` a style sets: walking back from the output along the
-/// image inputs, the first one without a mask.
-fn style_target(graph: &NodeGraph, tool: &ToolId) -> Option<NodeId> {
-    let mut at = graph.input_link(graph.output(), 0)?.from;
-    let mut seen = 0;
-    while seen <= graph.nodes().count() {
-        let node = graph.node(at)?;
-        if node.kind == NodeKind::Tool(tool.clone()) {
-            let mask_port = node.kind.inputs().iter().position(|k| *k == PortKind::Mask);
-            let masked =
-                mask_port.and_then(|p| u8::try_from(p).ok()).is_some_and(|p| graph.input_link(at, p).is_some());
-            if !masked {
-                return Some(at);
+/// Sets the values of `tools` on `target`, each over the values already there.
+fn set_tools(target: &mut Tools, tools: &[StyleTool]) {
+    for n in tools {
+        if let Some(params) = target.params_mut(&n.tool, 0) {
+            for (param, value) in n.params.iter() {
+                params.set(param.clone(), *value);
             }
         }
-        at = graph.input_link(at, 0)?.from;
-        seen += 1;
     }
-    None
 }
 
 /// Applies a validated style to `recipe` (see [`Edit::ApplyStyle`]).
-fn apply_style(recipe: &mut Recipe, style: &Style) -> Result<(), EditError> {
+fn apply_style(recipe: &mut Recipe, style: &Style) {
     if let Some(wb) = style.white_balance {
         recipe.develop.white_balance = wb;
     }
@@ -1023,175 +1007,118 @@ fn apply_style(recipe: &mut Recipe, style: &Style) -> Result<(), EditError> {
     if let Some(g) = style.geometry {
         recipe.geometry = g;
     }
-    for n in &style.nodes {
-        match style_target(&recipe.graph, &n.tool) {
-            Some(id) => {
-                let mut node = recipe.graph.node_mut(id).ok_or(GraphError::UnknownNode(id))?;
-                for (param, value) in n.params.iter() {
-                    node.params().set(param.clone(), *value);
-                }
-            }
-            None => {
-                let after = last_before_output(&recipe.graph);
-                recipe.graph.insert_serial(after, n.tool.clone(), n.params.clone())?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Adds the nodes of a validated style brush and their shared mask.
-fn add_style_brush(graph: &mut NodeGraph, name: &str, style: &Style, mask: &MaskDef) -> Result<(), EditError> {
-    let mut added = Vec::with_capacity(style.nodes.len());
-    for n in &style.nodes {
-        let after = last_before_output(graph);
-        let id = graph.insert_serial(after, n.tool.clone(), n.params.clone())?;
-        if let Some(mut node) = graph.node_mut(id) {
-            node.set_label(name.to_owned());
-        }
-        added.push(id);
-    }
-    let mask_node = graph.add_mask_node(mask.clone());
-    for id in added {
-        let port = graph
-            .node(id)
-            .and_then(|n| n.kind.inputs().iter().position(|k| *k == PortKind::Mask))
-            .and_then(|p| u8::try_from(p).ok())
-            .ok_or(EditError::NoMaskInput(id))?;
-        graph.connect(Link { from: mask_node, from_port: 0, to: id, to_port: port })?;
-    }
-    Ok(())
-}
-
-fn tool_of(recipe: &Recipe, node: NodeId) -> Result<ToolId, EditError> {
-    match &recipe.graph.node(node).ok_or(GraphError::UnknownNode(node))?.kind {
-        NodeKind::Tool(t) => Ok(t.clone()),
-        _ => Err(EditError::NotAToolNode(node)),
-    }
+    set_tools(&mut recipe.layers.background, &style.tools);
 }
 
 /// Applies an already validated edit to `recipe`; returns how to undo it
-/// and the nodes it added. Leaves the recipe unchanged on error.
-fn perform(recipe: &mut Recipe, edit: &Edit) -> Result<(Undo, Vec<NodeId>), EditError> {
-    let graph = &mut recipe.graph;
+/// and the layers it added. Leaves the recipe unchanged on error.
+fn perform(recipe: &mut Recipe, edit: &Edit) -> Result<(Undo, Vec<LayerId>), EditError> {
+    let layers = &mut recipe.layers;
+    let tool_before = |layers: &Layers, layer: LayerId, tool: &ToolId| Undo::Tool {
+        layer,
+        tool: tool.clone(),
+        previous: layers.tools(layer).and_then(|t| t.get(tool)).cloned(),
+    };
+    let layer_before = |layers: &Layers, id: LayerId| {
+        layers.layer(id).map(|l| Undo::Layer(Box::new(l.clone()))).ok_or(LayerError::UnknownLayer(id))
+    };
     let undo = match edit {
-        Edit::SetParam { node, param, value } => {
-            let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
-            let previous = n.params().set(param.clone(), *value);
-            Undo::Param { node: *node, param: param.clone(), previous }
+        Edit::SetParam { at, param, value } => {
+            let undo = tool_before(layers, at.layer, &at.tool);
+            layers.params_mut(at)?.set(param.clone(), *value);
+            undo
         }
-        Edit::ResetParam { node, param } => {
-            let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
-            let previous = n.params().reset(param);
-            Undo::Param { node: *node, param: param.clone(), previous }
+        Edit::SetParams { at, values } => {
+            let undo = tool_before(layers, at.layer, &at.tool);
+            let params = layers.params_mut(at)?;
+            for (p, v) in values {
+                params.set(p.clone(), *v);
+            }
+            undo
         }
-        Edit::SetParams { node, values } => {
-            let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
-            // Undone newest first, so a parameter named twice gets its first previous value back.
-            let previous = values.iter().map(|(p, v)| (p.clone(), n.params().set(p.clone(), *v))).collect();
-            Undo::Params { node: *node, previous }
+        Edit::ResetParam { at, param } => {
+            let undo = tool_before(layers, at.layer, &at.tool);
+            if layers.params(at).is_some() {
+                layers.params_mut(at)?.reset(param);
+            }
+            undo
         }
-        Edit::SetEnabled { node, enabled } => {
-            let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
-            let previous = n.set_enabled(*enabled);
-            Undo::Enabled { node: *node, previous }
+        Edit::ResetTool { layer, tool } => {
+            let undo = tool_before(layers, *layer, tool);
+            layers.tools_mut(*layer).ok_or(LayerError::UnknownLayer(*layer))?.remove(tool);
+            undo
+        }
+        Edit::SetToolEnabled { layer, tool, enabled } => {
+            let undo = tool_before(layers, *layer, tool);
+            layers.tools_mut(*layer).ok_or(LayerError::UnknownLayer(*layer))?.set_enabled(tool, *enabled);
+            undo
+        }
+        Edit::AddLayer { name, mask, tools } => {
+            let before = layers.clone();
+            let mut layer_tools = Tools::new();
+            set_tools(&mut layer_tools, tools);
+            let id = layers.add(name.clone(), mask.clone(), layer_tools);
+            return Ok((Undo::Layers(Box::new(before)), vec![id]));
+        }
+        Edit::RemoveLayer { layer } => {
+            let before = layers.clone();
+            layers.remove(*layer)?;
+            Undo::Layers(Box::new(before))
+        }
+        Edit::MoveLayer { layer, index } => {
+            let before = layers.clone();
+            layers.move_to(*layer, *index)?;
+            Undo::Layers(Box::new(before))
+        }
+        Edit::RenameLayer { layer, name } => {
+            let undo = layer_before(layers, *layer)?;
+            if let Some(l) = layers.layer_mut(*layer) {
+                l.name.clone_from(name);
+            }
+            undo
+        }
+        Edit::SetLayerEnabled { layer, enabled } => {
+            let undo = layer_before(layers, *layer)?;
+            if let Some(l) = layers.layer_mut(*layer) {
+                l.enabled = *enabled;
+            }
+            undo
+        }
+        Edit::SetLayerMask { layer, mask } => {
+            let undo = layer_before(layers, *layer)?;
+            if let Some(l) = layers.layer_mut(*layer) {
+                l.mask = mask.clone();
+            }
+            undo
         }
         Edit::SetWhiteBalance(wb) => Undo::WhiteBalance(std::mem::replace(&mut recipe.develop.white_balance, *wb)),
         Edit::SetCameraProfile(p) => Undo::Profile(std::mem::replace(&mut recipe.develop.profile, p.clone())),
         Edit::SetLensCorrection(l) => Undo::Lens(std::mem::replace(&mut recipe.develop.lens, l.clone())),
         Edit::SetGeometry(g) => Undo::Geometry(std::mem::replace(&mut recipe.geometry, *g)),
         Edit::SetBaseCurve(c) => Undo::Curve(std::mem::replace(&mut recipe.curve, *c)),
-        Edit::SetMask { node, def } => {
-            let mut n = graph.node_mut(*node).ok_or(GraphError::UnknownNode(*node))?;
-            let slot = n.mask().ok_or(EditError::NotAMaskNode(*node))?;
-            let previous = std::mem::replace(slot, def.clone());
-            Undo::Mask { node: *node, previous }
-        }
-        Edit::AddMask { to, def } => {
-            let before = graph.clone();
-            let mut next = before.clone();
-            let mask = next.add_mask_node(def.clone());
-            let port = next
-                .node(*to)
-                .and_then(|n| n.kind.inputs().iter().position(|k| *k == PortKind::Mask))
-                .and_then(|p| u8::try_from(p).ok())
-                .ok_or(EditError::NoMaskInput(*to))?;
-            next.connect(Link { from: mask, from_port: 0, to: *to, to_port: port })?;
-            *graph = next;
-            return Ok((Undo::Graph(Box::new(before.clone())), new_nodes(&before, graph)));
-        }
         Edit::ApplyStyle { style, .. } => {
             let before = recipe.clone();
-            let mut next = before.clone();
-            apply_style(&mut next, style)?;
-            *recipe = next;
-            let created = new_nodes(&before.graph, &recipe.graph);
-            return Ok((Undo::Recipe(Box::new(before)), created));
-        }
-        Edit::AddStyleBrush { name, style, mask } => {
-            let before = graph.clone();
-            let mut next = before.clone();
-            add_style_brush(&mut next, name, style, mask)?;
-            *graph = next;
-            return Ok((Undo::Graph(Box::new(before.clone())), new_nodes(&before, graph)));
-        }
-        Edit::InsertSerial { .. } | Edit::RemoveNode { .. } | Edit::Connect(_) | Edit::Disconnect { .. } => {
-            // Work on a copy and publish it only on success: the strong guarantee.
-            let before = graph.clone();
-            let mut next = before.clone();
-            match edit {
-                Edit::InsertSerial { after, tool, params } => {
-                    next.insert_serial(*after, tool.clone(), params.clone())?;
-                }
-                Edit::RemoveNode { node } => {
-                    next.remove_node(*node)?;
-                }
-                Edit::Connect(link) => {
-                    next.connect(*link)?;
-                }
-                Edit::Disconnect { to, port } => {
-                    next.disconnect(*to, *port);
-                }
-                _ => unreachable!("outer match restricts to structural edits"),
-            }
-            *graph = next;
-            return Ok((Undo::Graph(Box::new(before.clone())), new_nodes(&before, graph)));
+            apply_style(recipe, style);
+            Undo::Recipe(Box::new(before))
         }
     };
     Ok((undo, Vec::new()))
 }
 
-/// Nodes of `after` that `before` did not have, in id order.
-fn new_nodes(before: &NodeGraph, after: &NodeGraph) -> Vec<NodeId> {
-    let mut ids: Vec<NodeId> = after.nodes().map(|n| n.id).filter(|id| before.node(*id).is_none()).collect();
-    ids.sort();
-    ids
-}
-
 /// Restores what an applied edit changed.
 fn revert(recipe: &mut Recipe, undo: &Undo) {
     match undo {
-        Undo::Param { node, param, previous } => {
-            if let Some(mut n) = recipe.graph.node_mut(*node) {
+        Undo::Tool { layer, tool, previous } => {
+            if let Some(tools) = recipe.layers.tools_mut(*layer) {
                 match previous {
-                    Some(v) => n.params().set(param.clone(), *v),
-                    None => n.params().reset(param),
+                    Some(settings) => tools.insert(tool.clone(), settings.clone()),
+                    None => tools.remove(tool),
                 };
             }
         }
-        Undo::Params { node, previous } => {
-            if let Some(mut n) = recipe.graph.node_mut(*node) {
-                for (param, value) in previous.iter().rev() {
-                    match value {
-                        Some(v) => n.params().set(param.clone(), *v),
-                        None => n.params().reset(param),
-                    };
-                }
-            }
-        }
-        Undo::Enabled { node, previous } => {
-            if let Some(mut n) = recipe.graph.node_mut(*node) {
-                n.set_enabled(*previous);
+        Undo::Layer(previous) => {
+            if let Some(l) = recipe.layers.layer_mut(previous.id) {
+                *l = (**previous).clone();
             }
         }
         Undo::WhiteBalance(wb) => recipe.develop.white_balance = *wb,
@@ -1199,14 +1126,7 @@ fn revert(recipe: &mut Recipe, undo: &Undo) {
         Undo::Lens(l) => recipe.develop.lens = l.clone(),
         Undo::Geometry(g) => recipe.geometry = *g,
         Undo::Curve(c) => recipe.curve = *c,
-        Undo::Mask { node, previous } => {
-            if let Some(mut n) = recipe.graph.node_mut(*node)
-                && let Some(def) = n.mask()
-            {
-                *def = previous.clone();
-            }
-        }
-        Undo::Graph(g) => recipe.graph = (**g).clone(),
+        Undo::Layers(l) => recipe.layers = (**l).clone(),
         Undo::Recipe(r) => *recipe = (**r).clone(),
     }
 }
@@ -1214,13 +1134,13 @@ fn revert(recipe: &mut Recipe, undo: &Undo) {
 fn same_param(a: &Edit, b: &Edit) -> bool {
     matches!(
         (a, b),
-        (Edit::SetParam { node: n1, param: p1, .. }, Edit::SetParam { node: n2, param: p2, .. })
+        (Edit::SetParam { at: n1, param: p1, .. }, Edit::SetParam { at: n2, param: p2, .. })
             if n1 == n2 && p1 == p2
-    ) || matches!((a, b), (Edit::SetMask { node: n1, .. }, Edit::SetMask { node: n2, .. }) if n1 == n2)
+    ) || matches!((a, b), (Edit::SetLayerMask { layer: l1, .. }, Edit::SetLayerMask { layer: l2, .. }) if l1 == l2)
         || matches!((a, b), (Edit::SetGeometry(_), Edit::SetGeometry(_)))
         || matches!(
             (a, b),
-            (Edit::SetParams { node: n1, values: v1 }, Edit::SetParams { node: n2, values: v2 })
+            (Edit::SetParams { at: n1, values: v1 }, Edit::SetParams { at: n2, values: v2 })
                 if n1 == n2 && v1.len() == v2.len() && v1.iter().zip(v2).all(|(x, y)| x.0 == y.0)
         )
 }

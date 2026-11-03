@@ -20,8 +20,9 @@ Usage:
 
 develop   Develops a RAW file to an sRGB JPEG. Without -o the JPEG goes next to
           the RAW file; an existing file is never overwritten. With a
-          selection, the exposure applies only inside it.
-          --denoise adds the AI denoise node (SCUNet) after the exposure:
+          selection, the exposure applies only inside it (a layer masked
+          to the selection).
+          --denoise turns on the AI denoise (SCUNet), before the exposure:
           how much of the grain to remove, 0-100 (80 is the recommended
           value); --denoise-color sets how much of the colour blotches to
           remove, 0-100 (default 100). The model is looked for in
@@ -493,7 +494,7 @@ fn parse_mask(mut it: impl Iterator<Item = String>) -> Result<MaskArgs, String> 
     Ok(a)
 }
 
-/// Recommended amounts of the AI denoise node (a medium strength).
+/// Recommended amounts of the AI denoise (a medium strength).
 const DEFAULT_DENOISE_GRAIN: f32 = 80.0;
 const DEFAULT_DENOISE_COLOR: f32 = 100.0;
 
@@ -566,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn either_denoise_option_adds_the_node_with_the_recommended_default_for_the_other() {
+    fn either_denoise_option_turns_it_on_with_the_recommended_default_for_the_other() {
         let Ok(Command::Develop(a)) = parse_str("develop a.nef --denoise 50") else { panic!("expected develop") };
         assert_eq!(a.denoise, Some((50.0, 100.0)));
         let Ok(Command::Develop(a)) = parse_str("develop a.nef --denoise-color 0") else { panic!("expected develop") };

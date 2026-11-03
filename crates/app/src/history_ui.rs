@@ -307,9 +307,9 @@ impl Tabs {
 fn kind_color(t: &Tokens, kind: EditKind) -> Color32 {
     match kind {
         EditKind::Develop => t.accent,
-        EditKind::Adjust => t.port_image,
-        EditKind::Node => t.text_weak,
-        EditKind::Mask => t.port_mask,
+        EditKind::Adjust => t.adjust_mark,
+        EditKind::Layer => t.text_weak,
+        EditKind::Mask => t.mask_mark,
     }
 }
 

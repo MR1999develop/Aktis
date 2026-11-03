@@ -1,6 +1,6 @@
 [package]
 name = "render-cpu"
-description = "Reference renderer on the CPU: evaluates the node graph and produces display pixels."
+description = "Reference renderer on the CPU: renders a photo's layers and produces display pixels."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

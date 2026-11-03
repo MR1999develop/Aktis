@@ -10,20 +10,19 @@
 //!   tool and the selected spot's kind;
 //! - Delete or Backspace (or the Delete button) removes the selected spot.
 //!
-//! The spots are parameters of a retouch node ([`tool_adjust::retouch`]):
-//! the spots of the selected retouch node are shown; the first spot
-//! without one makes a new node and selects it ([`editor::retouch`] says
-//! where). Every change is one undo step; a drag is one step.
+//! The spots are parameters of the retouch tool of the selected layer
+//! ([`tool_adjust::retouch`], [`editor::retouch`] says where a new one
+//! goes): the spots of that layer are shown and edited. Every change is one
+//! undo step; a drag is one step.
 
 use commands::GestureId;
-use core_model::{Geometry, NodeId, NormPoint, ParamId, ParamValue, Params};
+use core_model::{Geometry, LayerId, NormPoint, ParamId, ParamValue, ToolRef};
+use editor::Document;
 use editor::retouch::{self as spots_of, Circles, Part};
-use editor::{Document, NodeRow};
 use eframe::egui::{self, Pos2, Rect, Response, RichText, Stroke};
 use tool_adjust::retouch::{self, Field, MAX_RADIUS, Spot, SpotKind};
-use tool_api::{ResolvedParams, Tool, ToolRegistry};
+use tool_api::ToolRegistry;
 
-use crate::inspector::UiEdit;
 use crate::theme::{FONT, SPACE, SPOT_LINE, SPOT_SHADOW, Tokens};
 use crate::toolbar::ViewerTool;
 
@@ -45,10 +44,10 @@ pub enum RetouchEdit {
     End,
     /// A new spot (it becomes the selected one).
     Add(Spot),
-    /// New values for a spot of `node` (`in_drag`: part of the drag).
+    /// New values for a spot of the slot `at` (`in_drag`: part of the drag).
     Change {
-        /// The retouch node.
-        node: NodeId,
+        /// The slot of the retouch tool.
+        at: ToolRef,
         /// The values.
         values: Vec<(ParamId, ParamValue)>,
         /// Part of the current drag.
@@ -56,11 +55,14 @@ pub enum RetouchEdit {
     },
 }
 
+/// A spot of the layer: its slot, its index there, the spot.
+type Placed = (ToolRef, usize, Spot);
+
 /// A circle being dragged.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct SpotDrag {
-    node: NodeId,
-    slot: usize,
+    at: ToolRef,
+    index: usize,
     part: Part,
     /// Centre minus pointer, in the developed image (0–1).
     offset: [f32; 2],
@@ -75,8 +77,8 @@ pub struct RetouchUi {
     feather: f32,
     /// Opacity of new spots (0–1).
     opacity: f32,
-    /// The selected spot: its node and slot.
-    selected: Option<(NodeId, usize)>,
+    /// The selected spot: its slot and index there.
+    selected: Option<(ToolRef, usize)>,
     drag: Option<SpotDrag>,
     /// The undo step of the current drag.
     gesture: Option<GestureId>,
@@ -159,35 +161,31 @@ fn kind_of(tool: ViewerTool) -> SpotKind {
 }
 
 impl RetouchUi {
-    /// The spots of the selected node, when it is a retouch node.
-    fn spots(
-        doc: &Document,
-        registry: &ToolRegistry,
-        selected_node: Option<NodeId>,
-    ) -> Option<(NodeId, [Option<Spot>; retouch::MAX_SPOTS])> {
-        let node = selected_node?;
-        Some((node, spots_of::spots(doc, registry, node)?))
-    }
-
-    /// The selected spot, if it still exists in the selected node.
-    fn selected_spot(&mut self, current: Option<&(NodeId, [Option<Spot>; retouch::MAX_SPOTS])>) -> Option<Spot> {
-        let found = match (self.selected, current) {
-            (Some((node, slot)), Some((n, spots))) if node == *n => spots.get(slot).copied().flatten(),
-            _ => None,
-        };
+    /// The selected spot, if it still exists in `current`.
+    fn selected_spot(&mut self, current: &[Placed]) -> Option<Spot> {
+        let found = self
+            .selected
+            .as_ref()
+            .and_then(|(at, i)| current.iter().find(|(a, j, _)| a == at && j == i).map(|(_, _, s)| *s));
         if found.is_none() {
             self.selected = None;
         }
         found
     }
 
-    /// Applies what the tools asked for; returns a message for the user
-    /// when a change was refused. A new spot's node becomes the selected one.
+    /// Forgets the selected spot (another photo or layer).
+    pub fn deselect(&mut self) {
+        self.selected = None;
+        self.drag = None;
+    }
+
+    /// Applies what the tools asked for on `layer`; returns a message for
+    /// the user when a change was refused. A new spot becomes the selected one.
     pub fn apply(
         &mut self,
         doc: &mut Document,
         registry: &ToolRegistry,
-        selected_node: &mut Option<NodeId>,
+        layer: LayerId,
         edits: Vec<RetouchEdit>,
     ) -> Option<String> {
         let mut problem = None;
@@ -202,13 +200,10 @@ impl RetouchUi {
                     Ok(())
                 }
                 RetouchEdit::Add(spot) => {
-                    spots_of::add_spot(doc, registry, *selected_node, &spot).map(|(node, slot)| {
-                        *selected_node = Some(node);
-                        self.selected = Some((node, slot));
-                    })
+                    spots_of::add_spot(doc, registry, layer, &spot).map(|placed| self.selected = Some(placed))
                 }
-                RetouchEdit::Change { node, values, in_drag } => {
-                    doc.set_params(registry, node, values, self.gesture.filter(|_| in_drag))
+                RetouchEdit::Change { at, values, in_drag } => {
+                    doc.set_params(registry, &at, values, self.gesture.filter(|_| in_drag))
                 }
             };
             if let Err(e) = result {
@@ -218,9 +213,8 @@ impl RetouchUi {
         problem
     }
 
-    /// The tool over the photo shown in `screen`: draws the spots of the
-    /// selected retouch node, places, selects, moves, resizes and deletes
-    /// them. Returns whether the pointer drag is the tool's (so the
+    /// The tool over the photo shown in `screen`: draws the spots of
+    /// `layer`, places, selects, moves, resizes and deletes them. Returns whether the pointer drag is the tool's (so the
     /// viewer does not pan).
     #[allow(clippy::too_many_arguments)] // the viewer's state, as the other tools
     pub fn overlay(
@@ -230,46 +224,44 @@ impl RetouchUi {
         screen: Rect,
         doc: &Document,
         registry: &ToolRegistry,
-        selected_node: Option<NodeId>,
+        layer: LayerId,
         tool: ViewerTool,
         edits: &mut Vec<RetouchEdit>,
     ) -> bool {
         let t = Tokens::of(ui.ctx().theme());
         let map = Mapping::new(doc, screen);
-        let current = Self::spots(doc, registry, selected_node);
-        let selected = self.selected_spot(current.as_ref());
+        let current = spots_of::all_spots(doc, registry, layer);
+        let selected = self.selected_spot(&current);
+        // A circle's `slot` is the spot's place in `current`.
         let circles: Vec<Circles> = current
             .iter()
-            .flat_map(|(_, spots)| spots.iter().enumerate())
-            .filter_map(|(slot, s)| {
-                let s = s.as_ref()?;
-                Some(Circles {
-                    slot,
-                    spot: map.to_screen(s.at).map(|p| [p.x, p.y]),
-                    source: map.to_screen(s.source).map(|p| [p.x, p.y]),
-                    radius: map.radius(s.at, s.radius),
-                })
+            .enumerate()
+            .map(|(k, (_, _, s))| Circles {
+                slot: k,
+                spot: map.to_screen(s.at).map(|p| [p.x, p.y]),
+                source: map.to_screen(s.source).map(|p| [p.x, p.y]),
+                radius: map.radius(s.at, s.radius),
             })
             .collect();
         let hit = |p: Pos2| spots_of::hit(&circles, [p.x, p.y], SLACK);
 
-        self.keys(ui.ctx(), current.as_ref().map(|(n, _)| *n), selected, edits);
+        self.keys(ui.ctx(), selected, edits);
 
         // Start a drag on a circle; the drag moves it.
         if response.drag_started_by(egui::PointerButton::Primary)
-            && let Some((node, spots)) = &current
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
-            && let Some((slot, part)) = hit(origin)
-            && let Some(spot) = spots[slot]
-            && let Some(at) = map.to_dev(origin)
+            && let Some((k, part)) = hit(origin)
+            && let Some((at, index, spot)) = current.get(k)
+            && let Some(pointer) = map.to_dev(origin)
         {
             let centre = if part == Part::Spot { spot.at } else { spot.source };
-            self.drag = Some(SpotDrag { node: *node, slot, part, offset: [centre[0] - at[0], centre[1] - at[1]] });
-            self.selected = Some((*node, slot));
+            let offset = [centre[0] - pointer[0], centre[1] - pointer[1]];
+            self.drag = Some(SpotDrag { at: at.clone(), index: *index, part, offset });
+            self.selected = Some((at.clone(), *index));
             edits.push(RetouchEdit::Begin);
         }
-        if let Some(d) = self.drag {
-            let spot = current.as_ref().filter(|(n, _)| *n == d.node).and_then(|(_, s)| s[d.slot]);
+        if let Some(d) = self.drag.clone() {
+            let spot = current.iter().find(|(a, i, _)| *a == d.at && *i == d.index).map(|(_, _, s)| *s);
             if response.dragged()
                 && let Some(mut spot) = spot
                 && let Some(at) = response.interact_pointer_pos().and_then(|p| map.to_dev(p))
@@ -283,8 +275,8 @@ impl RetouchUi {
                     [Field::SourceX, Field::SourceY]
                 };
                 edits.push(RetouchEdit::Change {
-                    node: d.node,
-                    values: retouch::values(d.slot, &spot, &fields),
+                    at: d.at.clone(),
+                    values: retouch::values(d.index, &spot, &fields),
                     in_drag: true,
                 });
             }
@@ -298,9 +290,9 @@ impl RetouchUi {
         if response.clicked_by(egui::PointerButton::Primary)
             && let Some(p) = response.interact_pointer_pos()
         {
-            match (hit(p), &current) {
-                (Some((slot, _)), Some((node, _))) => self.selected = Some((*node, slot)),
-                _ => {
+            match hit(p).and_then(|(k, _)| current.get(k)) {
+                Some((at, index, _)) => self.selected = Some((at.clone(), *index)),
+                None => {
                     if let Some(at) = map.to_dev(p) {
                         let spot = Spot {
                             kind: kind_of(tool),
@@ -332,9 +324,10 @@ impl RetouchUi {
 
         // The spots: each spot's circle; the source and the line too for
         // the selected one, the one under the pointer and the one dragged.
-        let shown_slot = self.selected.map(|(_, s)| s);
-        let hover_slot = hovered.map(|(_, (s, _))| s);
-        let drag_slot = self.drag.map(|d| d.slot);
+        let place = |at: &ToolRef, index: usize| current.iter().position(|(a, i, _)| a == at && *i == index);
+        let shown_slot = self.selected.as_ref().and_then(|(at, i)| place(at, *i));
+        let hover_slot = hovered.map(|(_, (k, _))| k);
+        let drag_slot = self.drag.as_ref().and_then(|d| place(&d.at, d.index));
         for c in &circles {
             let active = Some(c.slot) == shown_slot;
             let accent = active.then_some(t.accent);
@@ -361,13 +354,7 @@ impl RetouchUi {
 
     /// `[` and `]` change the size, Delete and Backspace remove the
     /// selected spot. Not while typing.
-    fn keys(
-        &mut self,
-        ctx: &egui::Context,
-        node: Option<NodeId>,
-        selected: Option<Spot>,
-        edits: &mut Vec<RetouchEdit>,
-    ) {
+    fn keys(&mut self, ctx: &egui::Context, selected: Option<Spot>, edits: &mut Vec<RetouchEdit>) {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
@@ -378,7 +365,7 @@ impl RetouchUi {
         if smaller != larger {
             let base = selected.map_or(self.radius, |s| s.radius);
             let next = if larger { base * SIZE_STEP } else { base / SIZE_STEP };
-            self.set_radius(next.clamp(MIN_RADIUS, MAX_RADIUS), node, selected, false, edits);
+            self.set_radius(next.clamp(MIN_RADIUS, MAX_RADIUS), selected, false, edits);
         }
         let delete = self.selected.is_some()
             && ctx.input_mut(|i| {
@@ -392,40 +379,31 @@ impl RetouchUi {
 
     /// Removes the selected spot.
     fn delete(&mut self, edits: &mut Vec<RetouchEdit>) {
-        if let Some((node, slot)) = self.selected.take() {
+        if let Some((at, index)) = self.selected.take() {
             self.drag = None;
-            edits.push(RetouchEdit::Change { node, values: retouch::cleared(slot), in_drag: false });
+            edits.push(RetouchEdit::Change { at, values: retouch::cleared(index), in_drag: false });
         }
     }
 
     /// A new brush size, given to the selected spot too.
-    fn set_radius(
-        &mut self,
-        radius: f32,
-        node: Option<NodeId>,
-        selected: Option<Spot>,
-        in_drag: bool,
-        edits: &mut Vec<RetouchEdit>,
-    ) {
+    fn set_radius(&mut self, radius: f32, selected: Option<Spot>, in_drag: bool, edits: &mut Vec<RetouchEdit>) {
         self.radius = radius;
-        self.change_selected(node, selected, |s| s.radius = radius, Field::Radius, in_drag, edits);
+        self.change_selected(selected, |s| s.radius = radius, Field::Radius, in_drag, edits);
     }
 
     /// Changes one field of the selected spot.
     fn change_selected(
         &self,
-        node: Option<NodeId>,
         selected: Option<Spot>,
         change: impl FnOnce(&mut Spot),
         field: Field,
         in_drag: bool,
         edits: &mut Vec<RetouchEdit>,
     ) {
-        if let (Some((n, slot)), Some(mut spot)) = (self.selected, selected)
-            && node == Some(n)
-        {
+        if let (Some((at, index)), Some(mut spot)) = (&self.selected, selected) {
             change(&mut spot);
-            edits.push(RetouchEdit::Change { node: n, values: retouch::values(slot, &spot, &[field]), in_drag });
+            let values = retouch::values(*index, &spot, &[field]);
+            edits.push(RetouchEdit::Change { at: at.clone(), values, in_drag });
         }
     }
 
@@ -440,12 +418,11 @@ impl RetouchUi {
         tool: ViewerTool,
         doc: &Document,
         registry: &ToolRegistry,
-        selected_node: Option<NodeId>,
+        layer: LayerId,
         edits: &mut Vec<RetouchEdit>,
     ) -> Option<ViewerTool> {
-        let current = Self::spots(doc, registry, selected_node);
-        let node = current.as_ref().map(|(n, _)| *n);
-        let selected = self.selected_spot(current.as_ref());
+        let current = spots_of::all_spots(doc, registry, layer);
+        let selected = self.selected_spot(&current);
         let developed = doc.developed();
         #[allow(clippy::cast_precision_loss)] // image sizes
         let long = developed.width().max(developed.height()).max(1) as f32;
@@ -460,7 +437,7 @@ impl RetouchUi {
                 {
                     switch = Some(kind_tool);
                     let kind = kind_of(kind_tool);
-                    self.change_selected(node, selected, |s| s.kind = kind, Field::Kind, false, edits);
+                    self.change_selected(selected, |s| s.kind = kind, Field::Kind, false, edits);
                 }
             }
             ui.separator();
@@ -486,7 +463,7 @@ impl RetouchUi {
             let r = slider(ui, "Size", &mut size, 1.0..=MAX_RADIUS * long, " px", true);
             let in_drag = track(&r, edits);
             if r.changed() {
-                self.set_radius((size / long).clamp(MIN_RADIUS, MAX_RADIUS), node, selected, in_drag, edits);
+                self.set_radius((size / long).clamp(MIN_RADIUS, MAX_RADIUS), selected, in_drag, edits);
             }
             let mut feather = shown.feather * 100.0;
             let r = slider(ui, "Feather", &mut feather, 0.0..=100.0, " %", false);
@@ -494,7 +471,7 @@ impl RetouchUi {
             if r.changed() {
                 self.feather = feather / 100.0;
                 let f = self.feather;
-                self.change_selected(node, selected, |s| s.feather = f, Field::Feather, in_drag, edits);
+                self.change_selected(selected, |s| s.feather = f, Field::Feather, in_drag, edits);
             }
             let mut opacity = shown.opacity * 100.0;
             let r = slider(ui, "Opacity", &mut opacity, 0.0..=100.0, " %", false);
@@ -502,7 +479,7 @@ impl RetouchUi {
             if r.changed() {
                 self.opacity = opacity / 100.0;
                 let o = self.opacity;
-                self.change_selected(node, selected, |s| s.opacity = o, Field::Opacity, in_drag, edits);
+                self.change_selected(selected, |s| s.opacity = o, Field::Opacity, in_drag, edits);
             }
             if ends.into_iter().any(|e| e) {
                 edits.push(RetouchEdit::End);
@@ -559,29 +536,26 @@ fn link(painter: &egui::Painter, from: Pos2, to: Pos2, accent: Option<egui::Colo
     painter.line_segment([from, to], Stroke::new(1.0, accent.unwrap_or(SPOT_LINE)));
 }
 
-/// The settings of a retouch node in the inspector: its spots, each with
-/// a Remove button, and how to add them.
-pub fn panel(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
+/// The Spots panel: the spots of `layer`, each with a Remove button, and
+/// how to add them.
+pub fn panel(ui: &mut egui::Ui, doc: &Document, registry: &ToolRegistry, layer: LayerId, edits: &mut Vec<RetouchEdit>) {
     let t = Tokens::of(ui.ctx().theme());
-    let mut params = Params::new();
-    for p in &row.params {
-        params.set(p.descriptor.id.clone(), p.value);
-    }
-    let spots = retouch::spots(&ResolvedParams::resolve(retouch::Retouch.descriptor(), &params));
-    let count = spots.iter().flatten().count();
-    ui.label(
-        RichText::new(format!("{count} of {} spots. Add them with Heal (H) or Clone (S) in the bar.", spots.len()))
-            .color(t.text_weak),
-    );
+    let spots = spots_of::all_spots(doc, registry, layer);
+    let count = spots.len();
+    let text = if count == 0 {
+        "No spots. Add them with Heal (H) or Clone (S) in the bar.".to_owned()
+    } else {
+        format!("{count} spots. Add more with Heal (H) or Clone (S) in the bar.")
+    };
+    ui.label(RichText::new(text).color(t.text_weak));
     ui.add_space(SPACE[0]);
-    for (slot, spot) in spots.iter().enumerate() {
-        let Some(spot) = spot else { continue };
+    for (n, (at, index, spot)) in spots.iter().enumerate() {
         ui.horizontal(|ui| {
             let kind = match spot.kind {
                 SpotKind::Heal => "Heal",
                 SpotKind::Clone => "Clone",
             };
-            ui.label(format!("Spot {}", slot + 1));
+            ui.label(format!("Spot {}", n + 1));
             ui.label(
                 RichText::new(format!(
                     "{kind}, size {:.1} %, feather {:.0} %, opacity {:.0} %",
@@ -593,12 +567,7 @@ pub fn panel(ui: &mut egui::Ui, row: &NodeRow, edits: &mut Vec<UiEdit>) {
                 .color(t.text_weak),
             );
             if ui.small_button("Remove").on_hover_text("Remove this spot").clicked() {
-                edits.push(UiEdit::SetMany {
-                    node: row.node,
-                    key: retouch::param_id(slot, Field::Radius),
-                    values: retouch::cleared(slot),
-                    in_drag: false,
-                });
+                edits.push(RetouchEdit::Change { at: at.clone(), values: retouch::cleared(*index), in_drag: false });
             }
         });
     }

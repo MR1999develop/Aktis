@@ -1,6 +1,6 @@
 //! Masks: single-channel images, and the description of how a mask is built.
 //!
-//! A mask node stores a [`MaskDef`]: an ordered list of components combined
+//! A layer's mask is a [`MaskDef`]: an ordered list of components combined
 //! with add, subtract and intersect, plus edge refinement, feather, opacity
 //! and invert. AI components keep their *prompt* (subject, clicks, a
 //! rectangle) and the [`RasterKey`] of the result the model produced for it.
@@ -492,7 +492,7 @@ impl MaskComponent {
 /// Largest feather radius, as a fraction of the image's long side.
 pub const MAX_FEATHER: f32 = 0.1;
 
-/// How a mask node builds its mask.
+/// How a layer builds its mask.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaskDef {
     /// Components in order, top to bottom.

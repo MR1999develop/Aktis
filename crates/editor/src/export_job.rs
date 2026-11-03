@@ -184,9 +184,9 @@ fn export_one(
             if photo.recipe.is_none() {
                 let camera = format!("{} {}", file.make, file.model).trim().to_owned();
                 let lens = job.custom_lenses.start_settings(raw.capture.lens_key().as_deref());
-                let nodes = job.camera_defaults.start_nodes(&camera);
+                let tools = job.camera_defaults.start_tools(&camera);
                 let raw_iso = (!raw.capture.rendered).then_some(file.info.iso).flatten();
-                recipe = crate::camera_defaults::start_recipe(engine.registry(), &camera, raw_iso, lens, &nodes);
+                recipe = crate::camera_defaults::start_recipe(engine.registry(), &camera, raw_iso, lens, &tools);
             }
             let image = Arc::new(develop_full(&raw, &recipe, &name)?);
             // Auto's curve for a RAW file: the camera's look, as the editor shows it.
@@ -199,9 +199,7 @@ fn export_one(
     if cancel.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    let rendered = engine
-        .render_with_masks(&recipe.graph, &image, crate::worker::rasters())
-        .map_err(|e| format!("{name}: {e}"))?;
+    let rendered = engine.render_with_masks(&recipe.layers, &image, crate::worker::rasters());
     drop(image);
     if cancel.load(Ordering::Relaxed) {
         return Ok(None);

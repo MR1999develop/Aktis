@@ -1,11 +1,11 @@
 //! GPU engine on wgpu: Vulkan (NVIDIA, AMD, Intel), DirectX 12 and Metal from
 //! one code base.
 //!
-//! [`GpuRenderer::render`] evaluates a node graph on the GPU and returns the
-//! same pixels as `render-cpu` within a stated tolerance. Data stay on the
-//! GPU for the whole chain of nodes and are read back once. Images larger
-//! than the device's buffer limits are processed in chunks of rows; per-pixel
-//! kernels need no overlap between chunks.
+//! [`GpuRenderer::render`] renders a photo's layers on the GPU and returns
+//! the same pixels as `render-cpu` within a stated tolerance. Data stay on
+//! the GPU for the whole chain of tools and are read back once. Images
+//! larger than the device's buffer limits are processed in chunks of rows;
+//! per-pixel kernels need no overlap between chunks.
 //!
 //! Host tools ([`GpuKernel::Host`], such as the neural-network denoiser) split
 //! the chain: the kernels before them run and are read back, the tool runs on
@@ -14,16 +14,19 @@
 //!
 //! Masks are built on the CPU by the `masks` crate (the same code as the
 //! reference renderer, so both see identical masks) and uploaded next to the
-//! image; a masked kernel writes `c + mask · (tool(c) − c)`.
+//! image. A layer's kernels run on a copy of the image, and a blend kernel
+//! mixes their result in: `c + mask · (tools(c) − c)`. A layer holding a
+//! host tool runs on the CPU, as in `render-cpu`.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
-use core_model::{GraphError, ImageError, ImageF32, MaskImage, NodeGraph, NodeId, NodeKind, Rgba, ToolId};
+use core_model::{ImageError, ImageF32, LayerId, Layers, MaskImage, Rgba, ToolId, ToolRef, Tools};
 use masks::{NoRasters, RasterSource};
-use tool_api::{GpuKernel, MAX_PARAMS, ResolvedParams, ToolError, ToolRegistry};
+pub use render_cpu::Rendered;
+use tool_api::{GpuKernel, MAX_PARAMS, ResolvedParams, ToolRegistry};
 
 /// Threads per workgroup in every kernel.
 const WORKGROUP: u32 = 256;
@@ -39,16 +42,10 @@ pub enum GpuError {
     NoAdapter(String),
     /// The adapter refused to create a device.
     Device(String),
-    /// The graph cannot be evaluated.
-    Graph(GraphError),
-    /// A node has no image input.
-    MissingInput(NodeId),
-    /// The node kind is not rendered yet in this phase (parallel mixer).
-    NotYetSupported(NodeId),
-    /// A tool's WGSL code was refused by the shader compiler (a bug in the tool).
+    /// WGSL code was refused by the shader compiler (a bug in a tool or here).
     InvalidShader {
-        /// The tool.
-        tool: ToolId,
+        /// The tool, or the editor's own kernel.
+        tool: String,
         /// Compiler message.
         message: String,
     },
@@ -56,8 +53,6 @@ pub enum GpuError {
     Readback(String),
     /// The result could not be assembled into an image.
     Image(ImageError),
-    /// A mask node has no mask definition (a corrupted recipe).
-    NoMaskDefinition(NodeId),
     /// A mask does not have the image's size (a bug in mask evaluation).
     MaskSize,
 }
@@ -67,25 +62,15 @@ impl fmt::Display for GpuError {
         match self {
             Self::NoAdapter(why) => write!(f, "no usable GPU found: {why}"),
             Self::Device(why) => write!(f, "the GPU refused to start: {why}"),
-            Self::Graph(e) => e.fmt(f),
-            Self::MissingInput(id) => write!(f, "node {id} has no image input"),
-            Self::NotYetSupported(id) => write!(f, "node {id} cannot be rendered on the GPU yet"),
             Self::InvalidShader { tool, message } => write!(f, "GPU code of tool '{tool}' is invalid: {message}"),
             Self::Readback(why) => write!(f, "reading the result from the GPU failed: {why}"),
             Self::Image(e) => e.fmt(f),
-            Self::NoMaskDefinition(id) => write!(f, "mask node {id} has no mask definition"),
             Self::MaskSize => write!(f, "a mask does not have the size of the image"),
         }
     }
 }
 
 impl std::error::Error for GpuError {}
-
-impl From<GraphError> for GpuError {
-    fn from(e: GraphError) -> Self {
-        Self::Graph(e)
-    }
-}
 
 /// The GPU device and its queue. Create once and share; creation blocks, so
 /// do it on a worker thread, never on the UI thread.
@@ -162,7 +147,7 @@ impl GpuContext {
 /// The WGSL wrapped around a tool's per-pixel body. `params.v` holds what
 /// `Tool::gpu_uniforms` packed (by default the parameters in descriptor
 /// order); `params.n` is (pixel count of the chunk, 1 when `key_mask` holds
-/// the node's mask — 0: no mask, `key_mask` is a placeholder and is not read
+/// a mask — 0: no mask, `key_mask` is a placeholder and is not read
 /// —, image width, image height) and `params.m.x` the index of the chunk's
 /// first pixel, from which the body's `uv` (position in the image) is made.
 fn per_pixel_shader(body: &str) -> String {
@@ -215,21 +200,29 @@ fn uniform_bytes(params: &[f32; MAX_PARAMS], place: ChunkPlace, masked: bool) ->
     bytes
 }
 
-/// The rendered image and what could not be applied.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Rendered {
-    /// Linear image in the source's working space.
-    pub image: ImageF32,
-    /// Tools used by the recipe but missing from this build (passed through).
-    pub missing_tools: Vec<ToolId>,
-    /// Nodes whose tool could not run (passed through), as in `render-cpu`.
-    pub tool_errors: Vec<(NodeId, ToolError)>,
-    /// AI mask components whose raster is not computed: (mask node, component
-    /// index). They counted as empty.
-    pub missing_masks: Vec<(NodeId, usize)>,
+/// The editor's own kernel that mixes a layer in: `dst` holds the layer's
+/// result, `src` the image under the layer; same bindings as the tools'.
+fn blend_shader() -> String {
+    format!(
+        "struct Params {{ v: array<vec4<f32>, {groups}>, n: vec4<u32>, m: vec4<u32>, }};\n\
+         @group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;\n\
+         @group(0) @binding(1) var<storage, read_write> dst: array<vec4<f32>>;\n\
+         @group(0) @binding(2) var<uniform> params: Params;\n\
+         @group(0) @binding(3) var<storage, read> key_mask: array<f32>;\n\
+         @compute @workgroup_size({WORKGROUP})\n\
+         fn main(@builtin(global_invocation_id) id: vec3<u32>) {{\n\
+             if (id.x >= params.n.x) {{ return; }}\n\
+             let c = src[id.x];\n\
+             dst[id.x] = c + key_mask[id.x] * (dst[id.x] - c);\n\
+         }}\n",
+        groups = MAX_PARAMS / 4,
+    )
 }
 
-/// What one node does in a render.
+/// Name under which the blend kernel is cached.
+const BLEND: &str = "layer blend";
+
+/// What one kernel does in a render.
 enum Step {
     /// Run a kernel from buffer `input` into buffer `output`, through mask
     /// number `mask` if any.
@@ -242,12 +235,12 @@ enum Step {
     },
 }
 
-/// Renders node graphs on a [`GpuContext`], caching one pipeline per tool.
+/// Renders layers on a [`GpuContext`], caching one pipeline per tool.
 pub struct GpuRenderer {
     ctx: Arc<GpuContext>,
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
-    pipelines: Mutex<HashMap<ToolId, Arc<wgpu::ComputePipeline>>>,
+    pipelines: Mutex<HashMap<String, Arc<wgpu::ComputePipeline>>>,
 }
 
 impl fmt::Debug for GpuRenderer {
@@ -302,20 +295,21 @@ impl GpuRenderer {
         &self.ctx
     }
 
-    /// The compiled pipeline of a tool, built on first use.
-    fn pipeline(&self, tool: &ToolId, body: &str) -> Result<Arc<wgpu::ComputePipeline>, GpuError> {
+    /// The compiled pipeline of a tool (or of [`BLEND`]), built on first use
+    /// from the shader `source` makes.
+    fn pipeline(&self, name: &str, source: impl FnOnce() -> String) -> Result<Arc<wgpu::ComputePipeline>, GpuError> {
         let mut cache = self.pipelines.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(p) = cache.get(tool) {
+        if let Some(p) = cache.get(name) {
             return Ok(Arc::clone(p));
         }
         let device = &self.ctx.device;
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(tool.as_str()),
-            source: wgpu::ShaderSource::Wgsl(per_pixel_shader(body).into()),
+            label: Some(name),
+            source: wgpu::ShaderSource::Wgsl(source().into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(tool.as_str()),
+            label: Some(name),
             layout: Some(&self.pipeline_layout),
             module: &module,
             entry_point: Some("main"),
@@ -323,134 +317,131 @@ impl GpuRenderer {
             cache: None,
         });
         if let Some(e) = pollster::block_on(scope.pop()) {
-            return Err(GpuError::InvalidShader { tool: tool.clone(), message: e.to_string() });
+            return Err(GpuError::InvalidShader { tool: name.to_owned(), message: e.to_string() });
         }
         let pipeline = Arc::new(pipeline);
-        cache.insert(tool.clone(), Arc::clone(&pipeline));
+        cache.insert(name.to_owned(), Arc::clone(&pipeline));
         Ok(pipeline)
     }
 
-    /// Evaluates `graph` on `source` (the developed image), with no AI
+    /// Renders `layers` on `source` (the developed image), with no AI
     /// rasters: every AI mask component counts as not computed.
     ///
     /// # Errors
-    /// [`GpuError`] when the graph cannot be evaluated, a shader is invalid, or the GPU fails.
-    pub fn render(&self, graph: &NodeGraph, registry: &ToolRegistry, source: &ImageF32) -> Result<Rendered, GpuError> {
-        self.render_with_masks(graph, registry, source, &NoRasters)
+    /// [`GpuError`] when a shader is invalid or the GPU fails.
+    pub fn render(&self, layers: &Layers, registry: &ToolRegistry, source: &ImageF32) -> Result<Rendered, GpuError> {
+        self.render_with_masks(layers, registry, source, &NoRasters)
     }
 
-    /// Evaluates `graph` on `source` (the developed image), taking AI rasters from `rasters`.
+    /// Renders `layers` on `source` (the developed image), taking AI rasters from `rasters`.
     ///
     /// # Errors
-    /// [`GpuError`] when the graph cannot be evaluated, a shader is invalid, or the GPU fails.
+    /// [`GpuError`] when a shader is invalid or the GPU fails.
     pub fn render_with_masks(
         &self,
-        graph: &NodeGraph,
+        layers: &Layers,
         registry: &ToolRegistry,
         source: &ImageF32,
         rasters: &dyn RasterSource,
     ) -> Result<Rendered, GpuError> {
-        // Plan: buffer 0 holds the segment's input; each active kernel writes a new buffer.
-        // Bypassed nodes, missing tools and the output just reuse their input's buffer.
-        // A host tool ends the segment: its input is read back, the tool runs on
-        // the CPU side, and its result becomes buffer 0 of the next segment.
+        let order = registry.pipeline();
         // Borrowed until a host tool produces a new image: no copy of the source per render.
-        let mut segment_input: Cow<'_, ImageF32> = Cow::Borrowed(source);
-        let mut buffer_of: BTreeMap<NodeId, usize> = BTreeMap::new();
-        // Nodes whose buffers belonged to a finished segment.
-        let mut finished: BTreeSet<NodeId> = BTreeSet::new();
-        // Masks are built once from the source and shared by every segment.
-        let mut mask_of: BTreeMap<NodeId, usize> = BTreeMap::new();
-        let mut mask_images: Vec<MaskImage> = Vec::new();
-        let mut steps = Vec::new();
-        let mut missing_tools = Vec::new();
-        let mut tool_errors = Vec::new();
-        let mut missing_masks = Vec::new();
-        let mut buffers = 1;
-        for id in graph.evaluation_order()? {
-            let Some(node) = graph.node(id) else { continue };
-            let input = || {
-                let from = graph.input_link(id, 0).ok_or(GpuError::MissingInput(id))?.from;
-                if finished.contains(&from) {
-                    // A branch that skips over a host tool: not needed until
-                    // the parallel mixer is rendered.
-                    return Err(GpuError::NotYetSupported(id));
+        let mut plan = Plan::new(Cow::Borrowed(source));
+        let mut report = Issues::default();
+        self.plan_tools(&mut plan, &layers.background, LayerId::BACKGROUND, &order, registry, &mut report)?;
+        for layer in layers.layers().iter().filter(|l| l.enabled) {
+            let steps = layer.tools.steps(&order);
+            if steps.is_empty() {
+                continue;
+            }
+            let evaluated = masks::evaluate(&layer.mask, rasters, source);
+            report.missing_masks.extend(evaluated.missing.iter().map(|c| (layer.id, *c)));
+            let host = steps.iter().any(|(t, _, _)| registry.get(t).is_some_and(|t| t.gpu_kernel() == GpuKernel::Host));
+            if host {
+                // As in `render-cpu`, on the image read back so far.
+                let mut cpu = Rendered::passing(self.flush(&mut plan)?);
+                let before = cpu.image.clone();
+                render_cpu::apply_tools(&layer.tools, layer.id, &order, registry, &mut cpu);
+                render_cpu::blend(&mut cpu.image, &before, &evaluated.mask);
+                report.merge(cpu.missing_tools, cpu.tool_errors);
+                plan.input = Cow::Owned(cpu.image);
+            } else {
+                let under = plan.current;
+                self.plan_tools(&mut plan, &layer.tools, layer.id, &order, registry, &mut report)?;
+                if plan.current != under {
+                    let mask = plan.masks.len();
+                    plan.masks.push(evaluated.mask);
+                    plan.steps.push(Step::Kernel {
+                        pipeline: self.pipeline(BLEND, blend_shader)?,
+                        params: [0.0; MAX_PARAMS],
+                        input: under,
+                        output: plan.current,
+                        mask: Some(mask),
+                    });
                 }
-                buffer_of.get(&from).copied().ok_or(GpuError::MissingInput(id))
+            }
+        }
+        let image = self.flush(&mut plan)?;
+        Ok(Rendered {
+            image,
+            missing_tools: report.missing_tools,
+            tool_errors: report.tool_errors,
+            missing_masks: report.missing_masks,
+        })
+    }
+
+    /// Adds the kernels of one layer's tools to `plan`; a host tool ends the
+    /// segment and runs on the image read back.
+    fn plan_tools(
+        &self,
+        plan: &mut Plan<'_>,
+        tools: &Tools,
+        layer: LayerId,
+        order: &[ToolId],
+        registry: &ToolRegistry,
+        report: &mut Issues,
+    ) -> Result<(), GpuError> {
+        for (tool_id, slot, params) in tools.steps(order) {
+            let Some(tool) = registry.get(tool_id) else {
+                report.merge(vec![tool_id.clone()], Vec::new());
+                continue;
             };
-            let slot = match &node.kind {
-                NodeKind::Source => 0,
-                NodeKind::Output => input()?,
-                NodeKind::Parallel { .. } => return Err(GpuError::NotYetSupported(id)),
-                NodeKind::Mask => {
-                    let def = node.mask.as_ref().ok_or(GpuError::NoMaskDefinition(id))?;
-                    // A bypassed mask node leaves the key input as if unconnected.
-                    if node.enabled {
-                        let evaluated = masks::evaluate(def, rasters, source);
-                        missing_masks.extend(evaluated.missing.iter().map(|c| (id, *c)));
-                        mask_of.insert(id, mask_images.len());
-                        mask_images.push(evaluated.mask);
-                    }
-                    continue;
+            let params = ResolvedParams::resolve(tool.descriptor(), params);
+            match tool.gpu_kernel() {
+                GpuKernel::PerPixel { wgsl } => {
+                    let pipeline = self.pipeline(tool_id.as_str(), || per_pixel_shader(wgsl))?;
+                    let output = plan.buffers;
+                    plan.buffers += 1;
+                    plan.steps.push(Step::Kernel {
+                        pipeline,
+                        params: tool.gpu_uniforms(&params),
+                        input: plan.current,
+                        output,
+                        mask: None,
+                    });
+                    plan.current = output;
                 }
-                NodeKind::Tool(tool_id) => match registry.get(tool_id) {
-                    Some(tool) if node.enabled => {
-                        let params = ResolvedParams::resolve(tool.descriptor(), &node.params);
-                        let mask = graph.input_link(id, 1).and_then(|l| mask_of.get(&l.from).copied());
-                        match tool.gpu_kernel() {
-                            GpuKernel::PerPixel { wgsl } => {
-                                let pipeline = self.pipeline(tool_id, wgsl)?;
-                                let output = buffers;
-                                buffers += 1;
-                                steps.push(Step::Kernel {
-                                    pipeline,
-                                    params: tool.gpu_uniforms(&params),
-                                    input: input()?,
-                                    output,
-                                    mask,
-                                });
-                                output
-                            }
-                            GpuKernel::Host => {
-                                let from = input()?;
-                                let mut image =
-                                    self.finish_segment(&segment_input, &steps, buffers, from, &mask_images)?;
-                                let before = mask.map(|_| image.clone());
-                                match tool.apply(&mut image, &params) {
-                                    Err(e) => tool_errors.push((id, e)),
-                                    Ok(()) => {
-                                        if let (Some(m), Some(before)) = (mask, &before) {
-                                            blend(&mut image, before, &mask_images[m]);
-                                        }
-                                    }
-                                }
-                                segment_input = Cow::Owned(image);
-                                steps.clear();
-                                buffers = 1;
-                                finished.extend(buffer_of.keys().copied());
-                                buffer_of.clear();
-                                0
-                            }
-                        }
+                GpuKernel::Host => {
+                    let mut image = self.flush(plan)?;
+                    if let Err(e) = tool.apply(&mut image, &params) {
+                        report.tool_errors.push((ToolRef::new(layer, tool_id.clone()).with_slot(slot), e));
                     }
-                    Some(_) => input()?,
-                    None => {
-                        if !missing_tools.contains(tool_id) {
-                            missing_tools.push(tool_id.clone());
-                        }
-                        input()?
-                    }
-                },
-            };
-            buffer_of.insert(id, slot);
+                    plan.input = Cow::Owned(image);
+                }
+            }
         }
-        let output = graph.output();
-        if finished.contains(&output) {
-            return Err(GpuError::NotYetSupported(output));
-        }
-        let result_slot = *buffer_of.get(&output).ok_or(GpuError::MissingInput(output))?;
-        let image = self.finish_segment(&segment_input, &steps, buffers, result_slot, &mask_images)?;
-        Ok(Rendered { image, missing_tools, tool_errors, missing_masks })
+        Ok(())
+    }
+
+    /// Runs the kernels planned so far and starts a new segment; returns
+    /// the image they made.
+    fn flush(&self, plan: &mut Plan<'_>) -> Result<ImageF32, GpuError> {
+        let image = self.finish_segment(&plan.input, &plan.steps, plan.buffers, plan.current, &plan.masks)?;
+        plan.steps.clear();
+        plan.masks.clear();
+        plan.buffers = 1;
+        plan.current = 0;
+        Ok(image)
     }
 
     /// Runs one segment's kernels over `input` and returns buffer `slot`.
@@ -510,7 +501,7 @@ impl GpuRenderer {
         let storage: Vec<wgpu::Buffer> = (0..buffers)
             .map(|i| {
                 device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(if i == 0 { "source" } else { "node result" }),
+                    label: Some(if i == 0 { "source" } else { "tool result" }),
                     size: chunk_bytes,
                     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
                     mapped_at_creation: false,
@@ -592,14 +583,39 @@ impl GpuRenderer {
     }
 }
 
-/// `after ← before + mask · (after − before)` on the CPU, for a host tool on
-/// a masked node (the same formula as the masked kernels and `render-cpu`).
-fn blend(after: &mut ImageF32, before: &ImageF32, mask: &MaskImage) {
-    debug_assert_eq!((mask.width(), mask.height()), (after.width(), after.height()));
-    for ((a, b), m) in after.pixels_mut().iter_mut().zip(before.pixels()).zip(mask.values()) {
-        for (x, y) in a.iter_mut().zip(b) {
-            *x = y + m * (*x - y);
+/// The kernels of one segment: buffer 0 holds `input`, each kernel writes a
+/// new buffer (a blend writes into its layer's last one), `current` holds
+/// the result so far.
+struct Plan<'a> {
+    input: Cow<'a, ImageF32>,
+    steps: Vec<Step>,
+    buffers: usize,
+    current: usize,
+    masks: Vec<MaskImage>,
+}
+
+impl<'a> Plan<'a> {
+    fn new(input: Cow<'a, ImageF32>) -> Self {
+        Self { input, steps: Vec::new(), buffers: 1, current: 0, masks: Vec::new() }
+    }
+}
+
+/// What the render could not apply so far ([`Rendered`]'s lists).
+#[derive(Default)]
+struct Issues {
+    missing_tools: Vec<ToolId>,
+    tool_errors: Vec<(ToolRef, tool_api::ToolError)>,
+    missing_masks: Vec<(LayerId, usize)>,
+}
+
+impl Issues {
+    fn merge(&mut self, missing: Vec<ToolId>, errors: Vec<(ToolRef, tool_api::ToolError)>) {
+        for tool in missing {
+            if !self.missing_tools.contains(&tool) {
+                self.missing_tools.push(tool);
+            }
         }
+        self.tool_errors.extend(errors);
     }
 }
 
@@ -619,6 +635,13 @@ mod tests {
         assert!(s.contains("fn tool_apply(c: vec4<f32>, uv: vec2<f32>)"));
         assert!(s.contains("return c;"));
         assert!(s.contains("@workgroup_size(256)"));
+    }
+
+    #[test]
+    fn the_blend_kernel_mixes_the_layer_over_the_image_under_it() {
+        let s = blend_shader();
+        assert!(s.contains("dst[id.x] = c + key_mask[id.x] * (dst[id.x] - c);"));
+        assert!(s.contains("@binding(3) var<storage, read> key_mask"));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! Perspective, straightening and crop of the finished image
-//! ([`core_model::Geometry`]), on the CPU after the node graph: the upright
+//! ([`core_model::Geometry`]), on the CPU after the layers: the upright
 //! image is resampled (bilinear, on every core) and cropped.
 
 use core_model::{Geometry, ImageError, ImageF32, Rgba};

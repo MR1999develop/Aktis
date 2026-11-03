@@ -1,7 +1,7 @@
 //! The contract between the editor and its tools.
 //!
 //! A tool is a crate that implements [`Tool`] and is registered in a
-//! [`ToolRegistry`]. The graph, the inspector, the MCP server and the export
+//! [`ToolRegistry`]. The layers, the tool panels, the MCP server and the export
 //! read tools only through the registry, so adding or removing a tool means
 //! adding or removing one registration line (and a Cargo feature).
 //!
@@ -20,7 +20,7 @@ mod registry;
 
 pub use core_model::{ParamId, ParamValue, Params, ToolId};
 pub use descriptor::{
-    Category, DescriptorError, MAX_PARAMS, ParamDescriptor, ParamKind, ResolvedParams, Stage, ToolDescriptor, Unit,
+    Category, DescriptorError, MAX_PARAMS, ParamDescriptor, ParamKind, ResolvedParams, ToolDescriptor, Unit,
 };
 pub use registry::{RegistryError, ToolRegistry};
 
@@ -43,7 +43,7 @@ pub enum GpuKernel {
         wgsl: &'static str,
     },
     /// The tool runs outside the GPU engine's kernels, through [`Tool::apply`]:
-    /// the engine reads the image back at this node, hands it to the tool and
+    /// the engine reads the image back before the tool, hands it to the tool and
     /// uploads the result. For tools with their own accelerator (a neural
     /// network on ONNX Runtime) or that need the whole image at once.
     Host,

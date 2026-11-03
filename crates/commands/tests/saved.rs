@@ -2,7 +2,7 @@
 //! the same steps, Undo and Redo where they were.
 
 use commands::{Edit, EditSession, SavedHistory};
-use core_model::{NodeId, ParamId, ParamValue, Params, Recipe, ToolId};
+use core_model::{LayerId, MaskDef, ParamId, ParamValue, Recipe, ToolId, ToolRef};
 use tool_api::ToolRegistry;
 use tool_exposure::Exposure;
 
@@ -12,25 +12,24 @@ fn registry() -> ToolRegistry {
     r
 }
 
-fn exposure_tool() -> ToolId {
-    ToolId::new("exposure").expect("valid id")
+fn set(layer: LayerId, v: f32) -> Edit {
+    Edit::SetParam {
+        at: ToolRef::new(layer, ToolId::new("exposure").expect("valid id")),
+        param: ParamId::new("exposure").expect("valid id"),
+        value: ParamValue::Float(v),
+    }
 }
 
-fn set(node: NodeId, v: f32) -> Edit {
-    Edit::SetParam { node, param: ParamId::new("exposure").expect("valid id"), value: ParamValue::Float(v) }
-}
-
-/// Source → Exposure with three changes, the last one undone.
-fn edited(reg: &ToolRegistry) -> (EditSession, NodeId) {
+/// A layer with three changes, the last one undone.
+fn edited(reg: &ToolRegistry) -> (EditSession, LayerId) {
     let mut s = EditSession::new(Recipe::default());
-    let source = s.recipe().graph.source();
-    s.apply(reg, Edit::InsertSerial { after: source, tool: exposure_tool(), params: Params::new() }).expect("insert");
-    let node = s.recipe().graph.input_link(s.recipe().graph.output(), 0).expect("fed").from;
+    s.apply(reg, Edit::AddLayer { name: "A".into(), mask: MaskDef::default(), tools: Vec::new() }).expect("layer");
+    let layer = s.recipe().layers.layers()[0].id;
     for v in [0.5, 1.0, -0.25] {
-        s.apply(reg, set(node, v)).expect("set");
+        s.apply(reg, set(layer, v)).expect("set");
     }
     s.undo();
-    (s, node)
+    (s, layer)
 }
 
 #[test]
@@ -71,7 +70,7 @@ fn steps_that_no_longer_apply_stay_skipped_with_their_reason() {
     let reg = registry();
     let (mut s, _) = edited(&reg);
     s.redo();
-    // Deleting the node's creation leaves the three changes without their node.
+    // Deleting the layer's creation leaves the three changes without their layer.
     s.rewrite_history(&reg, &[1, 2, 3]).expect("rewrite");
     let before = s.history();
     assert!(before.iter().all(|h| h.skipped.is_some()));
@@ -84,13 +83,13 @@ fn steps_that_no_longer_apply_stay_skipped_with_their_reason() {
 #[test]
 fn redo_edits_that_no_longer_apply_are_dropped() {
     let reg = registry();
-    let (s, node) = edited(&reg);
+    let (s, layer) = edited(&reg);
     let mut saved = s.saved_history();
-    saved.redo.insert(0, set(NodeId::from_raw(99), 1.0));
+    saved.redo.insert(0, set(LayerId::from_raw(99), 1.0));
     let back = EditSession::restore(&reg, s.recipe(), saved).expect("restores");
     assert_eq!(back.redo_label(), None);
-    let saved = SavedHistory { redo: vec![set(node, 2.0), set(NodeId::from_raw(99), 1.0)], ..s.saved_history() };
+    let saved = SavedHistory { redo: vec![set(layer, 2.0), set(LayerId::from_raw(99), 1.0)], ..s.saved_history() };
     let mut back = EditSession::restore(&reg, s.recipe(), saved).expect("restores");
     assert!(back.redo().is_some());
-    assert_eq!(back.redo(), None, "the edit on a missing node was dropped");
+    assert_eq!(back.redo(), None, "the edit on a missing layer was dropped");
 }

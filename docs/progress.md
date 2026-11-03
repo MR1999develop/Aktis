@@ -620,6 +620,44 @@ Details in `docs/catalog.md`.
 - Rust 1.99's clippy: `chunks_exact` with a constant size became
   `as_chunks` throughout.
 
+## 3 November: layers and tool panels instead of the node graph
+
+- The node graph is gone. `core_model::Layers`: a Background and layers
+  above it, each with a mask (`MaskDef`, its opacity the layer's) and its
+  own tools; every tool at most once per layer, in the fixed order the
+  tools declare (`ToolDescriptor::order`, `ToolRegistry::pipeline`); the
+  retouch tool holds its spots in slots of parameters.
+- Rendering (`render-cpu`, `gpu`, `engine`): the Background's tools on the
+  developed image, then each layer's tools mixed in once through its mask.
+  On the GPU a blend kernel mixes a layer in; a layer holding a host tool
+  runs on the CPU. GPU and CPU agree on layers (`gpu_matches_cpu`).
+- `commands`: edits address a tool in a layer (`ToolRef`); new edits add,
+  delete, rename, move, switch and mask layers; a style brush is a new layer.
+  History rewrites follow the layers made by deleted steps.
+- `recipe-store` format 2. Format 1 (the node graph) is refused as
+  `DecodeError::Obsolete`; such a photo starts again from its first settings,
+  and the old edit is written over only once the photo is changed (opening
+  it alone writes nothing but a new preview). Presets keep reading their old
+  `nodes` key.
+- The window: the filmstrip is a row under the photo; on the right, under
+  the histogram, a panel per tool and the Layers, Base Characteristics,
+  Lens Correction and Spots panels (`tool_panels`). Panels open and close,
+  move by dragging their header, float in a window when dropped outside
+  the column or from their menu, and dock again when the window closes;
+  their arrangement is kept in the settings and in each workspace. Masks and
+  AI Select draw the chosen layer's mask (on the Background the first stroke
+  adds a layer), Heal and Clone put spots in the chosen layer, Delete deletes
+  the chosen layer. The command line's selections make a layer.
+- Sliders no longer report a change when egui only rounds a value to their
+  step (it put three edits in the history of a photo just opened); a test
+  draws every panel and checks that nothing is asked for.
+- Review against the rules: the panel headers and the tool and layer
+  switches have accessible names (a kittest test reads them), the Delete
+  button of a layer sits away from Up and Down, the panels use the theme's
+  spacing and radius; stored layers whose next free id could wrap round to
+  the Background's are refused; the CPU blend stops on a mask of the wrong
+  size instead of mixing only part of the image.
+
 ## 30 October: live filmstrip thumbnails
 
 - The open photo's filmstrip card (and its variant's card) follows every
