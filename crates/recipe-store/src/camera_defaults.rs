@@ -72,5 +72,14 @@ mod tests {
         assert_eq!(decode_camera_defaults(&newer), Err(DecodeError::NewerVersion(4)));
         let nameless = text.replace("Sony ILCE-7M3", " ");
         assert!(matches!(decode_camera_defaults(&nameless), Err(DecodeError::Malformed(_))));
+
+        // Damaged copies: an error or a value that round-trips, never a panic.
+        for copy in mutate::text_copies(&text, 44, 3000) {
+            if let Ok(c) = decode_camera_defaults(&copy) {
+                let written = encode_camera_defaults(&c);
+                let again = decode_camera_defaults(&written).map(|again| encode_camera_defaults(&again));
+                assert_eq!(again, Ok(written), "accepted: {copy}");
+            }
+        }
     }
 }

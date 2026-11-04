@@ -8,10 +8,10 @@
 #
 #   scripts\check.bat            all steps
 #   scripts\check.bat -Quick     without the release build
-#   scripts\check.bat -Step test only one step (fmt, clippy, test, build)
+#   scripts\check.bat -Step test only one step (fmt, deny, clippy, test, build)
 param(
     [switch]$Quick,
-    [ValidateSet('', 'fmt', 'clippy', 'test', 'build')][string]$Step = ''
+    [ValidateSet('', 'fmt', 'deny', 'clippy', 'test', 'build')][string]$Step = ''
 )
 $ErrorActionPreference = 'Continue'
 Set-Location (Split-Path $PSScriptRoot)
@@ -126,6 +126,17 @@ function Run-Step([string]$name, [string[]]$cargoArgs) {
 }
 
 Run-Step 'fmt' @('fmt', '--all', '--check')
+# Known vulnerabilities, licences and sources of the dependencies (deny.toml).
+if (-not $Step -or $Step -eq 'deny') {
+    if (Get-Command cargo-deny -ErrorAction SilentlyContinue) {
+        Run-Step 'deny' @('deny', '--locked', 'check')
+    } else {
+        Say "deny: cargo-deny is not installed (cargo install cargo-deny --locked)" 'Red'
+        Note ''
+        Note '== deny : FAILED (cargo-deny is not installed: cargo install cargo-deny --locked)'
+        $failures++
+    }
+}
 Run-Step 'clippy' @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
 Run-Step 'test' @('test', '--workspace', '--no-fail-fast')
 if (-not $Quick) { Run-Step 'build' @('build', '--release', '-p', 'app', '-p', 'cli') }

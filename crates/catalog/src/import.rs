@@ -293,6 +293,24 @@ mod tests {
     }
 
     #[test]
+    fn no_pattern_leads_out_of_the_chosen_folder() {
+        use std::path::Component;
+        let day = Some(Day { year: 2026, month: 3, day: 7 });
+        let sample = r"{yyyy}/{yyyy}-{mm}-{dd}\../C:\x/./{yy}:\\?\UNC\a";
+        for copy in mutate::text_copies(sample, 81, 4000) {
+            let folder = FolderPattern::new(&copy).folder_for(day);
+            assert!(
+                folder.components().all(|c| matches!(c, Component::Normal(_))),
+                "{copy:?} gives {}",
+                folder.display()
+            );
+        }
+        for copy in mutate::text_copies("vacanze, mare;\nAirone|Uccelli", 82, 2000) {
+            let _ = ImportMetadata::parse_keywords(&copy);
+        }
+    }
+
+    #[test]
     fn the_pattern_makes_dated_folders_that_stay_below_the_chosen_one() {
         let day = Some(Day { year: 2026, month: 3, day: 7 });
         assert_eq!(FolderPattern::default().folder_for(day), Path::new("2026").join("2026-03-07"));

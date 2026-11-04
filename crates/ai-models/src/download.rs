@@ -13,7 +13,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::{Convert, Download, Pack, installed_path, missing_files, source_path};
+use crate::{Convert, Download, Extract, Pack, installed_path, missing_files, source_path};
 
 /// How a download is going.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +156,9 @@ fn install(
         None => fs::rename(&part, &target).map_err(io),
         Some(inner) => {
             let result = extract(&part, inner, &target, &file.path);
+            if result.is_err() {
+                let _ = fs::remove_file(&target);
+            }
             let _ = fs::remove_file(&part);
             result
         }
@@ -219,35 +222,36 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 
 /// Size and checksum of a downloaded file, when the catalog knows them.
 fn check(file: &Download, part: &Path) -> Result<(), DownloadError> {
-    if let Some(bytes) = file.bytes {
-        let len = fs::metadata(part).map_err(io)?.len();
+    check_file(part, file.bytes, file.sha256.as_deref(), &file.path)
+}
+
+/// `path` has `bytes` bytes and SHA-256 `sha256`, where they are given.
+fn check_file(path: &Path, bytes: Option<u64>, sha256: Option<&str>, name: &str) -> Result<(), DownloadError> {
+    if let Some(bytes) = bytes {
+        let len = fs::metadata(path).map_err(io)?.len();
         if len != bytes {
-            return Err(DownloadError::Checksum { file: file.path.clone() });
+            return Err(DownloadError::Checksum { file: name.to_owned() });
         }
     }
-    if let Some(expected) = &file.sha256 {
-        let got = fs::File::open(part).and_then(ai_segment::sha256_hex).map_err(io)?;
-        if &got != expected {
-            return Err(DownloadError::Checksum { file: file.path.clone() });
+    if let Some(expected) = sha256 {
+        let got = fs::File::open(path).and_then(ai_segment::sha256_hex).map_err(io)?;
+        if got != expected {
+            return Err(DownloadError::Checksum { file: name.to_owned() });
         }
     }
     Ok(())
 }
 
-/// A system tool: the one in `System32` on Windows (curl and tar ship with
-/// Windows; a `tar` from another package may not read zip files).
+/// A system tool, by full path where the system keeps it
+/// ([`platform::system_program`]): on Windows the curl and tar of
+/// `System32` (a `tar` from another package may not read zip files).
 fn system_tool(name: &str) -> Command {
-    #[cfg(windows)]
-    {
-        if let Some(root) = std::env::var_os("SystemRoot") {
-            let path = PathBuf::from(root).join("System32").join(format!("{name}.exe"));
-            if path.is_file() {
-                return quiet(Command::new(path));
-            }
-        }
-    }
-    quiet(Command::new(name))
+    quiet(Command::new(platform::system_program(platform::Os::current(), name)))
 }
+
+/// The protocols curl may use, for the request and for every redirect:
+/// HTTPS only (and local files in the tests).
+const PROTOCOLS: &str = if cfg!(test) { "=https,file" } else { "=https" };
 
 /// No console window flashing up when the editor (a window program) runs a tool.
 fn quiet(mut cmd: Command) -> Command {
@@ -270,7 +274,8 @@ pub(crate) fn fetch(
 ) -> Result<(), DownloadError> {
     let _ = fs::remove_file(out);
     let mut cmd = system_tool("curl");
-    cmd.args(["--location", "--fail", "--silent", "--show-error", "--retry", "3", "--output"])
+    cmd.args(["--proto", PROTOCOLS, "--proto-redir", "=https"])
+        .args(["--location", "--fail", "--silent", "--show-error", "--retry", "3", "--output"])
         .arg(out)
         .arg(url)
         .stdout(Stdio::null())
@@ -311,8 +316,9 @@ fn stderr_text(child: &mut Child) -> String {
     text.trim().to_owned()
 }
 
-/// Takes `inner` out of `archive` (zip, nupkg or tgz) and puts it at `target`.
-fn extract(archive: &Path, inner: &str, target: &Path, name: &str) -> Result<(), DownloadError> {
+/// Takes `inner` out of `archive` (zip, nupkg or tgz), checks it against
+/// its size and checksum when the catalog knows them, and puts it at `target`.
+fn extract(archive: &Path, inner: &Extract, target: &Path, name: &str) -> Result<(), DownloadError> {
     let scratch = with_suffix(target, ".unpack");
     let _ = fs::remove_dir_all(&scratch);
     fs::create_dir_all(&scratch).map_err(io)?;
@@ -321,14 +327,15 @@ fn extract(archive: &Path, inner: &str, target: &Path, name: &str) -> Result<(),
         .arg(archive)
         .arg("-C")
         .arg(&scratch)
-        .arg(inner)
+        .arg(&inner.inner)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
         .map_err(|e| DownloadError::Tool(format!("tar: {e}")))?;
-    let found = inner.split('/').fold(scratch.clone(), |p, part| p.join(part));
+    let found = inner.inner.split('/').fold(scratch.clone(), |p, part| p.join(part));
     let result = if output.status.success() && found.is_file() {
-        fs::rename(&found, target).or_else(|_| fs::copy(&found, target).map(|_| ())).map_err(io)
+        check_file(&found, inner.bytes, inner.sha256.as_deref(), name)
+            .and_then(|()| fs::rename(&found, target).or_else(|_| fs::copy(&found, target).map(|_| ())).map_err(io))
     } else {
         Err(DownloadError::Archive {
             file: name.to_owned(),
@@ -381,8 +388,48 @@ mod tests {
         assert_eq!(err, DownloadError::Checksum { file: "bad.onnx".to_owned() });
         assert!(!installed_path(&models, &bad).exists());
 
-        let missing = Download { path: "none.onnx".to_owned(), url: file_url(&dir.join("absent")), ..good };
+        let missing = Download { path: "none.onnx".to_owned(), url: file_url(&dir.join("absent")), ..good.clone() };
         assert!(matches!(install(&missing, &models, &mut |_| {}, &cancel), Err(DownloadError::Network { .. })));
+
+        // A file taken from an archive is checked before it is put in place.
+        let packed = dir.join("packed");
+        fs::create_dir_all(packed.join("lib")).expect("dir");
+        fs::write(packed.join("lib").join("x.dll"), b"abc").expect("write");
+        let archive = dir.join("pkg.tar");
+        let made = system_tool("tar").arg("-cf").arg(&archive).arg("-C").arg(&packed).arg("lib/x.dll").status();
+        assert!(made.is_ok_and(|s| s.success()), "tar made the archive");
+        let sha_abc = good.sha256.clone().expect("sha");
+        let packaged = |path: &str, sha256: String| Download {
+            path: path.to_owned(),
+            url: file_url(&archive),
+            bytes: None,
+            sha256: None,
+            extract: Some(Extract { inner: "lib/x.dll".to_owned(), bytes: Some(3), sha256: Some(sha256) }),
+            convert: None,
+        };
+        let ok = packaged("x.dll", sha_abc);
+        install(&ok, &models, &mut |_| {}, &cancel).expect("extracted");
+        assert_eq!(fs::read(installed_path(&models, &ok)).expect("read"), b"abc");
+        let wrong = packaged("y.dll", "0".repeat(64));
+        let err = install(&wrong, &models, &mut |_| {}, &cancel).expect_err("checksum of the inner file");
+        assert_eq!(err, DownloadError::Checksum { file: "y.dll".to_owned() });
+        assert!(!installed_path(&models, &wrong).exists(), "a library of the wrong checksum is never put in place");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn curl_refuses_plain_http() {
+        let curl_works = system_tool("curl").arg("--version").stdout(Stdio::null()).status().is_ok_and(|s| s.success());
+        if !curl_works {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("aktis-ai-http-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        // Refused by curl before any connection is tried.
+        let err = fetch("http://127.0.0.1:9/model.onnx", &dir.join("m.part"), &mut |_| {}, &AtomicBool::new(false))
+            .expect_err("http is not allowed");
+        let DownloadError::Network { message, .. } = err else { panic!("{err:?}") };
+        assert!(message.to_ascii_lowercase().contains("protocol"), "{message}");
         let _ = fs::remove_dir_all(&dir);
     }
 

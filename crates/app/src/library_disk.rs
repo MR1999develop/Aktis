@@ -292,17 +292,13 @@ impl Library {
                 let (tx, rx) = channel();
                 let launch = platform::move_to_trash(platform::Os::current(), &path, true);
                 let spawned = std::thread::Builder::new().name("aktis-trash-folder".into()).spawn(move || {
-                    let result = std::process::Command::new(launch.program)
-                        .args(&launch.args)
-                        .output()
-                        .map_err(|e| e.to_string())
-                        .and_then(|o| {
-                            if o.status.success() {
-                                Ok(())
-                            } else {
-                                Err(String::from_utf8_lossy(&o.stderr).trim().to_owned())
-                            }
-                        });
+                    let result = launch.command().output().map_err(|e| e.to_string()).and_then(|o| {
+                        if o.status.success() {
+                            Ok(())
+                        } else {
+                            Err(String::from_utf8_lossy(&o.stderr).trim().to_owned())
+                        }
+                    });
                     let _ = tx.send(result);
                 });
                 match spawned {

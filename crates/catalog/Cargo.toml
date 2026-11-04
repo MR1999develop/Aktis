@@ -17,5 +17,8 @@ sqlite = ["dep:rusqlite"]
 [dependencies]
 rusqlite = { version = "0.41.0", features = ["bundled"], optional = true }
 
+[dev-dependencies]
+mutate.workspace = true
+
 [lints]
 workspace = true

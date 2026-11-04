@@ -658,6 +658,35 @@ Details in `docs/catalog.md`.
   the Background's are refused; the CPU blend stops on a mask of the wrong
   size instead of mixing only part of the image.
 
+## 4 November: security review
+
+- `docs/threat-model.md`: scope, assumptions, assets, trust boundaries,
+  every entry point with its defences and tests, accepted risks. `SECURITY.md`
+  says how to report a vulnerability.
+- Downloads: `onnxruntime.dll` and `DirectML.dll` (Windows) are checked
+  against a pinned SHA-256 before they are put in place. The checksum is of
+  the DLL taken out of the NuGet package, which nuget.org may sign again.
+  SigLIP 2 is downloaded at a fixed revision with pinned checksums. curl may
+  use only HTTPS, redirects included. curl, tar, Explorer and PowerShell are
+  started by full path (`platform::system_program`).
+- Parsers: overflow checks in the release build of the crates that read
+  files made elsewhere. Every parser's tests feed it thousands of damaged
+  copies of a valid file (`crates/mutate`); what is accepted must write
+  back the same. Fuzz targets for `cargo fuzz` are in `fuzz/`, starting
+  from seed files the tests keep current. This found a keyword-list fix:
+  a second byte-order mark at the start, or a space after `~`, no longer
+  ends up inside a name. Names with bidirectional or invisible marks are
+  refused.
+- Catalog: SQLite opens in defensive mode with an untrusted schema, for
+  catalogs that come from another computer.
+- Supply chain: `deny.toml` (RustSec, licences, crates.io only), run by
+  `check.bat` and every day by the `Audit` workflow. CI actions are pinned to
+  release commits. The jobs that build run with a read-only token and no
+  stored credentials, and one last job publishes their results. Downloads in
+  CI (ONNX Runtime, the SCUNet weights, SigLIP 2) are checked against the
+  editor's checksums. `async-executor` 1.14.0 (yanked) was replaced by
+  1.13.3.
+
 ## 30 October: live filmstrip thumbnails
 
 - The open photo's filmstrip card (and its variant's card) follows every

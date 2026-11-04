@@ -1,0 +1,54 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of the parsers (fuzz/README.md), started by hand
+# from the Actions tab. Each target runs for the minutes given; the crashes
+# found are kept as an artifact, to be turned into tests.
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Minutes for each target"
+        default: "5"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [raw_file, recipe, dcp, lens_xml, checkpoint, keywords]
+    steps:
+      # Actions pinned to the commit of a release (the tag in the comment).
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Nightly compiler and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+      - name: Seed files
+        if: matrix.target == 'raw_file'
+        # A real RAW file next to the small generated ones (NASA, public domain).
+        run: curl -fsSL --proto =https -o fuzz/seeds/raw_file/nikon-d3s.NEF https://raw.githubusercontent.com/letmaik/rawpy/main/test/iss030e122639.NEF
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: fuzz
+        env:
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          # A number only: bash arithmetic would run what it is given.
+          [[ "$MINUTES" =~ ^[0-9]{1,3}$ ]] || { echo "::error::minutes must be a whole number"; exit 1; }
+          mkdir -p "corpus/${{ matrix.target }}"
+          cargo +nightly fuzz run ${{ matrix.target }} "corpus/${{ matrix.target }}" "seeds/${{ matrix.target }}" -- \
+            -max_total_time=$(( MINUTES * 60 )) -rss_limit_mb=4096 -timeout=30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: crash-${{ matrix.target }}
+          path: fuzz/artifacts
+          retention-days: 30

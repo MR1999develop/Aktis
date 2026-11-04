@@ -191,8 +191,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_jpeg_gives_its_exif_block_and_says_when_it_has_a_profile() {
+    /// The header of a JPEG with [`picture_tiff`] as its Exif block and a profile.
+    fn picture_jpeg() -> Vec<u8> {
         let tiff = picture_tiff(false);
         let mut jpeg = vec![0xFF, 0xD8];
         let mut segment = |marker: u8, payload: &[u8]| {
@@ -204,6 +204,31 @@ mod tests {
         segment(0xE1, &[b"Exif\0\0".as_slice(), &tiff].concat());
         segment(0xE2, b"ICC_PROFILE\0\x01\x01data");
         jpeg.extend_from_slice(&[0xFF, 0xDA, 0, 2, 0xAB, 0xCD]);
+        jpeg
+    }
+
+    #[test]
+    fn the_fuzzers_start_from_these_pictures() {
+        // The first byte picks the extension in fuzz/fuzz_targets/raw_file.rs: 4 jpg, 5 tif.
+        mutate::check_seed("raw_file", "exif.tif", &[[5_u8].as_slice(), &picture_tiff(true)].concat());
+        mutate::check_seed("raw_file", "exif.jpg", &[[4_u8].as_slice(), &picture_jpeg()].concat());
+    }
+
+    #[test]
+    fn damaged_pictures_never_panic() {
+        for big_endian in [false, true] {
+            for copy in mutate::copies(&picture_tiff(big_endian), 11, 3000) {
+                let _ = from_tiff(Cursor::new(copy));
+            }
+        }
+        for copy in mutate::copies(&picture_jpeg(), 12, 3000) {
+            let _ = from_jpeg(Cursor::new(copy));
+        }
+    }
+
+    #[test]
+    fn a_jpeg_gives_its_exif_block_and_says_when_it_has_a_profile() {
+        let jpeg = picture_jpeg();
         let e = from_jpeg(Cursor::new(jpeg.clone())).unwrap();
         assert_eq!(e.captured.as_deref(), Some("2026:10:29 10:00:00"));
         assert!(e.has_icc);

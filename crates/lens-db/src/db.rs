@@ -322,6 +322,52 @@ fn merge_lens(existing: &mut Lens, newer: Lens) {
 mod tests {
     use super::*;
 
+    const SAMPLE: &str = r#"<lensdatabase version="2">
+    <mount><name>Canon EF-S</name><compat>Canon EF</compat></mount>
+    <camera><maker>Canon</maker><model>Canon EOS 650D</model><mount>Canon EF-S</mount><cropfactor>1.613</cropfactor></camera>
+    <lens>
+        <maker>Canon</maker>
+        <model>Canon EF-S 10-22mm f/3.5-4.5 USM</model>
+        <mount>Canon EF-S</mount>
+        <cropfactor>1.613</cropfactor>
+        <calibration>
+            <distortion model="ptlens" focal="10" a="0.01986" b="-0.06874" c="0.05166"/>
+            <distortion model="poly3" focal="22" k1="-0.01"/>
+            <tca model="poly3" focal="10" br="-0.0000025" vr="1.0003211" bb="0.0000125" vb="1.0000667"/>
+            <vignetting model="pa" focal="10" aperture="3.5" distance="10" k1="-2.1271" k2="2.6641" k3="-1.2836"/>
+        </calibration>
+    </lens>
+</lensdatabase>
+"#;
+
+    #[test]
+    fn damaged_lens_files_never_panic_and_their_lenses_correct_an_image() {
+        use crate::correction::{Adjustments, CorrectionRequest, LensCorrection as Correction};
+        let request = CorrectionRequest {
+            crop_factor: 1.613,
+            focal: 12.0,
+            aperture: 4.0,
+            distance: 1000.0,
+            width: 64,
+            height: 48,
+            distortion: true,
+            tca: true,
+            vignetting: true,
+            adjust: Adjustments::default(),
+        };
+        assert_eq!(LensDatabase::from_xml(SAMPLE).expect("sample").lenses().len(), 1);
+        mutate::check_seed("lens_xml", "lens.xml", SAMPLE.as_bytes());
+        for copy in mutate::text_copies(SAMPLE, 91, 3000) {
+            let Ok(db) = LensDatabase::from_xml(&copy) else { continue };
+            for lens in db.lenses() {
+                if let Ok(c) = Correction::new(lens, &request) {
+                    let _ = (c.source(0.0, 0.0), c.source(63.0, 47.0), c.vignetting_gain(31.5, 23.5));
+                }
+            }
+            let _ = db.find_lenses(db.cameras().first(), Some("Canon"), "10-22");
+        }
+    }
+
     #[test]
     fn the_built_in_database_reads_without_errors() {
         let db = LensDatabase::builtin();

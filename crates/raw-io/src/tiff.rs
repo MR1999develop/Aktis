@@ -389,4 +389,33 @@ pub(crate) mod tests {
         let mut tiff = TiffReader::new(Cursor::new(looping)).unwrap();
         assert_eq!(tiff.ifds().len(), 1);
     }
+
+    #[test]
+    fn damaged_files_never_panic() {
+        for big_endian in [false, true] {
+            let file = build(
+                big_endian,
+                &[
+                    TestIfd {
+                        entries: vec![(500, Value::Short(vec![7, 8, 9])), (501, Value::Ascii("camera".into()))],
+                        sub_ifds: vec![1],
+                    },
+                    TestIfd {
+                        entries: vec![(600, Value::Undefined(vec![1; 9])), (601, Value::Rational(vec![(1, 3)]))],
+                        sub_ifds: vec![],
+                    },
+                ],
+            );
+            for copy in mutate::copies(&file, 31, 4000) {
+                let Some(mut tiff) = TiffReader::new(Cursor::new(copy)) else { continue };
+                for ifd in tiff.ifds() {
+                    for entry in ifd.entries.clone() {
+                        let _ = tiff.value_bytes(&entry);
+                        let _ = tiff.unsigned(&entry);
+                    }
+                    let _ = (tiff.ascii(&ifd, 501), tiff.rational(&ifd, 601), tiff.real(&ifd, 601));
+                }
+            }
+        }
+    }
 }

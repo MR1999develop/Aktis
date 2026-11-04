@@ -34,10 +34,35 @@ pub struct Download {
     /// SHA-256 of what is downloaded (lowercase hex), when known.
     pub sha256: Option<String>,
     /// For an archive (`.zip`, `.nupkg`, `.tgz`): the file to take from it.
-    pub extract: Option<String>,
+    pub extract: Option<Extract>,
     /// For a file made on this computer from what is downloaded (the
     /// original weights): how to make it.
     pub convert: Option<Convert>,
+}
+
+/// The file taken out of a downloaded archive.
+///
+/// A NuGet package can be signed again by nuget.org, which changes its
+/// bytes but not the files inside: for those the catalog pins the file
+/// that is installed (and loaded), not the archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Extract {
+    /// Its path inside the archive (`/` separated).
+    pub inner: String,
+    /// Its size, when known.
+    pub bytes: Option<u64>,
+    /// Its SHA-256 (lowercase hex), when known.
+    pub sha256: Option<String>,
+}
+
+impl Extract {
+    fn new(inner: impl Into<String>) -> Self {
+        Self { inner: inner.into(), bytes: None, sha256: None }
+    }
+
+    fn pinned(inner: &str, bytes: u64, sha256: &str) -> Self {
+        Self { inner: inner.to_owned(), bytes: Some(bytes), sha256: Some(sha256.to_owned()) }
+    }
 }
 
 /// How an installed file is made from the downloaded original.
@@ -56,13 +81,24 @@ pub enum Convert {
 impl Download {
     /// SHA-256 of the installed file, when the catalog knows it: the
     /// download's for a plain file, the conversion's for a converted one,
-    /// none for a file taken from an archive.
+    /// the inner file's for one taken from an archive.
     #[must_use]
     pub fn installed_sha256(&self) -> Option<&str> {
         match (&self.convert, &self.extract) {
             (Some(Convert::ScunetOnnx { sha256, .. }), _) => Some(sha256),
             (None, None) => self.sha256.as_deref(),
-            (None, Some(_)) => None,
+            (None, Some(inner)) => inner.sha256.as_deref(),
+        }
+    }
+
+    /// Size of the installed file, when the catalog knows it (none for a
+    /// converted file).
+    #[must_use]
+    pub fn installed_bytes(&self) -> Option<u64> {
+        match (&self.convert, &self.extract) {
+            (Some(_), _) => None,
+            (None, None) => self.bytes,
+            (None, Some(inner)) => inner.bytes,
         }
     }
 }
@@ -208,7 +244,16 @@ const SCUNET_WEIGHTS_BYTES: u64 = 71_982_841;
 const SCUNET_WEIGHTS_SHA256: &str = "fa78899ba2caec9d235a900e91d96c689da71c42029230c2028b00f09f809c2e";
 const SCUNET_HOME: &str = "https://github.com/cszn/SCUNet";
 
-const SIGLIP2_REPO: &str = "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/main";
+/// SigLIP 2 at a fixed revision of its repository, so the checksums below
+/// keep matching when the repository changes.
+const SIGLIP2_REPO: &str = "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4";
+
+/// The SigLIP 2 files: path in the repository, size, SHA-256.
+const SIGLIP2_FILES: [(&str, u64, &str); 3] = [
+    ("onnx/vision_model.onnx", 371_807_752, "c0573e3f4140c3a7c4e9cc5912bd6b26a033b46a6a8e8af26cbea262b163bcad"),
+    ("onnx/text_model.onnx", 1_129_469_657, "baf12d941beabafafb14f7b4adb38dc15be18681b964a84410ec53d9d65e6293"),
+    ("tokenizer.json", 34_363_039, "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322"),
+];
 
 /// Every pack this build knows, ONNX Runtime first.
 #[must_use]
@@ -256,11 +301,11 @@ pub fn catalog() -> Vec<Pack> {
         license: "Apache-2.0",
         source: "https://huggingface.co/google/siglip2-base-patch16-224",
         optional: false,
-        files: ["onnx/vision_model.onnx", "onnx/text_model.onnx", "tokenizer.json"]
+        files: SIGLIP2_FILES
             .into_iter()
-            .map(|f| {
+            .map(|(f, bytes, sha256)| {
                 let name = f.rsplit('/').next().unwrap_or(f);
-                file(&format!("{SIGLIP2_DIR}/{name}"), format!("{SIGLIP2_REPO}/{f}"), None, None)
+                file(&format!("{SIGLIP2_DIR}/{name}"), format!("{SIGLIP2_REPO}/{f}"), Some(bytes), Some(sha256))
             })
             .collect(),
     });
@@ -295,12 +340,18 @@ fn scunet_file(tile: u32, sha256: &'static str) -> Download {
 fn runtime_pack() -> Pack {
     let files = match platform::Os::current() {
         platform::Os::Windows => vec![
+            // Both DLLs carry Microsoft's Authenticode signature; the checksums
+            // pin those signed files.
             Download {
                 path: "onnxruntime.dll".to_owned(),
                 url: format!("https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/{ORT_VERSION}"),
                 bytes: None,
                 sha256: None,
-                extract: Some("runtimes/win-x64/native/onnxruntime.dll".to_owned()),
+                extract: Some(Extract::pinned(
+                    "runtimes/win-x64/native/onnxruntime.dll",
+                    17_328_152,
+                    "e7eedec6a6f26dc39dc948276a75ef6d2bee3fff944d874ceed0bbd3b97bff40",
+                )),
                 convert: None,
             },
             Download {
@@ -308,7 +359,11 @@ fn runtime_pack() -> Pack {
                 url: "https://www.nuget.org/api/v2/package/Microsoft.AI.DirectML/1.15.4".to_owned(),
                 bytes: None,
                 sha256: None,
-                extract: Some("bin/x64-win/DirectML.dll".to_owned()),
+                extract: Some(Extract::pinned(
+                    "bin/x64-win/DirectML.dll",
+                    18_527_776,
+                    "9c9e6d822561c6c41b90e6994b3e8857cf1d66dbfb1e0c4c799c7c89b4e92da1",
+                )),
                 convert: None,
             },
         ],
@@ -319,7 +374,9 @@ fn runtime_pack() -> Pack {
             ),
             bytes: Some(8_155_822),
             sha256: Some("3a211fbea252c1e66290658f1b735b772056149f28321e71c308942cdb54b747".to_owned()),
-            extract: Some(format!("onnxruntime-linux-x64-{ORT_VERSION}/lib/libonnxruntime.so.{ORT_VERSION}")),
+            extract: Some(Extract::new(format!(
+                "onnxruntime-linux-x64-{ORT_VERSION}/lib/libonnxruntime.so.{ORT_VERSION}"
+            ))),
             convert: None,
         }],
         platform::Os::MacOs => vec![Download {
@@ -329,7 +386,9 @@ fn runtime_pack() -> Pack {
             ),
             bytes: Some(30_937_282),
             sha256: Some("93787795f47e1eee369182e43ed51b9e5da0878ab0346aecf4258979b8bba989".to_owned()),
-            extract: Some(format!("onnxruntime-osx-arm64-{ORT_VERSION}/lib/libonnxruntime.{ORT_VERSION}.dylib")),
+            extract: Some(Extract::new(format!(
+                "onnxruntime-osx-arm64-{ORT_VERSION}/lib/libonnxruntime.{ORT_VERSION}.dylib"
+            ))),
             convert: None,
         }],
     };
@@ -368,9 +427,9 @@ pub fn installed_path(dir: &Path, file: &Download) -> PathBuf {
 #[must_use]
 pub fn is_installed(dir: &Path, file: &Download) -> bool {
     let Ok(meta) = std::fs::metadata(installed_path(dir, file)) else { return false };
-    let size_ok = match (file.extract.is_none() && file.convert.is_none(), file.bytes) {
-        (true, Some(b)) => meta.len() == b,
-        _ => meta.len() > 0,
+    let size_ok = match file.installed_bytes() {
+        Some(b) => meta.len() == b,
+        None => meta.len() > 0,
     };
     meta.is_file() && size_ok
 }
@@ -434,7 +493,7 @@ mod tests {
                 assert!(f.url.starts_with("https://"), "{}", f.url);
                 assert!(!f.url.contains("MR1999develop"), "{} is not downloaded from its authors", f.path);
                 assert!(!f.path.is_empty() && !f.path.starts_with('/') && !f.path.contains('\\'), "{}", f.path);
-                if let Some(h) = &f.sha256 {
+                for h in [f.sha256.as_deref(), f.installed_sha256()].into_iter().flatten() {
                     assert_eq!(h.len(), 64, "{}", f.path);
                     assert!(h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{}", f.path);
                 }
@@ -454,12 +513,27 @@ mod tests {
     }
 
     #[test]
+    fn every_file_is_checked_against_a_checksum() {
+        // What the editor loads (models, the ONNX Runtime library) is pinned:
+        // the download, or the file taken from it.
+        for p in catalog() {
+            for f in &p.files {
+                assert!(f.sha256.is_some() || f.installed_sha256().is_some(), "{} has no checksum", f.path);
+            }
+        }
+        let siglip = pack(SIGLIP2_ID).expect("siglip2");
+        assert!(siglip.files.iter().all(|f| !f.url.contains("/resolve/main/")), "SigLIP 2 at a fixed revision");
+    }
+
+    #[test]
     fn sizes_read_naturally() {
         assert_eq!(megabytes(76_725_198), "77 MB");
         assert_eq!(megabytes(1_200_000_000), "1.2 GB");
         let scunet = pack(SCUNET_ID).expect("scunet");
         assert_eq!(scunet.size_text(), "72 MB");
-        assert_eq!(pack(SIGLIP2_ID).expect("siglip2").size_text(), "size unknown");
+        assert_eq!(pack(SIGLIP2_ID).expect("siglip2").size_text(), "1.5 GB");
+        let unknown = Pack { files: vec![file("x", "https://example.org/x".to_owned(), None, None)], ..scunet };
+        assert_eq!(unknown.size_text(), "size unknown");
     }
 
     #[test]
@@ -482,8 +556,24 @@ mod tests {
         let tok_path = installed_path(&dir, tokenizer);
         std::fs::create_dir_all(tok_path.parent().expect("parent")).expect("dir");
         std::fs::write(&tok_path, b"{}").expect("write");
-        assert!(is_installed(&dir, tokenizer), "unknown size: any non-empty file counts");
-        assert_eq!(missing_files(&siglip, &dir).len(), 2);
+        assert!(!is_installed(&dir, tokenizer), "a file of the wrong size is not installed");
+        assert_eq!(missing_files(&siglip, &dir).len(), 3);
+
+        let inner = |e: Extract| Download {
+            path: "lib.dll".to_owned(),
+            url: "https://example.org/pkg.nupkg".to_owned(),
+            bytes: None,
+            sha256: None,
+            extract: Some(e),
+            convert: None,
+        };
+        std::fs::write(dir.join("lib.dll"), b"library").expect("write");
+        assert!(is_installed(&dir, &inner(Extract::new("lib.dll"))), "unknown size: any non-empty file counts");
+        let pinned = inner(Extract::pinned("lib.dll", 7, &"0".repeat(64)));
+        assert!(is_installed(&dir, &pinned), "an extracted file of the pinned size");
+        assert!(!is_installed(&dir, &inner(Extract::pinned("lib.dll", 8, &"0".repeat(64)))));
+        let lib = Pack { files: vec![pinned], ..siglip };
+        assert_eq!(damaged_files(&lib, &dir).len(), 1, "an extracted file is checked against its own checksum");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -125,10 +125,24 @@ pub struct Vocabulary {
 }
 
 fn check_name(raw: &str) -> Result<String, VocabularyError> {
-    let name = raw.trim();
-    let ok =
-        !name.is_empty() && name.len() <= 255 && !name.contains(PATH_SEPARATOR) && !name.chars().any(char::is_control);
+    let name = trim(raw);
+    let ok = !name.is_empty()
+        && name.len() <= 255
+        && !name.contains(PATH_SEPARATOR)
+        && !name.chars().any(|c| c.is_control() || is_invisible_mark(c));
     if ok { Ok(name.to_owned()) } else { Err(VocabularyError::InvalidName { name: raw.to_owned() }) }
+}
+
+/// `text` without white space or byte-order marks at either end.
+fn trim(text: &str) -> &str {
+    text.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+}
+
+/// Invisible characters that change how a name reads without being seen:
+/// the byte-order mark and the bidirectional marks, overrides and isolates
+/// (a name could otherwise show its letters in another order).
+fn is_invisible_mark(c: char) -> bool {
+    matches!(c, '\u{feff}' | '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 impl Vocabulary {
@@ -276,7 +290,7 @@ impl Vocabulary {
             let fail = |reason: String| VocabularyError::Line { line: line_no, reason };
             let line = raw.trim_end_matches(['\r', ' ']);
             let depth = line.chars().take_while(|&c| c == '\t').count();
-            let content = line[depth..].trim();
+            let content = trim(&line[depth..]);
             if content.is_empty() {
                 continue;
             }
@@ -290,7 +304,7 @@ impl Vocabulary {
                 return Err(fail("indented more than one level below the keyword above".to_owned()));
             }
             stack.truncate(depth);
-            let content = content.trim_start_matches('~');
+            let content = trim(content.trim_start_matches('~'));
             let (name, exported) = match content.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
                 Some(inner) => (inner, false),
                 None => (content, true),
@@ -368,6 +382,21 @@ mod tests {
     }
 
     #[test]
+    fn damaged_keyword_files_never_panic_and_what_is_read_writes_back() {
+        mutate::check_seed("keywords", "lightroom.txt", SAMPLE.as_bytes());
+        for copy in mutate::text_copies(SAMPLE, 71, 3000) {
+            // A branch written twice is merged, so the ids may change order on
+            // the way back; the tree written out stays the same.
+            if let Ok(v) = Vocabulary::parse_lightroom(&copy) {
+                let written = v.to_lightroom();
+                let again = Vocabulary::parse_lightroom(&written).expect("own output reads back");
+                assert_eq!(again.to_lightroom(), written, "read: {copy:?}");
+                assert_eq!(again.len(), v.len());
+            }
+        }
+    }
+
+    #[test]
     fn writing_and_reading_back_gives_the_same_vocabulary() {
         let v = Vocabulary::parse_lightroom(SAMPLE).expect("valid file");
         let again = Vocabulary::parse_lightroom(&v.to_lightroom()).expect("own output reads back");
@@ -414,5 +443,21 @@ mod tests {
         assert!(matches!(v.add("  ", None), Err(VocabularyError::InvalidName { .. })));
         assert!(matches!(v.add(&"x".repeat(256), None), Err(VocabularyError::InvalidName { .. })));
         assert_eq!(v.add("a", Some(KeywordId(7))), Err(VocabularyError::UnknownKeyword));
+        // A name that shows its letters in another order than it has them.
+        for mark in ['\u{202e}', '\u{2066}', '\u{200f}', '\u{feff}'] {
+            assert!(
+                matches!(v.add(&format!("ab{mark}cd"), None), Err(VocabularyError::InvalidName { .. })),
+                "{mark:?}"
+            );
+        }
+        assert!(v.add("x".repeat(255).as_str(), None).is_ok(), "255 bytes is the limit, not beyond");
+    }
+
+    #[test]
+    fn a_second_byte_order_mark_or_a_space_after_the_tilde_is_not_part_of_the_name() {
+        let v = Vocabulary::parse_lightroom("\u{feff}\u{feff}[Luoghi]\n~ [Casa]\n").expect("valid");
+        let places = v.find_path("Luoghi").expect("the mark is dropped");
+        assert!(!v.get(places).expect("exists").is_exported());
+        assert!(!v.get(v.find_path("Casa").expect("exists")).expect("exists").is_exported());
     }
 }

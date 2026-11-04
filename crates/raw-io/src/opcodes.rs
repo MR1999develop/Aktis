@@ -554,6 +554,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn damaged_opcode_lists_never_panic_when_read_or_applied() {
+        let gain = gain_map_params([0, 0, 4, 4, 0, 1, 1, 1], (2, 2), (0.5, 0.5), (0.25, 0.25), &MAP_2X2, 1);
+        let ops = list(&[(9, 0, gain.clone()), (11, 1, vec![0; 8])]);
+        for copy in mutate::copies(&ops, 21, 3000) {
+            let _ = parse_list(&copy);
+        }
+        for copy in mutate::copies(&gain, 22, 3000) {
+            if let Some(map) = GainMap::parse(&copy) {
+                let mut data = vec![0.25_f32; 4 * 4 * 3];
+                map.apply(&mut data, 4, 4, 3, whole(4, 4));
+                map.apply(&mut data, 4, 4, 3, Placement { x: 3, y: 1, width: 1, height: 2 });
+            }
+        }
+        let seed = dng(false, vec![(tag::OPCODE_LIST2, Value::Undefined(ops.clone()))]);
+        // The first byte picks the extension in fuzz/fuzz_targets/raw_file.rs: 0 dng.
+        mutate::check_seed("raw_file", "opcodes.dng", &[[0_u8].as_slice(), &seed].concat());
+        for big_endian in [false, true] {
+            let file = dng(big_endian, vec![(tag::OPCODE_LIST2, Value::Undefined(ops.clone()))]);
+            for copy in mutate::copies(&file, 23, 3000) {
+                let found = read_opcodes(Cursor::new(copy));
+                for map in &found.gain_maps {
+                    let mut data = vec![0.25_f32; 4 * 4];
+                    map.apply(&mut data, 4, 4, 1, whole(4, 4));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn files_that_are_not_dng_give_nothing() {
         let gain = gain_map_params([0, 0, 0, 0, 0, 1, 1, 1], (1, 1), (1.0, 1.0), (0.0, 0.0), &[2.0], 1);
         // A TIFF raw file (NEF, ARW …) without DNGVersion: its tags are not DNG tags.

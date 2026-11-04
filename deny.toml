@@ -1,0 +1,55 @@
+# cargo deny check: known vulnerabilities (RustSec), licences, where the
+# crates come from. Run by scripts\check.bat and every day by the Audit
+# workflow on GitHub.
+
+[graph]
+all-features = true
+
+[advisories]
+# Every vulnerability and every yanked crate fails the check. An exception
+# goes here with the advisory id, the reason and the date it is looked at
+# again, for example:
+#   { id = "RUSTSEC-0000-0000", reason = "not reachable: ... (review 2026-12-01)" },
+ignore = []
+yanked = "deny"
+# A crate no longer maintained fails when the workspace uses it directly;
+# deeper in the tree (egui's accessibility on Linux, the tokenizer) it
+# is for the editor's dependencies to replace.
+unmaintained = "workspace"
+
+[licenses]
+# Licences that can be combined with GPL-3.0-only.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+]
+confidence-threshold = 0.9
+# This project's own crates (publish = false) carry GPL-3.0-only.
+private = { ignore = true }
+exceptions = [
+    # egui's built-in fonts (data, shipped as they are).
+    { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+    # The JPEG encoder's tables come from the Independent JPEG Group.
+    { crate = "jpeg-encoder", allow = ["IJG"] },
+    # The RAW decoder: LGPL-2.1, which GPL-3.0 allows to combine with.
+    { crate = "rawler", allow = ["LGPL-2.1"] },
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+# The workspace's own path dependencies have no version.
+allow-wildcard-paths = true
+
+[sources]
+# Only crates.io: no git repositories, no other registries.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

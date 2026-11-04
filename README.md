@@ -13,8 +13,11 @@ On a new Windows PC, double-click `scripts\setup-windows.bat` first: it
 installs Git, the Visual Studio 2022 C++ build tools, rustup and the pinned
 toolchain with winget (log in `target\setup.log`).
 
-On Windows, double-click `scripts\check.bat`: it runs format check, clippy,
-tests and a release build, showing everything on screen, and writes
+On Windows, double-click `scripts\check.bat`: it runs format check,
+`cargo deny` (known vulnerabilities, licences and sources of the
+dependencies, see `deny.toml`; install it once with
+`cargo install cargo-deny --locked`), clippy, tests and a release build,
+showing everything on screen, and writes
 `target\check.log` (full output) and `target\check-summary.txt` (environment:
 git commit, Rust, GPU, ONNX Runtime and models; then status, time and the
 errors, warnings and failed tests of each step). `check.bat -Quick` skips the
@@ -83,6 +86,8 @@ and still open.
 | `tools/exposure` | First tool: exposure in stops, CPU reference + WGSL kernel. |
 | `tools/denoise-ai` | AI denoise: the SCUNet network on ONNX Runtime (TensorRT for RTX, DirectML, CPU). A host tool: runs outside the WGSL kernels. |
 | `scripts/scunet` | Python + NumPy reference for `scunet-onnx`, which makes the SCUNet ONNX models from the original weights. |
+| `crates/mutate` | Test helper only: damaged copies of a valid file, which every parser's tests feed it. |
+| `fuzz` | Coverage-guided fuzzing of the parsers (`cargo fuzz`, nightly; its own workspace). See `fuzz/README.md`. |
 
 Pixel data inside the editor are linear, scene-referred `f32` in Rec.2020;
 quantisation happens only on output.
@@ -283,6 +288,16 @@ A photo with several variants shows each as a card of its own in the
 filmstrip, right after the one before ("IMG_0001.CR3 (2)"), with its own
 preview; a click opens that variant. Deleting a variant, the first one
 included, leaves the photo and its other variants.
+
+## Security
+
+The editor opens files made by others and downloads AI models, so every
+parser works under size limits and checked arithmetic, and is tested with
+damaged files. Every download is checked against its SHA-256 before it is
+used. `docs/threat-model.md` says what is defended and which risks are
+accepted. `SECURITY.md` says how to report a vulnerability. On GitHub the
+`Audit` workflow checks the dependencies every day, and the `Fuzz`
+workflow (started by hand) fuzzes the parsers.
 
 ## Licence
 

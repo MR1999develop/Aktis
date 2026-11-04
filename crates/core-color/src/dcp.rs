@@ -393,6 +393,13 @@ mod tests {
         for n in 0..full.len() {
             let _ = read_dcp(&full[..n], ProfileSource::Builtin);
         }
+        mutate::check_seed("dcp", "matrices.dcp", &full);
+        // So does any other damage, or it gives a profile that can be used.
+        for copy in mutate::copies(&full, 61, 4000) {
+            if let Ok(p) = read_dcp(&copy, ProfileSource::Builtin) {
+                let _ = p.calibrations();
+            }
+        }
     }
 
     #[test]

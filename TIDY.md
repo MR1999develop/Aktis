@@ -120,8 +120,11 @@
   (delete it once both models are made, if disk space matters). SAM 2.1 and
   the MediaPipe person-parts model have no ONNX from their authors (only
   PyTorch and TFLite): they still come from third-party conversions, which
-  the models window says by pointing at the authors' page. The NuGet ONNX Runtime packages and SigLIP 2 have no pinned size
-  or SHA-256 yet: pin them once downloaded.
+  the models window says by pointing at the authors' page. Every file has a
+  pinned SHA-256: for the NuGet packages, the DLL taken out of them (nuget.org
+  may sign a package again); SigLIP 2 at a fixed revision of its repository.
+  Moving to a newer ONNX Runtime or SigLIP 2 means new checksums
+  (`every_file_is_checked_against_a_checksum` fails without them).
 - Downloads use the system's `curl` and `tar` (Windows 10 and later have
   both); an in-process HTTP client would avoid depending on them.
 - Filmstrip thumbnails are made from the embedded JPEG each time a folder
@@ -289,3 +292,19 @@
   without the accessibility check; give them `labelled_by` (or a name in
   their `WidgetInfo`) and turn the check on. The panels' own controls
   already pass it.
+- Security (see `docs/threat-model.md`, accepted risks R1–R6):
+  - Before the first release: `SHA256SUMS` (signed), an SBOM
+    (`cargo cyclonedx`), Authenticode with a timestamp and build provenance.
+  - `SECURITY.md` sends reports to GitHub's private vulnerability reporting;
+    it must be switched on in the repository's settings
+    (Security → Private vulnerability reporting).
+  - The `Fuzz` workflow has not run yet: run it once, then turn what it
+    finds into tests of the crate.
+  - `async-executor` (Linux only, egui's accessibility) is held at 1.13.3,
+    because 1.14.0 was yanked and 1.14.1 is from 2 November. Take 1.14.1
+    from 7 November on (`cargo update -p async-executor`), after looking at
+    its diff.
+  - Stored edits accept `"nan"` and `"inf"` as numbers (the encoder writes
+    them so a value survives a round trip). A hostile file can put NaN into
+    a parameter, which may give wrong pixels (not checked yet). Refuse
+    non-finite values where a parameter cannot have them.

@@ -266,7 +266,7 @@ impl ModelsUi {
                 if ui.button("Open folder").clicked() {
                     let _ = std::fs::create_dir_all(&this.dir);
                     let launch = platform::reveal_in_file_manager(platform::Os::current(), &this.dir);
-                    if let Err(e) = std::process::Command::new(launch.program).args(&launch.args).spawn() {
+                    if let Err(e) = launch.command().spawn() {
                         folder_error = Some(format!("cannot open the folder: {e}"));
                     }
                 }

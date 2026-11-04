@@ -92,10 +92,42 @@ pub fn config_dir(os: Os, app: &str, env: impl Fn(&str) -> Option<OsString>) -> 
 /// A program to start, with its arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
-    /// Program name or path.
+    /// Program name, as [`system_program`] takes it.
     pub program: &'static str,
     /// Arguments, passed as they are (no shell).
     pub args: Vec<OsString>,
+}
+
+impl Launch {
+    /// The command that runs it: the system's own program, by full path
+    /// where the system has a fixed place for it ([`system_program`]).
+    #[must_use]
+    pub fn command(&self) -> std::process::Command {
+        let mut cmd = std::process::Command::new(system_program(Os::current(), self.program));
+        cmd.args(&self.args);
+        cmd
+    }
+}
+
+/// Where the system keeps the program `name` (`curl`, `tar`, `explorer`,
+/// `powershell`, `open` …), so that a file of the same name somewhere on
+/// the search path is never started instead: `%SystemRoot%` on Windows,
+/// `/usr/bin` on macOS. On Linux the place differs between distributions,
+/// and the name is looked up on the search path.
+#[must_use]
+pub fn system_program(os: Os, name: &str) -> PathBuf {
+    match os {
+        Os::Windows => {
+            let root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+            match name {
+                "explorer" => root.join("explorer.exe"),
+                "powershell" => root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
+                _ => root.join("System32").join(format!("{name}.exe")),
+            }
+        }
+        Os::MacOs => Path::new("/usr/bin").join(name),
+        Os::Linux => PathBuf::from(name),
+    }
 }
 
 /// How to show `file` in the system's file manager: selected in Explorer on
@@ -474,6 +506,22 @@ mod tests {
             Launch { program: "xdg-open", args: vec![OsString::from("photos/with space")] }
         );
         assert_eq!(reveal_in_file_manager(Os::Linux, Path::new("a.jpg")).args, vec![OsString::from(".")]);
+    }
+
+    #[test]
+    fn system_programs_are_started_by_full_path_where_the_system_fixes_it() {
+        for name in ["curl", "tar", "explorer", "powershell"] {
+            let path = system_program(Os::Windows, name);
+            assert!(path.is_absolute() || cfg!(not(windows)), "{name}: {}", path.display());
+            let windows = path.to_string_lossy().to_ascii_lowercase();
+            assert!(windows.contains("windows") && windows.ends_with(&format!("{name}.exe")), "{windows}");
+        }
+        assert_eq!(system_program(Os::MacOs, "open"), Path::new("/usr/bin/open"));
+        assert_eq!(system_program(Os::Linux, "xdg-open"), Path::new("xdg-open"));
+        if cfg!(windows) {
+            assert!(system_program(Os::Windows, "explorer").is_file(), "Explorer is where the system keeps it");
+            assert!(system_program(Os::Windows, "powershell").is_file());
+        }
     }
 
     #[test]

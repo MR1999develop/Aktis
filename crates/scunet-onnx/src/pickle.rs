@@ -692,6 +692,42 @@ mod tests {
     /// a half tensor, memo references and the `_metadata` BUILD.
     #[test]
     fn reads_a_state_dict() {
+        let w = load(&sample_checkpoint()).unwrap();
+        assert_eq!(w.keys().collect::<Vec<_>>(), ["a", "b", "c", "d"]);
+        assert_eq!(w["a"], Tensor { shape: vec![2, 3], data: vec![1., 2., 3., 4., 5., 6.] });
+        // b[i][j] = storage[i + 2j]
+        assert_eq!(w["b"], Tensor { shape: vec![2, 3], data: vec![0., 2., 4., 1., 3., 5.] });
+        assert_eq!(w["c"], Tensor { shape: vec![], data: vec![1.0] });
+        assert_eq!(w["d"], w["c"]);
+    }
+
+    #[test]
+    fn the_fuzzers_start_from_a_checkpoint_like_the_real_one() {
+        mutate::check_seed("checkpoint", "state_dict.pth", &sample_checkpoint());
+    }
+
+    #[test]
+    fn damaged_checkpoints_never_panic() {
+        let (program, storages) = sample_parts();
+        let refs: Vec<(&str, &[u8])> = storages.iter().map(|(k, d)| (*k, d.as_slice())).collect();
+        // The pickle program damaged inside an intact zip, then the zip itself.
+        for copy in mutate::copies(&program.0, 51, 4000) {
+            let _ = load(&checkpoint(&P(copy), &refs));
+        }
+        for copy in mutate::copies(&sample_checkpoint(), 52, 3000) {
+            let _ = load(&copy);
+        }
+    }
+
+    /// The state dict of [`reads_a_state_dict`].
+    fn sample_checkpoint() -> Vec<u8> {
+        let (p, storages) = sample_parts();
+        let refs: Vec<(&str, &[u8])> = storages.iter().map(|(k, d)| (*k, d.as_slice())).collect();
+        checkpoint(&p, &refs)
+    }
+
+    /// Its pickle program and storages.
+    fn sample_parts() -> (P, Vec<(&'static str, Vec<u8>)>) {
         let mut p = P::default();
         p.op(&[0x80, 2]).op(b"ccollections\nOrderedDict\nq\x00)Rq\x01(");
         // a: 2×3 contiguous, from offset 1 of storage "0"
@@ -709,14 +745,7 @@ mod tests {
         p.op(b"b.");
         let storage0 = f32s(&[0., 1., 2., 3., 4., 5., 6.]);
         let storage1: Vec<u8> = [0x0000u16, 0x3C00, 0xC000].iter().flat_map(|h| h.to_le_bytes()).collect();
-        let zip = checkpoint(&p, &[("0", &storage0), ("1", &storage1)]);
-        let w = load(&zip).unwrap();
-        assert_eq!(w.keys().collect::<Vec<_>>(), ["a", "b", "c", "d"]);
-        assert_eq!(w["a"], Tensor { shape: vec![2, 3], data: vec![1., 2., 3., 4., 5., 6.] });
-        // b[i][j] = storage[i + 2j]
-        assert_eq!(w["b"], Tensor { shape: vec![2, 3], data: vec![0., 2., 4., 1., 3., 5.] });
-        assert_eq!(w["c"], Tensor { shape: vec![], data: vec![1.0] });
-        assert_eq!(w["d"], w["c"]);
+        (p, vec![("0", storage0), ("1", storage1)])
     }
 
     #[test]

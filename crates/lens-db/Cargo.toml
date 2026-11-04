@@ -8,5 +8,8 @@ publish.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[dev-dependencies]
+mutate.workspace = true
+
 [lints]
 workspace = true

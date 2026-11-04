@@ -2630,7 +2630,7 @@ impl EditorApp {
         match action {
             Some(ToastAction::ShowInFolder(path)) => {
                 let launch = platform::reveal_in_file_manager(platform::Os::current(), &path);
-                if let Err(e) = std::process::Command::new(launch.program).args(&launch.args).spawn() {
+                if let Err(e) = launch.command().spawn() {
                     self.toast = Some(error_toast(format!("Cannot open the folder: {e}")));
                 }
             }

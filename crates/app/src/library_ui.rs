@@ -1593,7 +1593,7 @@ impl Library {
 
 /// Runs a program of the system (file manager, default app).
 pub(crate) fn launch(l: &platform::Launch) -> std::io::Result<()> {
-    std::process::Command::new(l.program).args(&l.args).spawn().map(drop)
+    l.command().spawn().map(drop)
 }
 
 /// The colour of a label.

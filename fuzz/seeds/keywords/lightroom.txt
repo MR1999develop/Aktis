@@ -1,0 +1,13 @@
+﻿[Luoghi]
+	Italia
+		Milano
+			{Milan}
+Animali
+	Uccelli
+		Airone
+			{Heron}
+			{airone cenerino}
+	Cane
+		{dog}
+
+Tramonto

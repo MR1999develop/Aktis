@@ -17,6 +17,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::config::DbConfig;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::import::{ImportMetadata, ImportedPhoto, ShotKey};
@@ -186,6 +187,11 @@ impl Catalog {
     }
 
     fn init(mut conn: Connection) -> Result<Self, CatalogError> {
+        // A catalog may come from another computer. Its schema (triggers,
+        // views) may not call functions with side effects, and no statement
+        // may damage the file's own structure on purpose.
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
         // Write-ahead logging: readers never wait for a writer. The pragma answers
         // with the mode in use ("memory" for an in-memory database).
         let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
@@ -1111,6 +1117,19 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn a_catalog_from_elsewhere_cannot_rewrite_its_own_structure() {
+        let c = Catalog::open_in_memory().unwrap();
+        let defensive = c.conn.db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE).unwrap();
+        let trusted = c.conn.db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA).unwrap();
+        assert!(defensive && !trusted);
+        // What a hostile file's statements could try: edit the schema table directly.
+        let edit = c
+            .conn
+            .execute_batch("PRAGMA writable_schema = ON; UPDATE sqlite_schema SET sql = 'x' WHERE name = 'photos';");
+        assert!(edit.is_err(), "the schema table stays read-only");
     }
 
     #[test]

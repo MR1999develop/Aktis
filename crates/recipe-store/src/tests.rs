@@ -264,6 +264,24 @@ fn broken_texts_are_refused_with_a_reason() {
 }
 
 #[test]
+fn the_fuzzers_start_from_texts_of_the_current_format() {
+    mutate::check_seed("recipe", "variant.json", encode(&every_variant()).as_bytes());
+}
+
+#[test]
+fn damaged_texts_never_panic_and_what_is_accepted_round_trips() {
+    let good = encode(&every_variant());
+    for copy in mutate::text_copies(&good, 41, 3000) {
+        // Compared as text: a stored "nan" is not equal to itself.
+        if let Ok(v) = decode(&copy) {
+            let written = encode(&v);
+            assert_eq!(decode(&written).map(|again| encode(&again)), Ok(written), "accepted: {copy}");
+        }
+        let _ = decode_recipe_lenient(&copy);
+    }
+}
+
+#[test]
 fn layers_with_the_same_id_are_refused() {
     let mut r = Recipe::default();
     let a = r.layers.add("A".to_owned(), MaskDef::default(), Tools::new());

@@ -1,1 +1,3 @@
 *.bat text eol=crlf
+# The fuzzers' starting files are compared byte for byte by the tests.
+/fuzz/seeds/** -text

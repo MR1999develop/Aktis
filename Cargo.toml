@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
+# The fuzzers have their own workspace (nightly, libFuzzer): see fuzz/README.md.
+exclude = ["fuzz"]
 members = [
     "crates/core-model",
     "crates/core-color",
@@ -25,6 +27,7 @@ members = [
     "crates/tagging",
     "crates/tagging-onnx",
     "crates/scunet-onnx",
+    "crates/mutate",
     "tools/exposure",
     "tools/denoise-ai",
     "tools/adjust",
@@ -61,6 +64,7 @@ onnx-env = { path = "crates/onnx-env" }
 ai-models = { path = "crates/ai-models" }
 ai-segment = { path = "crates/ai-segment" }
 scunet-onnx = { path = "crates/scunet-onnx" }
+mutate = { path = "crates/mutate" }
 tool-exposure = { path = "tools/exposure" }
 tool-denoise-ai = { path = "tools/denoise-ai" }
 tool-adjust = { path = "tools/adjust" }
@@ -81,6 +85,30 @@ todo = "warn"
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# The crates that read files made elsewhere (RAW and pictures, recipes and
+# presets, colour profiles, lens data, the catalog, model weights, keyword
+# lists) stop with a panic, which the workers catch, instead of wrapping
+# round when a size or an offset overflows. The pixel crates keep plain
+# arithmetic for speed; their sizes come from images these crates checked.
+[profile.release.package.raw-io]
+overflow-checks = true
+[profile.release.package.recipe-store]
+overflow-checks = true
+[profile.release.package.core-color]
+overflow-checks = true
+[profile.release.package.lens-db]
+overflow-checks = true
+[profile.release.package.catalog]
+overflow-checks = true
+[profile.release.package.scunet-onnx]
+overflow-checks = true
+[profile.release.package.tagging]
+overflow-checks = true
+[profile.release.package.ai-models]
+overflow-checks = true
+[profile.release.package.masks]
+overflow-checks = true
 
 [profile.profiling]
 inherits = "release"

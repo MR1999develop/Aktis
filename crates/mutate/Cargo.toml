@@ -1,0 +1,12 @@
+[package]
+name = "mutate"
+description = "Damaged copies of a valid file, for the tests of the parsers (a dev-dependency only)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true

@@ -75,6 +75,17 @@ mod tests {
     }
 
     #[test]
+    fn damaged_custom_lenses_never_panic_and_what_is_accepted_round_trips() {
+        for copy in mutate::text_copies(&encode_custom_lens(&sample()), 43, 3000) {
+            if let Ok(l) = decode_custom_lens(&copy) {
+                let written = encode_custom_lens(&l);
+                let again = decode_custom_lens(&written).map(|again| encode_custom_lens(&again));
+                assert_eq!(again, Ok(written), "accepted: {copy}");
+            }
+        }
+    }
+
+    #[test]
     fn a_custom_lens_round_trips() {
         let lens = sample();
         assert_eq!(decode_custom_lens(&encode_custom_lens(&lens)).unwrap(), lens);

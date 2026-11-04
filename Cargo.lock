@@ -353,9 +353,9 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.14.0"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+checksum = "497c00e0fd83a72a79a39fcbd8e3e2f055d6f6c7e025f3b3d91f4f8e76527fb8"
 dependencies = [
  "async-task",
  "concurrent-queue",
@@ -715,6 +715,7 @@ dependencies = [
 name = "catalog"
 version = "0.1.0"
 dependencies = [
+ "mutate",
  "rusqlite",
 ]
 
@@ -876,6 +877,7 @@ name = "core-color"
 version = "0.1.0"
 dependencies = [
  "core-model",
+ "mutate",
 ]
 
 [[package]]
@@ -2485,6 +2487,9 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 [[package]]
 name = "lens-db"
 version = "0.1.0"
+dependencies = [
+ "mutate",
+]
 
 [[package]]
 name = "libc"
@@ -2753,6 +2758,10 @@ dependencies = [
  "syn 2.0.119",
  "target-features",
 ]
+
+[[package]]
+name = "mutate"
+version = "0.1.0"
 
 [[package]]
 name = "naga"
@@ -3787,6 +3796,7 @@ dependencies = [
  "core-model",
  "develop",
  "image",
+ "mutate",
  "rawler",
 ]
 
@@ -3896,6 +3906,7 @@ version = "0.1.0"
 dependencies = [
  "commands",
  "core-model",
+ "mutate",
 ]
 
 [[package]]
@@ -4155,6 +4166,9 @@ dependencies = [
 [[package]]
 name = "scunet-onnx"
 version = "0.1.0"
+dependencies = [
+ "mutate",
+]
 
 [[package]]
 name = "self_cell"
@@ -4499,6 +4513,7 @@ version = "0.1.0"
 dependencies = [
  "core-color",
  "core-model",
+ "mutate",
 ]
 
 [[package]]

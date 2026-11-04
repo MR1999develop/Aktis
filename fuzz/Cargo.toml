@@ -1,0 +1,73 @@
+[package]
+name = "aktis-fuzz"
+description = "Coverage-guided fuzzing of the parsers that read files made elsewhere (cargo fuzz, nightly)."
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-only"
+authors = ["MR"]
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: libFuzzer needs nightly and sanitizer flags, which the
+# editor's workspace never builds with.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4.12"
+raw-io = { path = "../crates/raw-io" }
+recipe-store = { path = "../crates/recipe-store" }
+core-color = { path = "../crates/core-color" }
+lens-db = { path = "../crates/lens-db" }
+scunet-onnx = { path = "../crates/scunet-onnx" }
+tagging = { path = "../crates/tagging" }
+catalog = { path = "../crates/catalog", default-features = false }
+
+# The same arithmetic checks as the release build of these crates.
+[profile.release]
+debug = 1
+overflow-checks = true
+
+[[bin]]
+name = "raw_file"
+path = "fuzz_targets/raw_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recipe"
+path = "fuzz_targets/recipe.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dcp"
+path = "fuzz_targets/dcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lens_xml"
+path = "fuzz_targets/lens_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "checkpoint"
+path = "fuzz_targets/checkpoint.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keywords"
+path = "fuzz_targets/keywords.rs"
+test = false
+doc = false
+bench = false

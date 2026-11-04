@@ -164,6 +164,21 @@ mod tests {
     }
 
     #[test]
+    fn the_fuzzers_start_from_a_preset_of_the_current_format() {
+        mutate::check_seed("recipe", "preset.json", encode_preset(&sample(true)).as_bytes());
+    }
+
+    #[test]
+    fn damaged_presets_never_panic_and_what_is_accepted_round_trips() {
+        for copy in mutate::text_copies(&encode_preset(&sample(true)), 42, 3000) {
+            if let Ok(p) = decode_preset(&copy) {
+                let written = encode_preset(&p);
+                assert_eq!(decode_preset(&written).map(|again| encode_preset(&again)), Ok(written), "accepted: {copy}");
+            }
+        }
+    }
+
+    #[test]
     fn presets_and_brushes_round_trip() {
         for b in [false, true] {
             let p = sample(b);

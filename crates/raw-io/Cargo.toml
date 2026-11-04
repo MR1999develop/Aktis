@@ -18,6 +18,7 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "ti
 
 [dev-dependencies]
 develop.workspace = true
+mutate.workspace = true
 
 [lints]
 workspace = true
