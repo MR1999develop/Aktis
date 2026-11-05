@@ -687,6 +687,15 @@ Details in `docs/catalog.md`.
   editor's checksums. `async-executor` 1.14.0 (yanked) was replaced by
   1.13.3.
 
+## 5 November: clean history, bounded GPU wait
+
+- The history of every branch, published ones included, was rewritten:
+  every commit has MR as author and committer, test data uses made-up
+  names, and the names of other programs are gone from code, comments and
+  commit messages. The repository is now `MR1999develop/Aktis`.
+- The GPU renderer no longer waits for ever on a chunk: the read-back gives
+  up after `GPU_WAIT` (60 s) with a read-back error.
+
 ## 30 October: live filmstrip thumbnails
 
 - The open photo's filmstrip card (and its variant's card) follows every

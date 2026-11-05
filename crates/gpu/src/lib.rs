@@ -22,6 +22,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::time::Duration;
 
 use core_model::{ImageError, ImageF32, LayerId, Layers, MaskImage, Rgba, ToolId, ToolRef, Tools};
 use masks::{NoRasters, RasterSource};
@@ -34,6 +35,10 @@ const WORKGROUP: u32 = 256;
 const PIXEL_BYTES: u64 = 16;
 /// GPU memory a render may use at once, before chunking kicks in.
 const MEMORY_BUDGET: u64 = 1 << 30;
+/// The longest wait for the GPU to finish one chunk and hand its result
+/// back. A chunk takes milliseconds; a GPU that has not answered by then is
+/// stuck (a lost or busy device), and the render fails instead of hanging.
+const GPU_WAIT: Duration = Duration::from_secs(60);
 
 /// Why the GPU could not be used or a render failed.
 #[derive(Debug, Clone, PartialEq)]
@@ -562,14 +567,16 @@ impl GpuRenderer {
                 uniforms.push(uniform);
             }
             encoder.copy_buffer_to_buffer(&storage[result_slot], 0, &readback, 0, bytes);
-            queue.submit([encoder.finish()]);
+            let submission = queue.submit([encoder.finish()]);
 
             let (tx, rx) = mpsc::channel();
             readback.slice(..bytes).map_async(wgpu::MapMode::Read, move |r| {
                 let _ = tx.send(r);
             });
-            device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| GpuError::Readback(e.to_string()))?;
-            rx.recv()
+            device
+                .poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(GPU_WAIT) })
+                .map_err(|e| GpuError::Readback(e.to_string()))?;
+            rx.recv_timeout(GPU_WAIT)
                 .map_err(|_| GpuError::Readback("no answer from the GPU".to_owned()))?
                 .map_err(|e| GpuError::Readback(e.to_string()))?;
             {
