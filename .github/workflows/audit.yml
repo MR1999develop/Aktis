@@ -21,7 +21,14 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check advisories bans licenses sources
-          arguments: --all-features --locked
+      # The repository allows only GitHub's own actions: cargo-deny comes from
+      # its release, checked against the SHA-256 the release publishes.
+      - name: cargo-deny 0.20.2
+        run: |
+          name=cargo-deny-0.20.2-x86_64-unknown-linux-musl
+          curl -fsSL --proto =https -o deny.tgz             "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/$name.tar.gz"
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  deny.tgz" | sha256sum -c -
+          tar -xzf deny.tgz
+          install -m 755 "$name/cargo-deny" "$HOME/.cargo/bin/cargo-deny"
+      - name: Check advisories, bans, licences and sources
+        run: cargo deny --all-features --locked check advisories bans licenses sources
