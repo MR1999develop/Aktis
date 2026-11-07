@@ -1,17 +1,16 @@
 name: CI
 
-# Manual only for now: development is checked on the developer's PC with
-# scripts/check.bat, and GitHub Actions minutes are limited. Start a run from
-# the Actions tab (or `gh workflow run CI --ref <branch>`).
+# Manual only: development is checked on the developer's PC with
+# scripts/check.bat, and GitHub Actions minutes are limited. A work branch
+# that passed the local checks is started from the Actions tab (or
+# `gh workflow run CI --ref <branch>`); it joins main only with a green run.
 on:
   workflow_dispatch:
 
-# The jobs that build and run code (the project's and its dependencies'
-# build scripts and tests) get a read-only token and keep no credentials
-# in the checkout. Each one hands its log and output files over as an
-# artifact; only the last job, which runs no project code, may write: it
-# publishes every job's results to the branch ci-results/<branch>--<job>,
-# so they can be read with git alone.
+# Every job gets a read-only token, keeps no credentials in the checkout and
+# makes no commits: the CI only reads the branch. Each job keeps its log and
+# output files (pictures) as an artifact of the run, and stops after an hour
+# at most.
 #
 # Actions are pinned to the commit of a release (the tag in the comment).
 permissions:
@@ -25,48 +24,17 @@ defaults:
     shell: bash
 
 jobs:
-  # Adds new dependencies to Cargo.lock when a Cargo.toml changed (the cloud
-  # workspace that writes the code cannot reach crates.io). Existing entries
-  # are kept; nothing is upgraded. The other jobs build the updated lock.
-  # `cargo metadata` only resolves the dependencies: no code of theirs runs.
-  lockfile:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      sha: ${{ steps.push.outputs.sha }}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - name: Resolve new dependencies
-        run: cargo metadata --format-version 1 > /dev/null
-      - name: Commit Cargo.lock if it changed
-        id: push
-        run: |
-          if git diff --quiet Cargo.lock; then
-            echo "Cargo.lock is up to date"
-          elif [ "$GITHUB_EVENT_NAME" != "push" ]; then
-            echo "::error::Cargo.lock is out of date; push to a branch to update it"
-            exit 1
-          else
-            git config user.name "ci"
-            git config user.email "ci@users.noreply.github.com"
-            git commit -q -m "Update Cargo.lock for new dependencies" Cargo.lock
-            git push -q origin "HEAD:${GITHUB_REF_NAME}"
-          fi
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
   check:
     name: ${{ matrix.os }}
-    needs: lockfile
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ needs.lockfile.outputs.sha }}
           persist-credentials: false
       # rust-toolchain.toml pins the compiler; rustup installs it on first use.
       - name: Toolchain
@@ -83,9 +51,6 @@ jobs:
         run: cargo test --workspace --locked 2>&1 | tee -a ci-out/log.txt
         env:
           AKTIS_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
-      - name: Status
-        if: always()
-        run: bash .github/scripts/publish-results.sh status ${{ runner.os }} ${{ job.status }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -94,14 +59,13 @@ jobs:
           retention-days: 3
 
   # A real RAW file end to end: decode, develop, render on the (software) GPU,
-  # export. The JPEGs are published with the log so they can be looked at.
+  # export. The JPEGs are kept with the log so they can be looked at.
   real-raw:
-    needs: lockfile
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ needs.lockfile.outputs.sha }}
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Software Vulkan driver
@@ -129,9 +93,6 @@ jobs:
         env:
           # Tests run in the crate's folder: give an absolute path.
           AKTIS_SCREENSHOT_DIR: ${{ github.workspace }}/ci-out
-      - name: Status
-        if: always()
-        run: bash .github/scripts/publish-results.sh status real-raw ${{ job.status }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -142,6 +103,7 @@ jobs:
   # AI tagging end to end with the real model: SigLIP 2 from Hugging Face,
   # sample photos (OpenCV test images and the NASA NEF), Italian keywords.
   tagging-model:
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     env:
       # The revision the editor downloads (crates/ai-models), so the checksums match.
@@ -213,9 +175,6 @@ jobs:
                           bad.append(name)
           sys.exit(1 if bad else 0)
           PY
-      - name: Status
-        if: always()
-        run: bash .github/scripts/publish-results.sh status tagging-model ${{ job.status }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -226,14 +185,13 @@ jobs:
   # The AI denoise tool with the real network: the SCUNet model is generated
   # from the original KAIR weights (Python + NumPy), then the network runs on
   # the CPU in the tool's own test and on a real RAW file. The JPEGs with and
-  # without the tool are published with the log.
+  # without the tool are kept with the log.
   ai-denoise:
-    needs: lockfile
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ needs.lockfile.outputs.sha }}
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: SCUNet model (448 px tiles)
@@ -261,9 +219,6 @@ jobs:
           } 2>&1 | tee -a ci-out/log.txt
         env:
           AKTIS_DENOISE_DEVICE: cpu
-      - name: Status
-        if: always()
-        run: bash .github/scripts/publish-results.sh status ai-denoise ${{ job.status }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -273,19 +228,15 @@ jobs:
 
   # macOS is prepared but not shipped in version 1: keep it compiling.
   macos-check:
-    needs: lockfile
+    timeout-minutes: 60
     runs-on: macos-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ needs.lockfile.outputs.sha }}
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mkdir -p ci-out && cargo check --workspace --all-targets --locked 2>&1 | tee ci-out/log.txt
-      - name: Status
-        if: always()
-        run: bash .github/scripts/publish-results.sh status macOS ${{ job.status }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -296,9 +247,9 @@ jobs:
   # AI selection end to end with the real models on the CPU build of ONNX
   # Runtime: subject, people, a click, a box and a detected class, on a RAW
   # file and on public test photos. The previews (selection in red) are
-  # published with the log so the masks can be looked at.
+  # kept with the log so the masks can be looked at.
   ai-masks:
-    needs: lockfile
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     env:
       # The version and checksum the editor downloads (crates/ai-models).
@@ -309,7 +260,6 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ needs.lockfile.outputs.sha }}
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Model cache
@@ -365,40 +315,9 @@ jobs:
             cli develop testdata/nikon-d3s.NEF --exposure 1.5 --subject -o ci-out/nef-subject-plus-1.5.jpg
           } 2>&1 | tee -a ci-out/log.txt
           test ! -e ci-out/FAILED
-      - name: Status
-        if: always()
-        run: bash .github/scripts/publish-results.sh status ai-masks ${{ job.status }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: ai-masks
           path: ci-out
           retention-days: 3
-
-  # Publishes the results the jobs above handed over. It checks out only the
-  # publishing script and runs nothing from the artifacts: they are data
-  # (logs, pictures) committed as they are.
-  publish:
-    needs: [check, real-raw, tagging-model, ai-denoise, macos-check, ai-masks]
-    if: always()
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          sparse-checkout: .github/scripts
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        # A run stopped before any job finished has nothing to publish.
-        continue-on-error: true
-        with:
-          path: results
-      - name: Publish every job's results
-        run: |
-          shopt -s nullglob
-          for dir in results/*/; do
-            bash .github/scripts/publish-results.sh push "$(basename "$dir")" "$dir"
-          done
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

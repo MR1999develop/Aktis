@@ -91,9 +91,8 @@
 - On 5 November `gpu_matches_cpu` hung once for 49 minutes, spinning a
   core, while other builds ran; alone it passes in 14 s and the hang did not
   come back. The GPU read-back now gives up after `GPU_WAIT` (60 s), but the
-  cause is unknown. Neither `check.ps1` nor the CI jobs (no
-  `timeout-minutes`, so GitHub's 6 hours) limit how long the tests may run:
-  give both a limit.
+  cause is unknown. The CI jobs stop after an hour; `check.ps1` still puts
+  no limit on how long the tests may run: give it one.
 - The GPU renderer reads back before a host tool and uploads after it; fine
   for the denoiser (seconds of network time), revisit if host tools multiply.
 - With the AI denoise tool on, the editor's preview worker is busy for the

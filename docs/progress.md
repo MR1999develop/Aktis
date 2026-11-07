@@ -392,7 +392,8 @@ tested offline.
 
 ## Tests and CI
 
-GitHub Actions (`.github/workflows/ci.yml`) on every push:
+GitHub Actions (`.github/workflows/ci.yml`), started by hand on a work branch
+that passed the local checks:
 
 - Windows and Ubuntu: fmt, clippy with warnings as errors, all tests.
   On Ubuntu the GPU tests run on Mesa's software Vulkan driver (llvmpipe)
@@ -402,16 +403,14 @@ GitHub Actions (`.github/workflows/ci.yml`) on every push:
   test set), runs the ignored real-file test, `aktis-cli info` and `aktis-cli develop`
   on the GPU and on the CPU, then opens the file in the window headless
   (egui_kittest on wgpu) and saves a screenshot (`window.png`).
-- `lockfile`: when a `Cargo.toml` adds dependencies, it resolves them,
-  commits `Cargo.lock` and the other jobs build that commit.
 
-Each job pushes its log and output files to the branch `ci-results/<branch>--<job>`
-(Linux, Windows, macOS, real-raw), so results can be read with git:
-`git fetch origin "refs/heads/ci-results/*:refs/remotes/origin/ci-results/*"`.
+Each job keeps its log and output files as an artifact of the run (three
+days), stops after an hour at most and makes no commits: every build uses
+`--locked`, so a `Cargo.lock` that misses a dependency fails the run.
 
 - `ai-denoise`: generates the SCUNet model from the KAIR weights, runs the
   network test on the CPU, then `aktis-cli develop --denoise 80` on the Nikon D3S
-  (JPEGs with and without the node are published).
+  (JPEGs with and without the tool are kept).
 
 First green run: Nikon D3S 4256×2832 develops in about 2 s on llvmpipe;
 the GPU and CPU renders look the same.
@@ -695,6 +694,15 @@ Details in `docs/catalog.md`.
   commit messages. The repository is now `MR1999develop/Aktis`.
 - The GPU renderer no longer waits for ever on a chunk: the read-back gives
   up after `GPU_WAIT` (60 s) with a read-back error.
+
+## 7 November: CI without commits of its own
+
+- The CI no longer commits: the `lockfile` job (which committed `Cargo.lock`
+  as another author) and the job that pushed every result to the
+  `ci-results/*` branches are gone. Results stay as artifacts of the run,
+  every job has a read-only token and stops after an hour.
+- `setup-windows.bat` sets this repository's commit author (MR and the
+  account's no-reply address) instead of asking for one.
 
 ## 30 October: live filmstrip thumbnails
 

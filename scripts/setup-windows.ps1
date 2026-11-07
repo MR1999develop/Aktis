@@ -95,17 +95,11 @@ if (Have 'git') {
     $safe = @(& git config --global --get-all safe.directory 2>$null)
     if ($safe -notcontains $here) { & git config --global --add safe.directory $here }
     Write-Host "safe.directory: $here"
-    $name = & git config --global user.name
-    $mail = & git config --global user.email
-    if (-not $name) {
-        $name = Read-Host 'Name for your git commits'
-        if ($name) { & git config --global user.name $name }
-    }
-    if (-not $mail) {
-        $mail = Read-Host 'E-mail for your git commits'
-        if ($mail) { & git config --global user.email $mail }
-    }
-    Write-Host "user: $(& git config --global user.name) <$(& git config --global user.email)>"
+    # Every commit of the project has the same author, in this repository's
+    # own settings (GitHub's no-reply address of the account).
+    & git config user.name 'MR'
+    & git config user.email '5869547+MR1999develop@users.noreply.github.com'
+    Write-Host "user: $(& git config user.name) <$(& git config user.email)>"
     & git status --short --branch | Select-Object -First 5
 }
 

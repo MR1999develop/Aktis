@@ -110,9 +110,9 @@ There is no XL asset yet. When releases are signed, the signing key becomes one.
 - New dependency versions wait a few days before they are taken (a yanked
   `async-executor` 1.14.0 was replaced by the older 1.13.3 rather than by a
   release two days old).
-- GitHub Actions are pinned to release commits. The jobs that build get a
-  read-only token and keep no credentials; only the publishing job, which runs
-  no project code, can write.
+- GitHub Actions are pinned to release commits. Every CI job gets a
+  read-only token, keeps no credentials and makes no commits; results stay
+  as artifacts of the run.
 - Fuzzing: `fuzz/` (cargo fuzz), started by hand with the `Fuzz` workflow.
 
 ## Accepted risks

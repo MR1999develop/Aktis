@@ -91,8 +91,8 @@ cargo run --release -p cli -- tag photo.NEF other.jpg --model path/to/siglip2 \
 cargo run --release -p cli -- tag *.jpg --model path/to/siglip2 --search "barca al tramonto"
 ```
 
-The CI job `tagging-model` does exactly this on sample photos and publishes
-the output on the branch `ci-results/tagging-model`.
+The CI job `tagging-model` does exactly this on sample photos and keeps the
+output as an artifact of the run.
 
 ## Measured (CI, full-precision model, no training)
 
