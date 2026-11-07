@@ -703,6 +703,11 @@ Details in `docs/catalog.md`.
   every job has a read-only token and stops after an hour.
 - `setup-windows.bat` sets this repository's commit author (MR and the
   account's no-reply address) instead of asking for one.
+- The public repository's starting files are part of the project: Dependabot
+  for the actions, a `Release` workflow started by a `v*` tag (provenance
+  attestation, approval through the `release` environment; the build is still
+  a placeholder), the agents' permissions in `.claude/settings.json`, secrets
+  in `.gitignore`, and the README says outside contributions are not taken.
 
 ## 30 October: live filmstrip thumbnails
 

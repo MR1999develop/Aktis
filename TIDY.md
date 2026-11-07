@@ -298,8 +298,10 @@
   their `WidgetInfo`) and turn the check on. The panels' own controls
   already pass it.
 - Security (see `docs/threat-model.md`, accepted risks R1–R6):
-  - Before the first release: `SHA256SUMS` (signed), an SBOM
-    (`cargo cyclonedx`), Authenticode with a timestamp and build provenance.
+  - Before the first release: `release.yml` still packs only the sources.
+    It must build the Windows programs (`--locked`, local paths removed),
+    with `SHA256SUMS` (signed), an SBOM (`cargo cyclonedx`) and Authenticode
+    with a timestamp; the provenance attestation is already there.
   - `SECURITY.md` sends reports to GitHub's private vulnerability reporting;
     it must be switched on in the repository's settings
     (Security → Private vulnerability reporting).

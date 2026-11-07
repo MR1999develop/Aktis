@@ -8,3 +8,13 @@
 *.onnx
 __pycache__/
 *.lnk
+
+# Secrets: never in the repository
+.env
+.env.*
+*.pem
+*.key
+token*.txt
+
+# Release output
+/dist/

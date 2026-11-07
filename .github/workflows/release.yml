@@ -1,0 +1,41 @@
+name: Release
+
+# Runs only when the developer pushes a v* tag (for example v1.0.0); the tag
+# ruleset stops anyone else from creating one. The `release` environment
+# waits for the developer's approval.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write   # create the release
+      id-token: write   # provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Placeholder until the first release: it packs the sources. The real
+      # build (Windows programs, SHA256SUMS, signature, SBOM) is in TIDY.md.
+      - name: Build
+        run: |
+          mkdir -p dist
+          git archive --format=zip -o "dist/Aktis-${GITHUB_REF_NAME}-source.zip" HEAD
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Publish the release
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}

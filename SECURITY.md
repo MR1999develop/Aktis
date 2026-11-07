@@ -22,8 +22,8 @@ vulnerability is, for example:
 - a download that installs something other than the file the program expects;
 - anything that sends the user's data off the computer.
 
-A file that only makes the program stop, or show an error, is a bug: open an
-ordinary issue.
+A file that only makes the program stop, or show an error, is a bug, not a
+vulnerability.
 
 What the program defends against and what it does not is written in
 [docs/threat-model.md](docs/threat-model.md).

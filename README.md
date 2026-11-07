@@ -299,6 +299,11 @@ accepted. `SECURITY.md` says how to report a vulnerability. On GitHub the
 `Audit` workflow checks the dependencies every day, and the `Fuzz`
 workflow (started by hand) fuzzes the parsers.
 
+## Contributions
+
+Aktis is maintained by MR alone; outside contributions (issues, pull
+requests) are not accepted.
+
 ## Licence
 
 Copyright (C) 2026 MR. Aktis is free software under the GNU General Public
