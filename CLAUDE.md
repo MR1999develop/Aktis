@@ -17,6 +17,11 @@
 - Controlli: `scripts\check.bat` (formato, clippy, test, build di rilascio;
   `-Quick` salta la build di rilascio). Su un PC nuovo prima
   `scripts\setup-windows.bat`.
+- CI: `ci.yml` parte solo a mano (`workflow_dispatch`). Passati i controlli
+  locali, l'agente pubblica il ramo di lavoro e avvia la CI con il comando
+  delle regole generali e `--push --avvia ci.yml`, una volta per ramo
+  pronto e non a ogni commit; si unisce a `main` solo con la CI del ramo
+  verde. Push di `main`, tag e release li fa l'utente.
 - Alla fine di ogni blocco di lavoro aggiornare `docs/progress.md` (stato) e
   `TIDY.md` (cose rimandate).
 - Licenza `GPL-3.0-only`, copyright e autori **MR**; nessun dato personale
