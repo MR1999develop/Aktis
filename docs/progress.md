@@ -709,6 +709,21 @@ Details in `docs/catalog.md`.
   a placeholder), the agents' permissions in `.claude/settings.json`, secrets
   in `.gitignore`, and the README says outside contributions are not taken.
 
+## 9 November: compact tool panels
+
+- Every slider takes one row, as in Capture One: the label in a column on
+  the left (cut with "…" when long, whole on hover), the track, the value
+  in a box of fixed width, so the rows end in one column. Menus have their
+  label in the same column. A four-slider tool went from 270 to 140 points;
+  black & white from 474 to 302, colour balance from 470 to 370 with
+  smaller wheels.
+- Rows of tabs go on to a second line in a narrow panel: colour balance's
+  five tabs used to widen the column, so every panel under it ran past the
+  right edge. Dehaze's shadow-tone menu leaves room for its swatch and
+  picker.
+- Tests: the height budget of each slider tool, and no tool body wider
+  than the panel at its narrowest.
+
 ## 30 October: live filmstrip thumbnails
 
 - The open photo's filmstrip card (and its variant's card) follows every

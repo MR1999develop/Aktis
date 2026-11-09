@@ -706,6 +706,110 @@ mod tests {
         harness.get_by_role_and_label(egui::Role::CheckBox, "Sky on");
     }
 
+    /// The height of each slider tool's body at the inspector's usual width,
+    /// drawn as its panel draws it (first tab, nothing picked).
+    fn body_heights(tools: &[&str], width: f32) -> Vec<(String, f32)> {
+        let reg = registry();
+        let doc = document();
+        let lenses = editor::custom_lenses::CustomLenses::load(None);
+        let defaults = editor::camera_defaults::AllCameraDefaults::load(None);
+        let heights = std::cell::RefCell::new(Vec::new());
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([width, 4000.0])
+            .with_accessibility_check(false)
+            .with_context_setup(crate::theme::install)
+            .build_ui(|ui| {
+                let cx = inspector::Context {
+                    registry: &reg,
+                    developing: false,
+                    histogram: None,
+                    pick: None,
+                    probe: None,
+                    custom_lenses: &lenses,
+                    camera_defaults: &defaults,
+                };
+                let mut measured = Vec::new();
+                for tool in tools {
+                    let at = ToolRef::new(LayerId::BACKGROUND, core_model::ToolId::new(tool).unwrap());
+                    let row = doc.tool_row(&reg, &at).unwrap();
+                    let h = ui.scope(|ui| inspector::tool_body(ui, &row, cx, &mut Vec::new())).response.rect.height();
+                    measured.push(((*tool).to_owned(), h));
+                }
+                *heights.borrow_mut() = measured;
+            });
+        harness.run_steps(2);
+        drop(harness);
+        heights.into_inner()
+    }
+
+    /// The slider tools stay compact: a slider takes one row, label on the
+    /// left as in Capture One, so a tool is no taller than its budget (in
+    /// points, at 300 wide; with the label above each slider they took
+    /// 270 for four sliders, 474 for black & white).
+    #[test]
+    fn the_slider_tools_are_compact() {
+        const BUDGETS: [(&str, f32); 12] = [
+            ("exposure", 150.0),
+            ("hdr", 150.0),
+            ("sharpening", 150.0),
+            ("noise_reduction", 150.0),
+            ("denoise_ai", 90.0),
+            ("clarity", 125.0),
+            ("white_balance", 145.0),
+            ("vignetting", 190.0),
+            ("dehaze", 195.0),
+            ("color_editor", 240.0),
+            ("black_white", 315.0),
+            ("color_balance", 380.0),
+        ];
+        let tools: Vec<&str> = BUDGETS.iter().map(|(t, _)| *t).collect();
+        let heights = body_heights(&tools, 300.0);
+        for ((tool, h), (_, budget)) in heights.iter().zip(BUDGETS) {
+            assert!(*h <= budget, "{tool} is {h:.0} tall, more than {budget:.0}");
+        }
+    }
+
+    /// A row too wide for the panel (a row of tabs) goes on to the next
+    /// line instead of widening the column for the panels under it.
+    #[test]
+    fn no_tool_body_is_wider_than_its_panel() {
+        let reg = registry();
+        let doc = document();
+        let lenses = editor::custom_lenses::CustomLenses::load(None);
+        let defaults = editor::camera_defaults::AllCameraDefaults::load(None);
+        let widths = std::cell::RefCell::new(Vec::new());
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([280.0, 4000.0])
+            .with_accessibility_check(false)
+            .with_context_setup(crate::theme::install)
+            .build_ui(|ui| {
+                let cx = inspector::Context {
+                    registry: &reg,
+                    developing: false,
+                    histogram: None,
+                    pick: None,
+                    probe: None,
+                    custom_lenses: &lenses,
+                    camera_defaults: &defaults,
+                };
+                let room = ui.available_width();
+                let mut measured = Vec::new();
+                for tool in reg.pipeline() {
+                    let row = doc.tool_row(&reg, &ToolRef::new(LayerId::BACKGROUND, tool.clone())).unwrap();
+                    let w = ui.scope(|ui| inspector::tool_body(ui, &row, cx, &mut Vec::new())).response.rect.width();
+                    measured.push((row.at.tool.to_string(), w, room));
+                }
+                *widths.borrow_mut() = measured;
+            });
+        harness.run_steps(2);
+        drop(harness);
+        let widths = widths.into_inner();
+        assert!(!widths.is_empty());
+        for (tool, w, room) in widths {
+            assert!(w <= room + 0.5, "{tool} is {w:.0} wide in {room:.0}");
+        }
+    }
+
     #[test]
     fn panels_move_float_and_close_and_unknown_keys_are_dropped() {
         let reg = registry();

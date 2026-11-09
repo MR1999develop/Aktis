@@ -35,7 +35,7 @@ use tool_api::ParamKind;
 use crate::adjust_ui::{
     PanelContext, choice, float, number, param, picker_button, pid, remember, remembered, tabs, toggle_pick,
 };
-use crate::inspector::{UiEdit, float_slider};
+use crate::inspector::{UiEdit, row_label, slider_row};
 use crate::theme::{
     CHANNEL, FONT, HUE_VALUE, LIGHTNESS_STRIP, SPACE, Tokens, WHEEL_DIM, WHEEL_HANDLE, hue_color, linear_color,
 };
@@ -87,8 +87,8 @@ fn hue_stops(from: f32, to: f32, saturation: f32) -> Vec<Color32> {
     (0..=12_u8).map(|i| hue_color(from + (to - from) * f32::from(i) / 12.0, saturation, HUE_VALUE)).collect()
 }
 
-/// A labelled slider for float parameter `id` (labelled `label`, else as
-/// its tool names it), with a strip through `colors` under its track.
+/// A slider row for float parameter `id` (labelled `label`, else as its
+/// tool names it), with a strip through `colors` under its track.
 fn slider(
     ui: &mut egui::Ui,
     row: &ToolRow,
@@ -97,17 +97,14 @@ fn slider(
     colors: &[Color32],
     edits: &mut Vec<UiEdit>,
 ) {
-    let t = Tokens::of(ui.ctx().theme());
     let Some(p) = param(row, id) else { return };
     let ParamValue::Float(v) = p.value else { return };
-    ui.label(RichText::new(label.unwrap_or(p.descriptor.label)).color(t.text_weak));
-    let (response, track) = float_slider(ui, &p.descriptor, v, edits);
+    let (response, track) = slider_row(ui, Some(label.unwrap_or(p.descriptor.label)), &p.descriptor, v, edits);
     if colors.len() >= 2 {
         let r = response.rect;
         gradient(ui.painter(), Rect::from_min_size(pos2(r.left(), r.bottom() + 1.0), vec2(track, 3.0)), colors);
-        ui.add_space(4.0);
+        ui.add_space(2.0);
     }
-    ui.add_space(SPACE[0]);
 }
 
 /// A checkbox for bool parameter `id`.
@@ -118,15 +115,17 @@ fn check(ui: &mut egui::Ui, row: &ToolRow, id: &str, label: &str, edits: &mut Ve
     }
 }
 
-/// A labelled menu for choice parameter `id`.
-fn combo(ui: &mut egui::Ui, row: &ToolRow, id: &str, options: &[&str], edits: &mut Vec<UiEdit>) {
-    let t = Tokens::of(ui.ctx().theme());
+/// A labelled menu for choice parameter `id`, narrower when `trailing`
+/// points of the row are kept for controls after it.
+fn combo(ui: &mut egui::Ui, row: &ToolRow, id: &str, options: &[&str], trailing: f32, edits: &mut Vec<UiEdit>) {
     let tool = &row.at;
     let current = choice(row, id);
     let label = param(row, id).map_or("", |p| p.descriptor.label);
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).color(t.text_weak));
+        row_label(ui, label);
+        let width = (ui.available_width() - trailing).min(ui.spacing().combo_width).max(60.0);
         egui::ComboBox::from_id_salt((tool, id))
+            .width(width)
             .selected_text(options.get(current as usize).copied().unwrap_or(""))
             .show_ui(ui, |ui| {
                 for (i, option) in (0_u32..).zip(options) {
@@ -522,7 +521,7 @@ pub fn color_balance(ui: &mut egui::Ui, row: &ToolRow, edits: &mut Vec<UiEdit>) 
         return;
     }
     let band = if tab == 0 { Band::master() } else { Band::zone(tab - 2) };
-    let size = ui.available_width().clamp(160.0, 260.0);
+    let size = ui.available_width().clamp(140.0, 190.0);
     ui.vertical_centered(|ui| balance_wheel(ui, row, &band, size, edits));
     ui.add_space(SPACE[0]);
     let hue = float(row, &band.hue);
@@ -673,7 +672,7 @@ fn range_controls(
     edits: &mut Vec<UiEdit>,
 ) {
     let t = Tokens::of(ui.ctx().theme());
-    let size = (ui.available_width() - 40.0).clamp(140.0, 220.0);
+    let size = (ui.available_width() - 40.0).clamp(120.0, 170.0);
     ui.horizontal_top(|ui| {
         range_wheel(ui, row, cx, id, size, edits);
         if picker_button(ui, cx.pick == Some(&pick), "Click a colour in the photo: the range is centred on its hue") {
@@ -839,7 +838,7 @@ pub fn black_white(ui: &mut egui::Ui, row: &ToolRow, edits: &mut Vec<UiEdit>) {
 
 /// Method, clarity and structure.
 pub fn clarity(ui: &mut egui::Ui, row: &ToolRow, edits: &mut Vec<UiEdit>) {
-    combo(ui, row, clarity::METHOD, &clarity::METHODS, edits);
+    combo(ui, row, clarity::METHOD, &clarity::METHODS, 0.0, edits);
     ui.add_space(SPACE[0]);
     slider(ui, row, clarity::CLARITY, None, &[], edits);
     slider(ui, row, clarity::STRUCTURE, None, &[], edits);
@@ -853,7 +852,8 @@ pub fn dehaze(ui: &mut egui::Ui, row: &ToolRow, cx: PanelContext<'_>, edits: &mu
     let custom = choice(row, dehaze::SHADOW_TONE) == dehaze::CUSTOM_TONE;
     let pick = Pick { at: tool.clone(), kind: PickKind::ShadowTone, channel: 0 };
     ui.horizontal(|ui| {
-        combo(ui, row, dehaze::SHADOW_TONE, &dehaze::SHADOW_TONES, edits);
+        // The swatch and the picker after the menu.
+        combo(ui, row, dehaze::SHADOW_TONE, &dehaze::SHADOW_TONES, 72.0, edits);
         let tone = dehaze::TONE_RGB.map(|id| float(row, id));
         let (swatch, response) = ui.allocate_exact_size(vec2(28.0, 20.0), Sense::hover());
         let fill = if custom { linear_color(tone) } else { linear_color(tone).gamma_multiply(0.35) };
@@ -877,7 +877,7 @@ pub fn dehaze(ui: &mut egui::Ui, row: &ToolRow, cx: PanelContext<'_>, edits: &mu
 /// Amount, method, midpoint, feather, and roundness for the elliptic method.
 pub fn vignetting(ui: &mut egui::Ui, row: &ToolRow, edits: &mut Vec<UiEdit>) {
     slider(ui, row, vignetting::AMOUNT, None, &LIGHTNESS_STRIP, edits);
-    combo(ui, row, vignetting::METHOD, &vignetting::METHODS, edits);
+    combo(ui, row, vignetting::METHOD, &vignetting::METHODS, 0.0, edits);
     ui.add_space(SPACE[0]);
     slider(ui, row, vignetting::MIDPOINT, None, &[], edits);
     slider(ui, row, vignetting::FEATHER, None, &[], edits);

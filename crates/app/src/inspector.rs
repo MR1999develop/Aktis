@@ -16,7 +16,7 @@ use editor::{Document, Histogram, ToolRow};
 use eframe::egui::{self, Align, Layout, RichText};
 use tool_api::{ParamDescriptor, ParamKind, ToolRegistry, Unit};
 
-use crate::theme::{FONT, SPACE, Tokens};
+use crate::theme::{FONT, LABEL_WIDTH, SPACE, Tokens, VALUE_WIDTH};
 
 /// An ongoing slider drag: its changes form one undo step.
 #[derive(Debug, Clone)]
@@ -139,7 +139,7 @@ pub fn tool_body(ui: &mut egui::Ui, row: &ToolRow, cx: Context<'_>, edits: &mut 
             }
         }
     });
-    ui.add_space(SPACE[1]);
+    ui.add_space(SPACE[0]);
     if ui
         .small_button("Reset all")
         .on_hover_text("Every setting of this tool back to its default (the camera's, when saved)")
@@ -573,10 +573,12 @@ pub fn float_slider(
     let param = d.id.clone();
     let places = decimals(step);
     let signed = min < 0.0;
-    let track = (ui.available_width() - 90.0).max(100.0);
+    // Every value box as wide, so the rows end in one column inside the panel.
+    let track = (ui.available_width() - VALUE_WIDTH - ui.spacing().item_spacing.x).max(60.0);
     let response = ui
         .scope(|ui| {
             ui.spacing_mut().slider_width = track;
+            ui.spacing_mut().interact_size.x = VALUE_WIDTH;
             ui.add(
                 egui::Slider::new(&mut v, min..=max)
                     .step_by(f64::from(step))
@@ -619,16 +621,45 @@ pub fn float_slider(
     (response, track)
 }
 
-/// The widget of one parameter: a labelled slider, a checkbox or a menu.
+/// The label of a control row, in a column of [`LABEL_WIDTH`] on its left,
+/// cut with "…" when too long (the whole text shows on hover).
+pub fn row_label(ui: &mut egui::Ui, text: &str) {
+    let size = egui::vec2(LABEL_WIDTH, ui.spacing().interact_size.y);
+    let label = egui::Label::new(RichText::new(text).color(ui.visuals().weak_text_color())).truncate();
+    ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+        ui.set_width(LABEL_WIDTH);
+        ui.add(label);
+    });
+}
+
+/// A slider on one row, as in Capture One: the label on the left, then the
+/// track and the value; `None` leaves the label column out (a tool named
+/// like its only slider). Returns the slider's response and track width.
+pub fn slider_row(
+    ui: &mut egui::Ui,
+    label: Option<&str>,
+    d: &ParamDescriptor,
+    v: f32,
+    edits: &mut Vec<UiEdit>,
+) -> (egui::Response, f32) {
+    ui.horizontal(|ui| {
+        if let Some(label) = label {
+            row_label(ui, label);
+        }
+        float_slider(ui, d, v, edits)
+    })
+    .inner
+}
+
+/// The widget of one parameter: a slider or a menu on one row with its
+/// label on the left, or a checkbox.
 pub fn param_widget(ui: &mut egui::Ui, row: &editor::ParamRow, show_label: bool, edits: &mut Vec<UiEdit>) {
     let d = &row.descriptor;
     let param = d.id.clone();
+    let label = show_label.then_some(d.label);
     match (&d.kind, row.value) {
         (ParamKind::Float { .. }, ParamValue::Float(v)) => {
-            if show_label {
-                ui.label(RichText::new(d.label).color(ui.visuals().weak_text_color()));
-            }
-            float_slider(ui, d, v, edits);
+            slider_row(ui, label, d, v, edits);
         }
         (ParamKind::Bool { .. }, ParamValue::Bool(mut b)) => {
             if ui.checkbox(&mut b, d.label).changed() {
@@ -636,15 +667,17 @@ pub fn param_widget(ui: &mut egui::Ui, row: &editor::ParamRow, show_label: bool,
             }
         }
         (ParamKind::Choice { options, .. }, ParamValue::Choice(mut c)) => {
-            if show_label {
-                ui.label(RichText::new(d.label).color(ui.visuals().weak_text_color()));
-            }
             let current = options.get(c as usize).copied().unwrap_or("");
             let before = c;
-            egui::ComboBox::from_id_salt(d.id.as_str()).selected_text(current).show_ui(ui, |ui| {
-                for (i, option) in (0_u32..).zip(options.iter()) {
-                    ui.selectable_value(&mut c, i, *option);
+            ui.horizontal(|ui| {
+                if let Some(label) = label {
+                    row_label(ui, label);
                 }
+                egui::ComboBox::from_id_salt(d.id.as_str()).selected_text(current).show_ui(ui, |ui| {
+                    for (i, option) in (0_u32..).zip(options.iter()) {
+                        ui.selectable_value(&mut c, i, *option);
+                    }
+                });
             });
             if c != before {
                 edits.push(UiEdit::Set { param, value: ParamValue::Choice(c), in_drag: false });
@@ -654,7 +687,6 @@ pub fn param_widget(ui: &mut egui::Ui, row: &editor::ParamRow, show_label: bool,
             ui.weak(format!("{}: unsupported value", d.label));
         }
     }
-    ui.add_space(SPACE[1]);
 }
 
 /// Text after a value: " EV", " %", "°", " K", " px".

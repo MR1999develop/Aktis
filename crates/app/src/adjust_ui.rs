@@ -29,7 +29,7 @@ use tool_adjust::levels::{self, CHANNELS};
 use tool_adjust::white_balance::{self, Mode};
 
 use crate::icons;
-use crate::inspector::{UiEdit, float_slider};
+use crate::inspector::{UiEdit, row_label, slider_row};
 use crate::theme::{CHANNEL, FONT, HISTOGRAM, KELVIN_STRIP, SPACE, TINT_STRIP, Tokens};
 
 /// What the panels need besides the tool.
@@ -108,10 +108,11 @@ pub(crate) fn remember<T: Clone + Send + Sync + 'static>(ui: &egui::Ui, id: Id, 
     ui.ctx().data_mut(|d| d.insert_temp(id, value));
 }
 
-/// A row of tabs; returns the chosen index.
+/// A row of tabs, going on to a second row in a narrow panel rather than
+/// widening it; returns the chosen index.
 pub(crate) fn tabs(ui: &mut egui::Ui, names: &[&str], current: usize) -> usize {
     let mut chosen = current;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for (i, name) in names.iter().enumerate() {
             if ui.selectable_label(i == current, *name).clicked() {
                 chosen = i;
@@ -131,7 +132,7 @@ pub fn white_balance(ui: &mut egui::Ui, row: &ToolRow, cx: PanelContext<'_>, edi
     let mode = Mode::from_index(choice(row, white_balance::MODE));
     let neutral = Pick { at: tool.clone(), kind: PickKind::Neutral, channel: 0 };
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Mode").color(t.text_weak));
+        row_label(ui, "Mode");
         egui::ComboBox::from_id_salt((tool, "wb-mode")).selected_text(mode.label()).show_ui(ui, |ui| {
             for m in Mode::ALL {
                 // Choosing Auto again estimates again (the image may have changed).
@@ -145,17 +146,15 @@ pub fn white_balance(ui: &mut egui::Ui, row: &ToolRow, cx: PanelContext<'_>, edi
             edits.push(toggle_pick(cx.pick, &neutral));
         }
     });
-    ui.add_space(SPACE[1]);
     for (id, ends) in [(white_balance::KELVIN, KELVIN_STRIP), (white_balance::TINT, TINT_STRIP)] {
         let Some(p) = param(row, id) else { continue };
         let ParamValue::Float(v) = p.value else { continue };
-        ui.label(RichText::new(p.descriptor.label).color(t.text_weak));
         let start = edits.len();
-        let (response, track) = float_slider(ui, &p.descriptor, v, edits);
+        let (response, track) = slider_row(ui, Some(p.descriptor.label), &p.descriptor, v, edits);
         let r = response.rect;
         let bar = Rect::from_min_size(pos2(r.left(), r.bottom() + 1.0), vec2(track, 3.0));
         strip(ui.painter(), bar, ends);
-        ui.add_space(SPACE[1] + 4.0);
+        ui.add_space(2.0);
         // Moving kelvin or tint by hand makes the mode Custom, in the same step.
         if mode != Mode::Custom {
             for e in &mut edits[start..] {

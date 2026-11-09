@@ -228,6 +228,10 @@ pub const RADIUS_CONTROL: u8 = 4;
 pub const RADIUS_WINDOW: u8 = 8;
 /// Width of the right panel (histogram and tool panels): default, minimum, maximum.
 pub const INSPECTOR_WIDTH: [f32; 3] = [330., 280., 460.];
+/// Width of the label column left of a tool's sliders and menus.
+pub const LABEL_WIDTH: f32 = 92.;
+/// Width of the value box right of a slider ("0.00 EV", "5500 K").
+pub const VALUE_WIDTH: f32 = 64.;
 /// Width of the left panel (Explorer, with History and Metadata under it): default, minimum, maximum.
 pub const LEFT_WIDTH: [f32; 3] = [250., 180., 480.];
 /// Height of the filmstrip under the viewer: default, minimum, maximum.
