@@ -33,7 +33,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # rust-toolchain.toml pins the compiler; rustup installs it on first use.
@@ -79,7 +79,7 @@ jobs:
     env:
       AKTIS_SOFTWARE_GPU: "1"
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Downloaded crates only (the build folder is too large to keep); the
@@ -133,7 +133,7 @@ jobs:
       AKTIS_MODELS_DIR: ${{ github.workspace }}/models
       AKTIS_DATA_DIR: ${{ github.workspace }}/aktis-data
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Downloaded crates only (the build folder is too large to keep); the
@@ -215,7 +215,7 @@ jobs:
       AKTIS_DATA_DIR: ${{ github.workspace }}/aktis-data
       AKTIS_SOFTWARE_GPU: "1"
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Downloaded crates only (the build folder is too large to keep); the
@@ -268,7 +268,7 @@ jobs:
     runs-on: macos-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Downloaded crates only (the build folder is too large to keep); the
@@ -300,7 +300,7 @@ jobs:
       AKTIS_DATA_DIR: ${{ github.workspace }}/aktis-data
       AKTIS_SOFTWARE_GPU: "1"
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Downloaded crates only (the build folder is too large to keep); the
