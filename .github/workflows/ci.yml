@@ -64,7 +64,7 @@ jobs:
           echo AKTIS_REQUIRE_GPU=1 >> "$GITHUB_ENV"
       - name: Test
         run: cargo test --workspace --locked 2>&1 | tee -a ci-out/log.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ${{ runner.os }}
@@ -117,7 +117,7 @@ jobs:
         env:
           # Tests run in the crate's folder: give an absolute path.
           AKTIS_SCREENSHOT_DIR: ${{ github.workspace }}/ci-out
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: real-raw
@@ -196,7 +196,7 @@ jobs:
                           bad.append(name)
           sys.exit(1 if bad else 0)
           PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: tagging-model
@@ -255,7 +255,7 @@ jobs:
           } 2>&1 | tee -a ci-out/log.txt
         env:
           AKTIS_DENOISE_DEVICE: cpu
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ai-denoise
@@ -282,7 +282,7 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
       - run: mkdir -p ci-out && cargo check --workspace --all-targets --locked 2>&1 | tee ci-out/log.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: macOS
@@ -357,7 +357,7 @@ jobs:
             cli develop testdata/nikon-d3s.NEF --exposure 1.5 --subject -o ci-out/nef-subject-plus-1.5.jpg
           } 2>&1 | tee -a ci-out/log.txt
           test ! -e ci-out/FAILED
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ai-masks
