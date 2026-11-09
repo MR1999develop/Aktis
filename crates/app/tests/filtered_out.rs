@@ -67,6 +67,8 @@ fn a_filter_no_photo_passes_closes_the_open_photo() {
     harness.get_by(name_filter).type_text("no photo is called this");
     let status = step_until(&mut harness, |s| !s.has_document);
     assert!(!status.has_document, "the photo stayed open: {status:?}");
+    // The photo closes after a frame is drawn: the empty viewer comes in the next ones.
+    harness.run_steps(2);
 
     harness.get_by_label("Clear Filters").click();
     harness.run_steps(3);

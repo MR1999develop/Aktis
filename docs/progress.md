@@ -737,6 +737,24 @@ Details in `docs/catalog.md`.
   a name no photo has into the name filter and checks the photo closed
   (ignored: it needs a RAW file, a GPU and settings folders of its own).
 
+## 9 November: moving through photos while they develop
+
+- The arrow keys go on from the photo being opened, not from the one still
+  on screen: pressed while a photo opened, they used to ask for that same
+  photo again and were lost, so moving through the filmstrip advanced only
+  as fast as a photo opened.
+- The worker opens one photo at a time; a request replaced by a newer one
+  stops at its next step (before decoding, after decoding, after
+  developing) and reports nothing. Photos passed over no longer take the
+  processor from the one the user stopped on and from the thumbnails.
+- Measured with five → one every 150 ms (`app/tests/photo_switching.rs`,
+  and the worker alone in `editor`): the last photo on screen in 2.0 s
+  instead of 3.35 s for a first photo of 1.6 s, frames under 30 ms instead
+  of 84 ms; the worker alone 1.1 s instead of 2.4 s.
+- AI denoise starts switched off (`ToolDescriptor::starts_on`).
+- Interface texts used "▸", which the interface font does not have (a box
+  on screen, a panic in the tests): now "›".
+
 ## 30 October: live filmstrip thumbnails
 
 - The open photo's filmstrip card (and its variant's card) follows every

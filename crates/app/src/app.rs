@@ -146,6 +146,8 @@ pub struct Status {
     pub image_current: bool,
     /// Opening or exporting is running.
     pub busy: bool,
+    /// Photos asked to open since the window started.
+    pub opens: u64,
 }
 
 /// The editor window.
@@ -412,6 +414,7 @@ impl EditorApp {
             image_current: self.doc.as_ref().is_some_and(|d| !self.plan.is_stale(d.generation()))
                 && !self.plan.is_waiting(),
             busy: self.opening.is_some() || self.exporting.is_some() || self.importing.is_some(),
+            opens: self.next_ticket,
         }
     }
 
@@ -3363,7 +3366,9 @@ impl eframe::App for EditorApp {
         let mut panel_actions = Vec::new();
         let mut library = Vec::new();
         let mut tabs = Vec::new();
-        let current = self.doc.as_ref().map(|d| d.path().to_owned());
+        // The photo being opened counts as the current one: the arrows go on
+        // from it, not from the photo still on screen.
+        let current = self.opening_path.clone().or_else(|| self.doc.as_ref().map(|d| d.path().to_owned()));
         // Straighten turns the photo with the arrows instead of moving through the filmstrip.
         if self.tool == Some(ViewerTool::Level) {
             crate::color_ui::take_arrows(&ctx);

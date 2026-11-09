@@ -93,6 +93,10 @@
   come back. The GPU read-back now gives up after `GPU_WAIT` (60 s), but the
   cause is unknown. The CI jobs stop after an hour; `check.ps1` still puts
   no limit on how long the tests may run: give it one.
+- Moving through photos: the photo opened ahead (prefetch) and a
+  development started again (`Worker::develop`) are not abandoned when the
+  user moves on, and the thumbnails were not measured while photos open.
+  Measure them with `app/tests/photo_switching.rs` before changing them.
 - The GPU renderer reads back before a host tool and uploads after it; fine
   for the denoiser (seconds of network time), revisit if host tools multiply.
 - With the AI denoise tool on, the editor's preview worker is busy for the

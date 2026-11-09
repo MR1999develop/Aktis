@@ -15,6 +15,7 @@
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -213,6 +214,25 @@ struct Prefetch {
     finished: Condvar,
 }
 
+/// The photos asked to open: one is opened at a time, and only the newest
+/// request matters. Moving through the filmstrip asks for photo after
+/// photo; the ones passed over stop at the next step instead of taking the
+/// processor from the one the user stopped on.
+#[derive(Debug, Default)]
+struct Opens {
+    /// The ticket of the newest request.
+    newest: AtomicU64,
+    /// Held while a photo is being opened.
+    one_at_a_time: Mutex<()>,
+}
+
+impl Opens {
+    /// `true` while `ticket` is the newest request.
+    fn wanted(&self, ticket: u64) -> bool {
+        self.newest.load(Ordering::Acquire) == ticket
+    }
+}
+
 #[derive(Debug, Default)]
 struct PrefetchState {
     /// The photo being or already opened ahead; `None` when there is none.
@@ -305,6 +325,7 @@ pub struct Worker {
     thumbs: Arc<ThumbQueue>,
     thumb_threads: Vec<JoinHandle<()>>,
     prefetch: Arc<Prefetch>,
+    opens: Arc<Opens>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -369,6 +390,7 @@ impl Worker {
             thumbs,
             thumb_threads,
             prefetch: Arc::new(Prefetch::default()),
+            opens: Arc::new(Opens::default()),
         })
     }
 
@@ -387,12 +409,26 @@ impl Worker {
     /// The result comes back as [`Event::Opened`] with the same `ticket`.
     /// A photo opened ahead with [`Self::prefetch`] comes back at once (or as
     /// soon as that work ends).
+    ///
+    /// Tickets grow with each request. One photo is opened at a time; a
+    /// request replaced by a newer one stops at its next step and reports
+    /// nothing (the caller waits only for the newest).
     pub fn open(&self, ticket: u64, path: PathBuf) {
         let (tx, notify) = (self.tx.clone(), Arc::clone(&self.notify));
-        let prefetch = Arc::clone(&self.prefetch);
+        let (prefetch, opens) = (Arc::clone(&self.prefetch), Arc::clone(&self.opens));
+        opens.newest.fetch_max(ticket, Ordering::AcqRel);
         let fallback = tx.clone();
         let spawned = thread::Builder::new().name("open".into()).spawn(move || {
-            let (result, timing) = prefetch.take(&path).unwrap_or_else(|| open_file_guarded(&path));
+            let _turn = opens.one_at_a_time.lock().unwrap_or_else(PoisonError::into_inner);
+            let wanted = || opens.wanted(ticket);
+            if !wanted() {
+                return;
+            }
+            let opened = match prefetch.take(&path) {
+                Some(done) => Some(done),
+                None => open_file_guarded(&path, &wanted),
+            };
+            let Some((result, timing)) = opened.filter(|_| wanted()) else { return };
             let _ = tx.send(Event::Opened { ticket, result: result.map(Box::new), timing });
             notify();
         });
@@ -421,7 +457,8 @@ impl Worker {
         self.prefetch.finished.notify_all();
         let prefetch = Arc::clone(&self.prefetch);
         let spawned = thread::Builder::new().name("prefetch".into()).spawn(move || {
-            let done = open_file_guarded(&path);
+            // Opened ahead whatever the user does meanwhile: never abandoned.
+            let Some(done) = open_file_guarded(&path, &|| true) else { return };
             let mut state = prefetch.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state.path.as_ref() == Some(&path) {
                 state.result = Some(done);
@@ -646,25 +683,47 @@ fn display_name(path: &std::path::Path) -> String {
 }
 
 /// [`open_file`], with a panic turned into a message for the user.
-fn open_file_guarded(path: &std::path::Path) -> (Result<Opened, String>, OpenTiming) {
+/// Opens `path` as [`open_file`] does, a panic becoming an error; `None`
+/// when `wanted` turned false on the way.
+fn open_file_guarded(
+    path: &std::path::Path,
+    wanted: &dyn Fn() -> bool,
+) -> Option<(Result<Opened, String>, OpenTiming)> {
     let mut timing = OpenTiming::default();
-    let result = catch_unwind(AssertUnwindSafe(|| open_file(path, &mut timing)))
-        .unwrap_or_else(|_| Err(format!("{} could not be opened (internal error)", display_name(path))));
-    (result, timing)
+    let result = catch_unwind(AssertUnwindSafe(|| open_file(path, &mut timing, wanted)))
+        .unwrap_or_else(|_| Some(Err(format!("{} could not be opened (internal error)", display_name(path)))))?;
+    Some((result, timing))
 }
 
 /// Decodes, develops (camera profile and lens corrections included) and
 /// makes the preview copy, recording the time of each phase in `timing`.
-/// Errors are user messages.
-fn open_file(path: &std::path::Path, timing: &mut OpenTiming) -> Result<Opened, String> {
+/// Errors are user messages. `None` when `wanted` turned false between two
+/// phases: the photo is no longer needed, the rest is not done.
+fn open_file(
+    path: &std::path::Path,
+    timing: &mut OpenTiming,
+    wanted: &dyn Fn() -> bool,
+) -> Option<Result<Opened, String>> {
     let name = display_name(path);
     let started = Instant::now();
-    let file = raw_io::read_raw(path).map_err(|e| format!("{name} could not be opened: {e}"))?;
+    let file = match raw_io::read_raw(path) {
+        Ok(file) => file,
+        Err(e) => return Some(Err(format!("{name} could not be opened: {e}"))),
+    };
     let raw = Arc::new(RawData { sensor: file.sensor, capture: file.capture, file_notes: file.notes });
     timing.decode = started.elapsed();
+    if !wanted() {
+        return None;
+    }
     let started = Instant::now();
-    let image = develop_raw(&raw, &core_model::DevelopSettings::default()).map_err(|e| format!("{name}: {e}"))?;
+    let image = match develop_raw(&raw, &core_model::DevelopSettings::default()) {
+        Ok(image) => image,
+        Err(e) => return Some(Err(format!("{name}: {e}"))),
+    };
     timing.develop = started.elapsed();
+    if !wanted() {
+        return None;
+    }
 
     // The lens as recognised, and the lenses that fit the camera, for the inspector.
     let (db, _) = engine::lens_database();
@@ -676,7 +735,7 @@ fn open_file(path: &std::path::Path, timing: &mut OpenTiming) -> Result<Opened, 
     let camera_curve = if raw.capture.rendered { None } else { crate::camera_look::camera_curve(path, &image.preview) };
     timing.develop += started.elapsed();
 
-    Ok(Opened {
+    Some(Ok(Opened {
         path: path.to_owned(),
         camera: format!("{} {}", file.make, file.model).trim().to_owned(),
         orientation: file.orientation,
@@ -688,7 +747,7 @@ fn open_file(path: &std::path::Path, timing: &mut OpenTiming) -> Result<Opened, 
         info: file.info,
         image,
         camera_curve,
-    })
+    }))
 }
 
 /// Runs the development stage on `raw` with `settings`: the developed
@@ -952,6 +1011,54 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         panic!("timed out; events so far: {seen:?}");
+    }
+
+    /// The RAW files in `testdata/`, sorted.
+    fn sample_raws() -> Vec<PathBuf> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata");
+        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+            .map(|d| d.filter_map(Result::ok).map(|e| e.path()).filter(|p| raw_io::has_raw_extension(p)).collect())
+            .unwrap_or_default();
+        files.sort();
+        files
+    }
+
+    /// Waits up to two minutes for the photo opened as `ticket`.
+    fn opened_within(worker: &Worker, ticket: u64) -> Duration {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(120) {
+            if worker.poll().iter().any(|e| matches!(e, Event::Opened { ticket: t, .. } if *t == ticket)) {
+                return start.elapsed();
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("photo {ticket} did not open in two minutes");
+    }
+
+    /// Moving through the filmstrip (a photo every 150 ms, as with the
+    /// arrow keys) must not make the last photo wait for the ones passed
+    /// over: it opens about as fast as a photo opened alone.
+    #[test]
+    #[ignore = "needs six RAW files in testdata/; a measurement, run in release"]
+    fn moving_through_photos_opens_the_last_one_about_as_fast_as_one_alone() {
+        let raws = sample_raws();
+        assert!(raws.len() >= 6, "put six RAW files in testdata/");
+        let worker = cpu_worker();
+        worker.open(1, raws[0].clone());
+        let alone = opened_within(&worker, 1);
+        for (ticket, path) in (10..).zip(&raws[1..6]) {
+            worker.open(ticket, path.clone());
+            thread::sleep(Duration::from_millis(150));
+        }
+        let last = opened_within(&worker, 14);
+        eprintln!(
+            "one photo alone: {:.2} s; the last after moving through five: {:.2} s",
+            alone.as_secs_f32(),
+            last.as_secs_f32()
+        );
+        // Every photo opened at once took 2.41 s for 1.41 s alone; one at a
+        // time, the ones passed over abandoned, 1.13 s for 1.64 s.
+        assert!(last.as_secs_f32() < alone.as_secs_f32() * 1.3, "the last photo waited for the ones passed over");
     }
 
     fn cpu_worker() -> Worker {
