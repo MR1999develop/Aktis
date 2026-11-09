@@ -536,8 +536,10 @@ impl Document {
         let settings = tools.get(&at.tool);
         let first = crate::adjust::initial_params(self, at.tool.as_str());
         let values = tools.params(&at.tool, at.slot).or_else(|| settings.is_none().then_some(&first));
-        let enabled = settings.is_none_or(|s| s.enabled);
-        let Some(tool) = registry.get(&at.tool) else {
+        let tool = registry.get(&at.tool);
+        // Not used yet: switched as the tool starts (AI denoise starts off).
+        let enabled = settings.map_or_else(|| tool.is_none_or(|t| t.descriptor().starts_on), |s| s.enabled);
+        let Some(tool) = tool else {
             return Some(ToolRow {
                 at: at.clone(),
                 name: "Missing tool",
@@ -942,6 +944,22 @@ mod tests {
         assert_eq!(exposure_value(&doc, &reg), ParamValue::Float(1.5));
         let unknown = ToolRef::background(ToolId::new("no_such_tool").unwrap());
         assert!(doc.set_param(&reg, &unknown, exposure_param(), ParamValue::Float(1.0), None).is_err());
+    }
+
+    /// AI denoise is off until the user wants it: its panel shows it off,
+    /// and moving one of its controls turns it on. Other tools start on.
+    #[test]
+    fn ai_denoise_starts_off_and_a_change_turns_it_on() {
+        let reg = registry();
+        let mut doc = Document::new(opened("a/DSC_1.NEF", Orientation::Normal), 1);
+        let denoise = ToolRef::background(ToolId::new("denoise_ai").unwrap());
+        let row = doc.tool_row(&reg, &denoise).unwrap();
+        assert!(!row.used && !row.enabled, "shown off before it is used");
+        assert!(doc.tool_row(&reg, &exposure()).unwrap().enabled, "exposure starts on");
+        let grain = row.params[0].descriptor.id.clone();
+        doc.set_param(&reg, &denoise, grain, ParamValue::Float(50.0), None).unwrap();
+        let row = doc.tool_row(&reg, &denoise).unwrap();
+        assert!(row.used && row.enabled, "a change turns it on");
     }
 
     #[test]

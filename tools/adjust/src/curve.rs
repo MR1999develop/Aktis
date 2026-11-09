@@ -60,6 +60,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| {
         name: "Curve",
         category: Category::Exposure,
         order: 80,
+        starts_on: true,
         params,
     }
 });

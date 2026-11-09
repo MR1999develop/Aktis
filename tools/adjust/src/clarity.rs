@@ -37,6 +37,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     name: "Clarity",
     category: Category::Details,
     order: 130,
+    starts_on: true,
     params: vec![slider(CLARITY, "Clarity"), slider(STRUCTURE, "Structure"), choice(METHOD, "Method", &METHODS, 0)],
 });
 

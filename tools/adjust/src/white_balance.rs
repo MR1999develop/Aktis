@@ -125,6 +125,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     name: "White balance",
     category: Category::Color,
     order: 40,
+    starts_on: true,
     params: vec![
         ParamDescriptor {
             id: pid(MODE),

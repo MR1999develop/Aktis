@@ -56,6 +56,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     name: "Noise Reduction",
     category: Category::Details,
     order: 30,
+    starts_on: true,
     params: vec![
         float(LUMINANCE, "Luminance", [0.0, 100.0], 50.0, 1.0, Unit::None),
         float(DETAILS, "Details", [0.0, 100.0], 50.0, 1.0, Unit::None),

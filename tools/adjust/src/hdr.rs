@@ -33,6 +33,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     name: "High dynamic range",
     category: Category::Exposure,
     order: 60,
+    starts_on: true,
     params: vec![
         slider(HIGHLIGHT, "Highlight"),
         slider(SHADOW, "Shadow"),

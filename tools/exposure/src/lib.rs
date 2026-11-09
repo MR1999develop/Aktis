@@ -65,6 +65,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     name: "Exposure",
     category: Category::Exposure,
     order: 50,
+    starts_on: true,
     params: vec![
         ParamDescriptor {
             id: ParamId::new(EXPOSURE).expect("constant id is valid"),

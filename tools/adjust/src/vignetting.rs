@@ -35,6 +35,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     name: "Vignetting",
     category: Category::Lens,
     order: 150,
+    starts_on: true,
     params: vec![
         slider(AMOUNT, "Amount"),
         float(MIDPOINT, "Midpoint", [0.0, 100.0], 50.0, 1.0, Unit::None),

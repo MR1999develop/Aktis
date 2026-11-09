@@ -159,6 +159,7 @@ fn host_descriptor(id: &str, order: u16) -> tool_api::ToolDescriptor {
         name: "test host tool",
         category: tool_api::Category::Details,
         order,
+        starts_on: true,
         params: vec![],
     }
 }

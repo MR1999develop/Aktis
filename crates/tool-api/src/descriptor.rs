@@ -98,6 +98,10 @@ pub struct ToolDescriptor {
     /// Position in the fixed order the tools of a layer act in (lower
     /// first); unique among the registered tools.
     pub order: u16,
+    /// Whether the tool is switched on before it is first used. A tool that
+    /// costs much (the AI denoise network) starts off: its panel shows the
+    /// switch off until the user turns it on or moves one of its controls.
+    pub starts_on: bool,
     /// Parameters, in UI order (also the GPU uniform order).
     pub params: Vec<ParamDescriptor>,
 }
@@ -297,6 +301,7 @@ mod tests {
             name: "Demo",
             category: Category::Exposure,
             order: 10,
+            starts_on: true,
             params: vec![
                 ParamDescriptor {
                     id: pid("amount"),

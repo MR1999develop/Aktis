@@ -55,6 +55,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| {
         name: "AI denoise",
         category: Category::Details,
         order: 20,
+        starts_on: false,
         params: vec![
             ParamDescriptor {
                 id: ParamId::new(GRAIN).expect("constant id is valid"),

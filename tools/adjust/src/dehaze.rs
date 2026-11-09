@@ -39,6 +39,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     name: "Dehaze",
     category: Category::Details,
     order: 120,
+    starts_on: true,
     params: vec![
         slider(AMOUNT, "Amount"),
         choice(SHADOW_TONE, "Shadow tone", &SHADOW_TONES, 0),

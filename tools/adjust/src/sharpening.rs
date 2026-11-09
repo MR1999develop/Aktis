@@ -45,6 +45,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     name: "Sharpening",
     category: Category::Details,
     order: 140,
+    starts_on: true,
     // Capture One's usual starting values.
     params: vec![
         float(AMOUNT, "Amount", [0.0, 100.0], 45.0, 1.0, Unit::None),

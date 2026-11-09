@@ -59,6 +59,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| {
         name: "Black & white",
         category: Category::Color,
         order: 110,
+        starts_on: true,
         params,
     }
 });

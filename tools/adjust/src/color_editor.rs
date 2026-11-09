@@ -104,6 +104,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| {
         name: "Colour editor",
         category: Category::Color,
         order: 100,
+        starts_on: true,
         params,
     }
 });

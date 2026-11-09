@@ -39,6 +39,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     name: "Levels",
     category: Category::Exposure,
     order: 70,
+    starts_on: true,
     params: (0..CHANNELS.len())
         .flat_map(|c| (0..VALUES.len()).map(move |v| (c, v)))
         .map(|(c, v)| -> ParamDescriptor {

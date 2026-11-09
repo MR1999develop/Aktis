@@ -201,6 +201,7 @@ static DESCRIPTOR: LazyLock<ToolDescriptor> = LazyLock::new(|| ToolDescriptor {
     name: "Retouch",
     category: Category::Details,
     order: 10,
+    starts_on: true,
     params: (0..MAX_SPOTS).flat_map(|slot| Field::ALL.map(|f| f.descriptor(slot))).collect(),
 });
 
