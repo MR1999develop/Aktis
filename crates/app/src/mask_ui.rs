@@ -22,7 +22,7 @@
 //! and share feather, invert and clear in the options bar.
 //!
 //! - **Style brushes** (as in Capture One): choosing one in the options bar
-//!   (or Image \u{25b8} Style brushes) arms the brush with its settings; the
+//!   (or Image \u{203a} Style brushes) arms the brush with its settings; the
 //!   first stroke adds a layer with the brush's adjustments and the stroke
 //!   as its mask, named after the brush; further strokes extend it.
 //!

@@ -232,7 +232,7 @@ impl ToolPanels {
                 ui.add_space(SPACE[0]);
             }
             if headers.is_empty() {
-                ui.label(RichText::new("Every panel floats; View \u{25b8} Reset tool panels brings them back.").weak());
+                ui.label(RichText::new("Every panel floats; View \u{203a} Reset tool panels brings them back.").weak());
             }
         });
         self.drop_header(ui.ctx(), column, &headers, &mut out);

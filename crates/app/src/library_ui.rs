@@ -1934,7 +1934,7 @@ fn card_menu(ui: &mut egui::Ui, photo: &StripPhoto, state: CardState<'_>, action
     ui.menu_button(format!("Apply Preset{group}"), |ui| {
         if presets.is_empty() {
             ui.add_enabled(false, Button::new("No presets saved yet"))
-                .on_disabled_hover_text("Save one with Image \u{25b8} Presets \u{25b8} Save preset\u{2026}");
+                .on_disabled_hover_text("Save one with Image \u{203a} Presets \u{203a} Save preset\u{2026}");
         }
         for (i, name) in presets.iter().enumerate() {
             if ui.button(name).clicked() {

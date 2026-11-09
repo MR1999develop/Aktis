@@ -420,7 +420,7 @@ impl EditorApp {
     fn open(&mut self, path: PathBuf) {
         if !self.library.is_imported(&path) {
             self.toast = Some(info_toast(format!(
-                "{} is not in the catalog: import it first (File \u{25b8} Import Images\u{2026})",
+                "{} is not in the catalog: import it first (File \u{203a} Import Images\u{2026})",
                 file_name(&path)
             )));
             return;
@@ -2133,7 +2133,7 @@ impl EditorApp {
                     }
                 })
                 .response
-                .on_hover_text("Variants of this photo (also in Image \u{25b8} Variants)");
+                .on_hover_text("Variants of this photo (also in Image \u{203a} Variants)");
                 if let Some(why) = &state.read_only {
                     ui.separator();
                     ui.label(RichText::new("Read-only").strong().color(t.warning)).on_hover_text(why.as_str());

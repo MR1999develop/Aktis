@@ -237,7 +237,7 @@ impl Library {
         heading(ui, "Folders");
         if self.folder_nodes.is_empty() {
             ui.label(
-                RichText::new("No photos yet: File \u{25b8} Import Images\u{2026}").size(FONT[0]).color(t.text_weak),
+                RichText::new("No photos yet: File \u{203a} Import Images\u{2026}").size(FONT[0]).color(t.text_weak),
             );
         }
         let mut toggle = None;

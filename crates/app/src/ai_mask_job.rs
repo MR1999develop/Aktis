@@ -82,7 +82,7 @@ fn segmenter() -> Result<Arc<Segmenter>, String> {
     let dirs = [ai_models::models_dir(), ai_models::data_dir()];
     let library = ai_segment::find_library(&dirs).ok_or_else(|| {
         format!(
-            "ONNX Runtime ({}) is not installed: download it from Tools \u{25b8} AI models",
+            "ONNX Runtime ({}) is not installed: download it from Tools \u{203a} AI models",
             ai_segment::library_name()
         )
     })?;
