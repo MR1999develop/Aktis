@@ -53,13 +53,17 @@ jobs:
         run: cargo fmt --all --check 2>&1 | tee -a ci-out/log.txt
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee -a ci-out/log.txt
+      # Ubuntu: Mesa's software Vulkan driver, which the GPU tests must use
+      # (the editor refuses software GPUs unless told). Windows has only the
+      # Basic Render Driver, so its GPU tests skip.
       - name: Software Vulkan driver (Ubuntu), so the GPU tests run
         if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers
+          echo AKTIS_SOFTWARE_GPU=1 >> "$GITHUB_ENV"
+          echo AKTIS_REQUIRE_GPU=1 >> "$GITHUB_ENV"
       - name: Test
         run: cargo test --workspace --locked 2>&1 | tee -a ci-out/log.txt
-        env:
-          AKTIS_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -72,6 +76,8 @@ jobs:
   real-raw:
     timeout-minutes: 60
     runs-on: ubuntu-latest
+    env:
+      AKTIS_SOFTWARE_GPU: "1"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -124,8 +130,8 @@ jobs:
     timeout-minutes: 60
     runs-on: ubuntu-latest
     env:
-      # The revision the editor downloads (crates/ai-models), so the checksums match.
-      SIGLIP2: https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4
+      AKTIS_MODELS_DIR: ${{ github.workspace }}/models
+      AKTIS_DATA_DIR: ${{ github.workspace }}/aktis-data
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -140,22 +146,13 @@ jobs:
             ~/.cargo/git/db
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
-      - name: Model
+      - name: Model (the editor's download, checked against its checksums)
         run: |
-          mkdir -p ci-out models/siglip2
+          mkdir -p ci-out
           {
             python3 .github/scripts/siglip_head.py google/siglip2-base-patch16-224
-            for f in onnx/vision_model.onnx onnx/text_model.onnx onnx/vision_model_quantized.onnx onnx/text_model_quantized.onnx tokenizer.json; do
-              curl -fsSL --proto =https -o "models/siglip2/$(basename "$f")" "$SIGLIP2/$f"
-            done
-            ( cd models/siglip2 && sha256sum -c - ) <<'SUMS'
-          c0573e3f4140c3a7c4e9cc5912bd6b26a033b46a6a8e8af26cbea262b163bcad  vision_model.onnx
-          baf12d941beabafafb14f7b4adb38dc15be18681b964a84410ec53d9d65e6293  text_model.onnx
-          5f2b401c1a4fc095702a5d45348e17ad46c4f87064085365b43c6e8eaa5c0070  vision_model_quantized.onnx
-          3a0603d3a00c05a80a6ded4743c16aaac7b1e62cdcc7e362e7ce418659b96400  text_model_quantized.onnx
-          cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322  tokenizer.json
-          SUMS
-            ls -l models/siglip2
+            cargo build -q --release --locked -p cli
+            target/release/aktis-cli models --download tagging --yes
           } 2>&1 | tee -a ci-out/log.txt
       - name: Sample images
         run: |
@@ -169,19 +166,16 @@ jobs:
           ls -l testdata/tag | tee -a ci-out/log.txt
       - name: aktis-cli tag
         run: |
-          cargo build -q --release --locked -p cli 2>&1 | tee -a ci-out/log.txt
           cli=target/release/aktis-cli
           kw=crates/tagging/testdata/keywords-it.txt
           {
             echo "== template {} =="
-            $cli tag testdata/tag/* --model models/siglip2 --keywords $kw | tee tags.txt
+            $cli tag testdata/tag/* --keywords $kw | tee tags.txt
             echo "== template 'una foto di {}' =="
-            $cli tag testdata/tag/* --model models/siglip2 --keywords $kw --template "una foto di {}"
-            echo "== quantized, template 'una foto di {}' =="
-            $cli tag testdata/tag/* --model models/siglip2 --keywords $kw --template "una foto di {}" --quantized
+            $cli tag testdata/tag/* --keywords $kw --template "una foto di {}"
             echo "== search =="
-            $cli tag testdata/tag/*.jpg --model models/siglip2 --search "un animale con il muso colorato"
-            $cli tag testdata/tag/* --model models/siglip2 --search "la Terra fotografata dallo spazio"
+            $cli tag testdata/tag/*.jpg --search "un animale con il muso colorato"
+            $cli tag testdata/tag/* --search "la Terra fotografata dallo spazio"
           } 2>&1 | tee -a ci-out/log.txt
       - name: Expected keywords
         # The first suggestion of each sample must name what it shows.
@@ -216,6 +210,10 @@ jobs:
   ai-denoise:
     timeout-minutes: 60
     runs-on: ubuntu-latest
+    env:
+      AKTIS_MODELS_DIR: ${{ github.workspace }}/models
+      AKTIS_DATA_DIR: ${{ github.workspace }}/aktis-data
+      AKTIS_SOFTWARE_GPU: "1"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -239,6 +237,8 @@ jobs:
           echo "fa78899ba2caec9d235a900e91d96c689da71c42029230c2028b00f09f809c2e  scunet_color_real_psnr.pth" | sha256sum -c -
           python3 scripts/scunet/export_onnx_model.py --weights scunet_color_real_psnr.pth \
               --output models/scunet_color_real_448.onnx --verify 2>&1 | tee ci-out/log.txt
+      - name: ONNX Runtime (the editor's download, checked against its checksum)
+        run: cargo run -q --release --locked -p cli -- models --download onnx-runtime --yes 2>&1 | tee -a ci-out/log.txt
       - name: The network removes the noise (tool test)
         run: cargo test -p tool-denoise-ai --release --locked -- --ignored --nocapture 2>&1 | tee -a ci-out/log.txt
         env:
@@ -289,19 +289,16 @@ jobs:
           path: ci-out
           retention-days: 3
 
-  # AI selection end to end with the real models on the CPU build of ONNX
-  # Runtime: subject, people, a click, a box and a detected class, on a RAW
+  # AI selection end to end with the real models on ONNX Runtime (CPU): subject, people, a click, a box and a detected class, on a RAW
   # file and on public test photos. The previews (selection in red) are
   # kept with the log so the masks can be looked at.
   ai-masks:
     timeout-minutes: 60
     runs-on: ubuntu-latest
     env:
-      # The version and checksum the editor downloads (crates/ai-models).
-      ORT_VERSION: 1.24.4
-      ORT_SHA256: 3a211fbea252c1e66290658f1b735b772056149f28321e71c308942cdb54b747
       AKTIS_MODELS_DIR: ${{ github.workspace }}/models
       AKTIS_DATA_DIR: ${{ github.workspace }}/aktis-data
+      AKTIS_SOFTWARE_GPU: "1"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -320,24 +317,15 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: models
-          key: ai-models-v1
-      - name: ONNX Runtime (CPU)
-        run: |
-          mkdir -p ci-out ort
-          curl -fsSL --proto =https -o ort.tgz \
-            "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/onnxruntime-linux-x64-$ORT_VERSION.tgz"
-          echo "$ORT_SHA256  ort.tgz" | sha256sum -c -
-          tar -xzf ort.tgz -C ort --strip-components=1
-          echo "ORT_DYLIB_PATH=$PWD/ort/lib/libonnxruntime.so" >> "$GITHUB_ENV"
+          key: ai-models-v2
       - name: Build
-        run: cargo build -q --release --locked -p cli 2>&1 | tee ci-out/log.txt
-      - name: Models (download what the catalog lists, then verify the checksums)
+        run: mkdir -p ci-out && cargo build -q --release --locked -p cli 2>&1 | tee ci-out/log.txt
+      - name: Models (the editor's download, checked against its checksums)
         run: |
-          mkdir -p models
-          for url in $(target/release/aktis-cli models | grep -o 'https://[^ ]*\.onnx'); do
-            curl -fsSL --proto =https -o "models/$(basename "$url")" "$url"
-          done
-          target/release/aktis-cli models --verify 2>&1 | tee -a ci-out/log.txt
+          {
+            target/release/aktis-cli models --download subject objects people --yes
+            target/release/aktis-cli models --verify
+          } 2>&1 | tee -a ci-out/log.txt
       - name: Test photos
         # Public test images of OpenCV, Segment Anything and YOLOX (not committed).
         run: |

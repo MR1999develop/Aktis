@@ -20,7 +20,9 @@ fn renderer() -> Option<GpuRenderer> {
             println!("GPU: {}", ctx.adapter_name());
             Some(GpuRenderer::new(Arc::new(ctx)))
         }
-        Err(e) if std::env::var_os("AKTIS_REQUIRE_GPU").is_some() => panic!("GPU required but unavailable: {e}"),
+        Err(e) if std::env::var_os("AKTIS_REQUIRE_GPU").is_some_and(|v| !v.is_empty()) => {
+            panic!("GPU required but unavailable: {e}")
+        }
         Err(e) => {
             eprintln!("skipped: {e}");
             None

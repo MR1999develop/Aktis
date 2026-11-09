@@ -113,7 +113,9 @@ impl GpuContext {
         let adapter =
             pollster::block_on(instance.request_adapter(&options)).map_err(|e| GpuError::NoAdapter(e.to_string()))?;
         let info = adapter.get_info();
-        if info.device_type == wgpu::DeviceType::Cpu && std::env::var_os("AKTIS_SOFTWARE_GPU").is_none() {
+        if info.device_type == wgpu::DeviceType::Cpu
+            && !std::env::var_os("AKTIS_SOFTWARE_GPU").is_some_and(|v| !v.is_empty())
+        {
             return Err(GpuError::NoAdapter(format!("{} is a software renderer", info.name)));
         }
         if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS) {
