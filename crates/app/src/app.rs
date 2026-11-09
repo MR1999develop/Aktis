@@ -232,6 +232,9 @@ pub struct EditorApp {
     /// once a photo has opened and the next one should be opened ahead,
     /// after its first render so the two do not compete.
     prefetch_step: Option<isize>,
+    /// The Explorer's filters let no photo through at the last frame: the
+    /// open photo was closed when they started to (once, not every frame).
+    filtered_out: bool,
     /// What the catalog has for the open variant; `None` without a photo.
     variant: Option<VariantState>,
     /// The open photo's stored variants, for the menus and the status bar.
@@ -351,6 +354,7 @@ impl EditorApp {
             last_render: None,
             last_open: None,
             prefetch_step: None,
+            filtered_out: false,
             variant: None,
             variants: Vec::new(),
             dirty_since: None,
@@ -648,6 +652,19 @@ impl EditorApp {
         self.tool = None;
         self.prefetch_step = None;
         self.plan = RenderPlan::default();
+    }
+
+    /// When the Explorer's filters start to let no photo through, the
+    /// viewer shows none: the open photo is saved, then closed. If it cannot
+    /// be saved, the reason was told and it stays open (tried once, not at
+    /// every frame).
+    fn close_when_filtered_out(&mut self) {
+        let filtered_out = self.library.nothing_matches();
+        let started = filtered_out && !self.filtered_out;
+        self.filtered_out = filtered_out;
+        if started && (self.doc.is_some() || self.opening.is_some()) && self.save_edit(true) {
+            self.close_photo();
+        }
     }
 
     /// The photos File ▸ Export and the Export button act on: the photos
@@ -2251,7 +2268,8 @@ impl EditorApp {
         let mut mask_edits = Vec::new();
         let mut retouch_edits = Vec::new(); // Retouch (T4)
         let mut crop_apply = false;
-        if let Some(doc) = &self.doc {
+        // No photo passes the filters: the viewer shows none, even one opened since.
+        if let Some(doc) = self.doc.as_ref().filter(|_| !self.filtered_out) {
             let response = ui.allocate_rect(rect, Sense::click_and_drag());
             let cropped = self.tool != Some(ViewerTool::Crop);
             let (w, h) = doc.shown_size(cropped);
@@ -2566,6 +2584,16 @@ impl EditorApp {
                 let button = Button::new(RichText::new("Import Images\u{2026}").color(t.on_accent)).fill(t.accent);
                 if ui.add(button).clicked() {
                     commands.push(Command::Import);
+                }
+                return;
+            }
+            if self.library.nothing_matches() {
+                ui.label(RichText::new("No photos match the filters").size(FONT[4]).strong().color(t.text_strong));
+                ui.add_space(SPACE[0]);
+                ui.label(RichText::new("Change them in the Explorer, or show every photo").color(t.text_weak));
+                ui.add_space(SPACE[3]);
+                if ui.button("Clear Filters").clicked() {
+                    self.library.clear_filters();
                 }
                 return;
             }
@@ -3455,6 +3483,7 @@ impl eframe::App for EditorApp {
         for command in commands {
             self.run(command, &ctx);
         }
+        self.close_when_filtered_out();
         if let Some(number) = switch_variant {
             self.switch_variant(number);
         }

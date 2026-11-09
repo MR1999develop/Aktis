@@ -528,6 +528,18 @@ impl Library {
         }
     }
 
+    /// `true` when the Explorer's filters let no photo of the filmstrip
+    /// through: the viewer shows none.
+    #[must_use]
+    pub fn nothing_matches(&self) -> bool {
+        self.strip.filtered_to_nothing()
+    }
+
+    /// Turns every filter off.
+    pub fn clear_filters(&mut self) {
+        self.strip.filter = catalog::Filter::default();
+    }
+
     /// Photos selected in the filmstrip (visible ones, in order).
     #[must_use]
     pub fn selection(&self) -> Vec<PathBuf> {
@@ -1156,7 +1168,7 @@ impl Library {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("Showing {shown} of {total}")).size(FONT[0]).color(t.text_weak));
             if !self.strip.filter.is_empty() && ui.small_button("Clear filters").clicked() {
-                self.strip.filter = catalog::Filter::default();
+                self.clear_filters();
             }
         });
     }

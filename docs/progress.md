@@ -724,6 +724,19 @@ Details in `docs/catalog.md`.
 - Tests: the height budget of each slider tool, and no tool body wider
   than the panel at its narrowest.
 
+## 9 November: no photo shown when the filters let none through
+
+- When the Explorer's filters start to let no photo of the filmstrip
+  through, the open photo is saved and closed, and the viewer says "No
+  photos match the filters" with Clear Filters. A photo opened while they
+  still let none through is not drawn either. If the edit cannot be saved,
+  the photo stays open and the reason is told, once.
+- Tests: `Filmstrip::filtered_to_nothing` (filters on and nothing passes;
+  an empty folder without filters is not filtered out), and
+  `app/tests/filtered_out.rs`, which opens a RAW file in the window, types
+  a name no photo has into the name filter and checks the photo closed
+  (ignored: it needs a RAW file, a GPU and settings folders of its own).
+
 ## 30 October: live filmstrip thumbnails
 
 - The open photo's filmstrip card (and its variant's card) follows every

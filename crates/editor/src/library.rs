@@ -280,6 +280,13 @@ impl Filmstrip {
         self.photos.iter().enumerate().filter(|(_, p)| self.filter.matches(&p.name, &p.meta)).map(|(i, _)| i).collect()
     }
 
+    /// `true` when filters are on and no photo passes them: there is no
+    /// photo to show, so the viewer shows none.
+    #[must_use]
+    pub fn filtered_to_nothing(&self) -> bool {
+        !self.filter.is_empty() && !self.photos.iter().any(|p| self.filter.matches(&p.name, &p.meta))
+    }
+
     /// Index of `path` among all photos.
     #[must_use]
     pub fn index_of(&self, path: &Path) -> Option<usize> {
@@ -648,6 +655,22 @@ mod tests {
         assert_eq!(s.neighbour(Some(Path::new("/f/b.NEF")), 1), Some(Path::new("/f/a.NEF")), "hidden → first");
         s.filter.labels.toggle(Some(ColorLabel::Red));
         assert_eq!(s.visible(), vec![2]);
+    }
+
+    /// The viewer shows no photo only when filters are on and none passes:
+    /// an empty folder without filters is not "filtered out".
+    #[test]
+    fn filters_that_no_photo_passes_leave_nothing_to_show() {
+        let mut s = strip();
+        assert!(!s.filtered_to_nothing());
+        s.filter.ratings.toggle(5);
+        assert!(!s.filtered_to_nothing(), "two photos still pass");
+        s.filter.text = "zzz".into();
+        assert!(s.filtered_to_nothing());
+        s.filter = catalog::Filter::default();
+        assert!(!s.filtered_to_nothing());
+        s.set_folder("/empty".into(), Vec::new());
+        assert!(!s.filtered_to_nothing(), "no filter: the folder is just empty");
     }
 
     #[test]
